@@ -56,6 +56,51 @@ const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
 
 
 // ======================================================
+// 共用工具：Script Properties / Spreadsheet
+// ======================================================
+
+function getRequiredScriptProperty_(propertyName) {
+  const value = PropertiesService
+    .getScriptProperties()
+    .getProperty(propertyName);
+
+  if (!value) {
+    throw new Error('Missing ' + propertyName + ' in Script Properties');
+  }
+
+  return value;
+}
+
+
+function getSpreadsheet_() {
+  return SpreadsheetApp.openById(getRequiredScriptProperty_('SPREADSHEET_ID'));
+}
+
+
+function ensureSheetWithHeaders_(sheetName, headers) {
+  const ss = getSpreadsheet_();
+  let sheet = ss.getSheetByName(sheetName);
+
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  }
+
+  const firstRow = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
+
+  const hasHeader = firstRow.some(function(value) {
+    return String(value || '').trim() !== '';
+  });
+
+  if (!hasHeader) {
+    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
+    sheet.setFrozenRows(1);
+  }
+
+  return sheet;
+}
+
+
+// ======================================================
 // LINE Bot 指令設定
 // ======================================================
 
@@ -157,16 +202,6 @@ function installWebTaskQueueTrigger() {
     .create();
 
   return 'processWebTaskQueue trigger installed.';
-}
-
-
-// ======================================================
-// 瀏覽器 GET 測試用
-// 你用瀏覽器打開 Web App /exec 時會看到這段文字
-// ======================================================
-
-function doGet(e) {
-  return HtmlService.createHtmlOutput('LINE BOT Web App is running.');
 }
 
 
@@ -1112,13 +1147,7 @@ function truncateHtmlForGeminiExtractor(html) {
 
 // 呼叫 Gemini 3.1 Flash-Lite，將 HTML 抽成結構化 JSON
 function callGeminiWebExtractor(url, rawHtml, contentType) {
-  const apiKey = PropertiesService
-    .getScriptProperties()
-    .getProperty('GEMINI_API_KEY');
-
-  if (!apiKey) {
-    throw new Error('Missing GEMINI_API_KEY in Script Properties');
-  }
+  const apiKey = getRequiredScriptProperty_('GEMINI_API_KEY');
 
   const cleanedHtml = lightCleanHtmlForExtractor(rawHtml);
   const limitedHtml = truncateHtmlForGeminiExtractor(cleanedHtml);
@@ -1440,6 +1469,56 @@ function callDeepSeekWithMemory(conversationId, userText, mode) {
 }
 
 
+
+// ======================================================
+// DeepSeek API 共用呼叫
+// ======================================================
+
+function callDeepSeekApi_(messages, mode) {
+  const apiKey = getRequiredScriptProperty_('DEEPSEEK_API_KEY');
+
+  const payload = {
+    model: DEEPSEEK_MODEL,
+    messages: messages,
+    temperature: getTemperatureByMode(mode),
+    max_tokens: getMaxTokensByMode(mode),
+    stream: false
+  };
+
+  const options = {
+    method: 'post',
+    contentType: 'application/json',
+    headers: {
+      Authorization: 'Bearer ' + apiKey
+    },
+    payload: JSON.stringify(payload),
+    muteHttpExceptions: true
+  };
+
+  const response = UrlFetchApp.fetch(DEEPSEEK_ENDPOINT, options);
+  const statusCode = response.getResponseCode();
+  const responseText = response.getContentText();
+
+  if (statusCode < 200 || statusCode >= 300) {
+    throw new Error('DeepSeek API error ' + statusCode + ': ' + responseText);
+  }
+
+  const json = JSON.parse(responseText);
+  logDeepSeekUsage(json);
+
+  const reply = json.choices &&
+                json.choices[0] &&
+                json.choices[0].message &&
+                json.choices[0].message.content;
+
+  if (!reply) {
+    throw new Error('Invalid DeepSeek response: ' + responseText);
+  }
+
+  return reply;
+}
+
+
 // ======================================================
 // 呼叫 DeepSeek：含短期多輪記憶 + WeeklySummary 長期記憶
 // 進階版：允許「送給模型的內容」與「存入短期記憶的內容」不同
@@ -1450,14 +1529,6 @@ function callDeepSeekWithMemory(conversationId, userText, mode) {
 // ======================================================
 
 function callDeepSeekWithMemoryPayload(conversationId, userTextForHistory, deepSeekUserContent, mode) {
-  const apiKey = PropertiesService
-    .getScriptProperties()
-    .getProperty('DEEPSEEK_API_KEY');
-
-  if (!apiKey) {
-    throw new Error('Missing DEEPSEEK_API_KEY in Script Properties');
-  }
-
   const lock = LockService.getScriptLock();
   lock.waitLock(5000);
 
@@ -1501,43 +1572,7 @@ function callDeepSeekWithMemoryPayload(conversationId, userTextForHistory, deepS
       content: deepSeekUserContent
     });
 
-    const payload = {
-      model: DEEPSEEK_MODEL,
-      messages: messages,
-      temperature: getTemperatureByMode(mode),
-      max_tokens: getMaxTokensByMode(mode),
-      stream: false
-    };
-
-    const options = {
-      method: 'post',
-      contentType: 'application/json',
-      headers: {
-        Authorization: 'Bearer ' + apiKey
-      },
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    };
-
-    const response = UrlFetchApp.fetch(DEEPSEEK_ENDPOINT, options);
-    const statusCode = response.getResponseCode();
-    const responseText = response.getContentText();
-
-    if (statusCode < 200 || statusCode >= 300) {
-      throw new Error('DeepSeek API error ' + statusCode + ': ' + responseText);
-    }
-
-    const json = JSON.parse(responseText);
-    logDeepSeekUsage(json);
-
-    const reply = json.choices &&
-                  json.choices[0] &&
-                  json.choices[0].message &&
-                  json.choices[0].message.content;
-
-    if (!reply) {
-      throw new Error('Invalid DeepSeek response: ' + responseText);
-    }
+    const reply = callDeepSeekApi_(messages, mode);
 
     const updatedHistory = trimmedHistory.concat([
       {
@@ -1566,62 +1601,16 @@ function callDeepSeekWithMemoryPayload(conversationId, userTextForHistory, deepS
 // ======================================================
 
 function callDeepSeekDirect(userText, mode) {
-  const apiKey = PropertiesService
-    .getScriptProperties()
-    .getProperty('DEEPSEEK_API_KEY');
-
-  if (!apiKey) {
-    throw new Error('Missing DEEPSEEK_API_KEY in Script Properties');
-  }
-
-  const payload = {
-    model: DEEPSEEK_MODEL,
-    messages: [
-      {
-        role: 'system',
-        content: buildSystemPrompt(mode)
-      },
-      {
-        role: 'user',
-        content: userText
-      }
-    ],
-    temperature: getTemperatureByMode(mode),
-    max_tokens: getMaxTokensByMode(mode),
-    stream: false
-  };
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      Authorization: 'Bearer ' + apiKey
+  return callDeepSeekApi_([
+    {
+      role: 'system',
+      content: buildSystemPrompt(mode)
     },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  const response = UrlFetchApp.fetch(DEEPSEEK_ENDPOINT, options);
-  const statusCode = response.getResponseCode();
-  const responseText = response.getContentText();
-
-  if (statusCode < 200 || statusCode >= 300) {
-    throw new Error('DeepSeek API error ' + statusCode + ': ' + responseText);
-  }
-
-  const json = JSON.parse(responseText);
-  logDeepSeekUsage(json);
-
-  const reply = json.choices &&
-                json.choices[0] &&
-                json.choices[0].message &&
-                json.choices[0].message.content;
-
-  if (!reply) {
-    throw new Error('Invalid DeepSeek response: ' + responseText);
-  }
-
-  return reply;
+    {
+      role: 'user',
+      content: userText
+    }
+  ], mode);
 }
 
 
@@ -1723,21 +1712,6 @@ function trimHistory(history) {
 // ======================================================
 
 function ensureLogSheet_() {
-  const spreadsheetId = PropertiesService
-    .getScriptProperties()
-    .getProperty('SPREADSHEET_ID');
-
-  if (!spreadsheetId) {
-    throw new Error('Missing SPREADSHEET_ID in Script Properties');
-  }
-
-  const ss = SpreadsheetApp.openById(spreadsheetId);
-  let sheet = ss.getSheetByName(SHEET_NAME);
-
-  if (!sheet) {
-    sheet = ss.insertSheet(SHEET_NAME);
-  }
-
   const headers = [
     'Timestamp',
     'ConversationId',
@@ -1751,18 +1725,7 @@ function ensureLogSheet_() {
     'Text'
   ];
 
-  const firstRow = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-
-  const hasHeader = firstRow.some(function(value) {
-    return String(value || '').trim() !== '';
-  });
-
-  if (!hasHeader) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-  }
-
-  return sheet;
+  return ensureSheetWithHeaders_(SHEET_NAME, headers);
 }
 
 
@@ -1771,21 +1734,6 @@ function ensureLogSheet_() {
 // ======================================================
 
 function ensureWeeklySummarySheet_() {
-  const spreadsheetId = PropertiesService
-    .getScriptProperties()
-    .getProperty('SPREADSHEET_ID');
-
-  if (!spreadsheetId) {
-    throw new Error('Missing SPREADSHEET_ID in Script Properties');
-  }
-
-  const ss = SpreadsheetApp.openById(spreadsheetId);
-  let sheet = ss.getSheetByName(WEEKLY_SUMMARY_SHEET_NAME);
-
-  if (!sheet) {
-    sheet = ss.insertSheet(WEEKLY_SUMMARY_SHEET_NAME);
-  }
-
   const headers = [
     'ArchivedAt',
     'ConversationId',
@@ -1801,18 +1749,7 @@ function ensureWeeklySummarySheet_() {
     'RawMessageCount'
   ];
 
-  const firstRow = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-
-  const hasHeader = firstRow.some(function(value) {
-    return String(value || '').trim() !== '';
-  });
-
-  if (!hasHeader) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-  }
-
-  return sheet;
+  return ensureSheetWithHeaders_(WEEKLY_SUMMARY_SHEET_NAME, headers);
 }
 
 
@@ -1821,21 +1758,6 @@ function ensureWeeklySummarySheet_() {
 // ======================================================
 
 function ensureWebTaskQueueSheet_() {
-  const spreadsheetId = PropertiesService
-    .getScriptProperties()
-    .getProperty('SPREADSHEET_ID');
-
-  if (!spreadsheetId) {
-    throw new Error('Missing SPREADSHEET_ID in Script Properties');
-  }
-
-  const ss = SpreadsheetApp.openById(spreadsheetId);
-  let sheet = ss.getSheetByName(WEB_TASK_QUEUE_SHEET_NAME);
-
-  if (!sheet) {
-    sheet = ss.insertSheet(WEB_TASK_QUEUE_SHEET_NAME);
-  }
-
   const headers = [
     'TaskId',
     'CreatedAt',
@@ -1854,18 +1776,7 @@ function ensureWebTaskQueueSheet_() {
     'FinishedAt'
   ];
 
-  const firstRow = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-
-  const hasHeader = firstRow.some(function(value) {
-    return String(value || '').trim() !== '';
-  });
-
-  if (!hasHeader) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-  }
-
-  return sheet;
+  return ensureSheetWithHeaders_(WEB_TASK_QUEUE_SHEET_NAME, headers);
 }
 
 
@@ -1874,21 +1785,6 @@ function ensureWebTaskQueueSheet_() {
 // ======================================================
 
 function ensurePendingRepliesSheet_() {
-  const spreadsheetId = PropertiesService
-    .getScriptProperties()
-    .getProperty('SPREADSHEET_ID');
-
-  if (!spreadsheetId) {
-    throw new Error('Missing SPREADSHEET_ID in Script Properties');
-  }
-
-  const ss = SpreadsheetApp.openById(spreadsheetId);
-  let sheet = ss.getSheetByName(PENDING_REPLIES_SHEET_NAME);
-
-  if (!sheet) {
-    sheet = ss.insertSheet(PENDING_REPLIES_SHEET_NAME);
-  }
-
   const headers = [
     'PendingId',
     'CreatedAt',
@@ -1902,18 +1798,7 @@ function ensurePendingRepliesSheet_() {
     'DeliveredAt'
   ];
 
-  const firstRow = sheet.getRange(1, 1, 1, headers.length).getValues()[0];
-
-  const hasHeader = firstRow.some(function(value) {
-    return String(value || '').trim() !== '';
-  });
-
-  if (!hasHeader) {
-    sheet.getRange(1, 1, 1, headers.length).setValues([headers]);
-    sheet.setFrozenRows(1);
-  }
-
-  return sheet;
+  return ensureSheetWithHeaders_(PENDING_REPLIES_SHEET_NAME, headers);
 }
 
 
@@ -2253,30 +2138,21 @@ function archiveWeeklyTopics(event, conversationId) {
 
 function parseArchiveJson(text) {
   const raw = String(text || '').trim();
+  const parsed = parseJsonObjectLoose(raw);
 
-  try {
-    return JSON.parse(raw);
-  } catch (error) {
-    const match = raw.match(/\{[\s\S]*\}/);
-
-    if (match) {
-      try {
-        return JSON.parse(match[0]);
-      } catch (innerError) {
-        console.error('parseArchiveJson inner error:', innerError);
-      }
-    }
-
-    console.error('parseArchiveJson error:', error, raw);
-
-    return {
-      topicTitle: '未能解析的封存摘要',
-      keywords: [],
-      summary: raw.slice(0, 1000),
-      reusableAngles: [],
-      followUpQuestions: []
-    };
+  if (parsed) {
+    return parsed;
   }
+
+  console.error('parseArchiveJson error:', raw);
+
+  return {
+    topicTitle: '未能解析的封存摘要',
+    keywords: [],
+    summary: raw.slice(0, 1000),
+    reusableAngles: [],
+    followUpQuestions: []
+  };
 }
 
 
@@ -2461,13 +2337,7 @@ function getMaxTokensByMode(mode) {
 // ======================================================
 
 function replyToLine(replyToken, text) {
-  const token = PropertiesService
-    .getScriptProperties()
-    .getProperty('LINE_CHANNEL_ACCESS_TOKEN');
-
-  if (!token) {
-    throw new Error('Missing LINE_CHANNEL_ACCESS_TOKEN in Script Properties');
-  }
+  const token = getRequiredScriptProperty_('LINE_CHANNEL_ACCESS_TOKEN');
 
   // LINE 單則文字訊息上限約 5000 字，這裡保守切到 4500
   const safeText = String(text || '').slice(0, 4500);
