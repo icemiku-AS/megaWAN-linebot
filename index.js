@@ -2,7 +2,7 @@
 // 小浣 LINE Bot on Google Apps Script
 // LINE Bot + DeepSeek API + Gemini Web Reader + Google Sheet Log
 //
-// 版本：V7 Topic Pool Edition
+// 版本：v1.7 Topic Pool Edition
 //
 // 核心架構：
 // 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
@@ -47,7 +47,7 @@ const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// V7 中 Gemini 有兩種用途：
+// v1.7 中 Gemini 有兩種用途：
 // 1. 快讀摘要：將網頁直接整理成 100～500 字懶人包
 // 2. 正文抽取：在 #節目話題分析 時，先將 HTML 抽成乾淨正文，再交給 DeepSeek
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
@@ -70,7 +70,7 @@ const WEB_TASK_QUEUE_SHEET_NAME = 'WebTaskQueue';
 // 已完成但尚未交付給使用者的回覆 Sheet
 const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
 
-// V7 新增：網址快讀摘要素材池
+// v1.7 新增：網址快讀摘要素材池
 // 這張表是 #統整話題 的核心資料來源之一
 const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
 
@@ -111,7 +111,7 @@ function getSpreadsheet_() {
 // ======================================================
 // Sheet 表頭工具
 //
-// V7 特別做成「相容式補欄位」：
+// v1.7 特別做成「相容式補欄位」：
 // 如果你已經有 V6 舊 Sheet，setupLogSheet() 不會砍掉舊資料，
 // 只會在表頭缺少新欄位時，自動把新欄位補到右邊。
 // ======================================================
@@ -213,7 +213,7 @@ function setCellByHeader_(sheet, rowNumber, headerMap, headerName, value) {
 // ======================================================
 
 // 群組中只有這些開頭才會觸發一般 Bot 回覆。
-// V7 例外：
+// v1.7 例外：
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會自動排入網址快讀。
 // 2. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
 const TRIGGER_PREFIXES = [
@@ -250,7 +250,7 @@ const MAX_HISTORY_PAIRS = 6;
 // ======================================================
 
 // 單則訊息最多讀幾個網址，避免排程一次處理太久
-const MAX_URLS_PER_MESSAGE = 2;
+const MAX_URLS_PER_MESSAGE = 3;
 
 // 每次排程最多處理幾個 pending 網頁任務
 // Apps Script 有執行時間限制，MVP 建議先保持 1
@@ -281,9 +281,9 @@ const DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC = 80;
 // 5. 建立 WebSummary 表頭
 // 6. 觸發 Google Sheet 授權
 //
-// V7 注意：
+// v1.7 注意：
 // 如果你已經有 V6 Sheet，不會刪資料。
-// 只會補上 V7 新增欄位，例如 WebTaskQueue 的 TaskType。
+// 只會補上 v1.7 新增欄位，例如 WebTaskQueue 的 TaskType。
 // ======================================================
 
 function setupLogSheet() {
@@ -391,7 +391,7 @@ function handleLineEvent(event) {
   }
 
   // 所有文字訊息先寫入 ConversationLog
-  // V7 中，一般貼網址的訊息也會被記錄，方便未來 #統整話題 判斷「你們貼網址時說了什麼」。
+  // v1.7 中，一般貼網址的訊息也會被記錄，方便未來 #統整話題 判斷「你們貼網址時說了什麼」。
   logMessageToSheet({
     event: event,
     conversationId: conversationId,
@@ -404,9 +404,9 @@ function handleLineEvent(event) {
   // Pending Reply 優先交付
   //
   // V6 設計：有 pending reply 時，任何文字訊息都會觸發交付。
-  // V7 保留這個設計。
+  // v1.7 保留這個設計。
   //
-  // 但 V7 新增一個小補強：
+  // 但 v1.7 新增一個小補強：
   // 如果使用者這次訊息本身也貼了網址，不能因為交付舊 pending reply 就完全忽略新網址。
   // 所以會先把新網址也 enqueue，然後把「舊 pending 交付」與「新網址已收到」合併成同一則回覆。
   // ======================================================
@@ -417,7 +417,7 @@ function handleLineEvent(event) {
     const enqueueResult = enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
 
     let deliveryText = [
-      '剛剛那個任務整理好了：',
+      '剛才的任務整理好了：',
       '',
       pendingReply.text
     ].join('\n');
@@ -425,7 +425,7 @@ function handleLineEvent(event) {
     if (enqueueResult && enqueueResult.ok) {
       deliveryText += [
         '',
-        '另外也收到你這次貼的網址，我會接著處理。'
+        '另外也收到你這次貼的網址，我會接著處理'
       ].join('\n');
     }
 
@@ -441,7 +441,7 @@ function handleLineEvent(event) {
   }
 
   // ======================================================
-  // V7：群組一般訊息如果沒有觸發詞，但含網址，也要自動進入快讀摘要。
+  // v1.7：群組一般訊息如果沒有觸發詞，但含網址，也要自動進入快讀摘要。
   //
   // 這是本版最重要的行為改變：
   // 貼網址 = 自動進入 WebSummary 素材池
@@ -460,7 +460,7 @@ function handleLineEvent(event) {
 
       const replyText = enqueueResult.ok
         ? buildWebTaskAcceptedText_(TASK_TYPE_WEB_LAZY_SUMMARY, enqueueResult.urls.length)
-        : enqueueResult.error || '我沒有找到可以讀取的網址。';
+        : enqueueResult.error || '我沒有找到可以讀取的網址';
 
       replyToLine(event.replyToken, replyText);
       logAssistantReplyToSheet(event, conversationId, replyText, 'web_lazy_summary_accepted');
@@ -486,7 +486,7 @@ function handleLineEvent(event) {
   if (userText === '#reset' || userText === '#小浣 reset') {
     clearConversationHistory(conversationId);
 
-    const resetText = '已清除這個聊天室的短期對話記憶。Google Sheet 裡的長期紀錄不會被刪除。';
+    const resetText = '已清除這個聊天室的短期對話記憶。長期紀錄不會被刪除';
 
     replyToLine(event.replyToken, resetText);
     logAssistantReplyToSheet(event, conversationId, resetText, 'reset');
@@ -497,7 +497,7 @@ function handleLineEvent(event) {
   // #清空紀錄：先提示，不直接刪除
   if (userText === '#清空紀錄') {
     const warningText = [
-      '你正在準備清空這個聊天室的 Google Sheet 長期紀錄。',
+      '你正在準備清空這個聊天室的長期紀錄',
       '',
       '這個動作會刪除目前聊天室在 ConversationLog 裡的歷史訊息。',
       '不會影響其他私訊、其他群組，也不會刪除 WeeklySummary 封存摘要。',
@@ -519,7 +519,7 @@ function handleLineEvent(event) {
     clearConversationHistory(conversationId);
 
     const doneText = [
-      '已清空這個聊天室的 ConversationLog 長期紀錄。',
+      '已清空這個聊天室的 ConversationLog 長期紀錄',
       '同時也清除了短期對話記憶。',
       '',
       '刪除筆數：' + deletedCount,
@@ -622,7 +622,7 @@ function handleLineEvent(event) {
       }
 
     } else {
-      // V7：任何含網址的一般指令，預設走「快讀摘要」
+      // v1.7：任何含網址的一般指令，預設走「快讀摘要」
       // 只有 #節目話題分析 才走深度分析。
       if (shouldUseWebReading(commandInfo.userPrompt)) {
         const enqueueResult = enqueueWebTask(
@@ -695,9 +695,8 @@ function buildWebTaskAcceptedText_(taskType, urlCount) {
   }
 
   return [
-    '收到網址，我先幫你抓重點。',
-    '這次會先做快讀摘要，整理後放進 WebSummary 素材池。',
-    '處理完成後，下一次群組有任何訊息，我會把結果送出。'
+    '收到網址！稍等我整理一下喔！',
+    '處理完成後，下一次群組有任何訊息，我會把結果送出'
   ].join('\n');
 }
 
@@ -995,7 +994,7 @@ function enqueueWebTask(event, conversationId, userPrompt, taskType) {
   const now = new Date();
   const taskId = createSimpleId('webtask');
 
-  // V7 欄位：
+  // v1.7 欄位：
   // TaskType 放最後，避免舊 V6 Sheet 欄位順序需要大搬家。
   sheet.appendRow([
     taskId,
@@ -1026,7 +1025,7 @@ function enqueueWebTask(event, conversationId, userPrompt, taskType) {
 
 
 // 舊函式名稱相容：
-// 如果未來你有地方還呼叫 enqueueWebReadTask，就導向 V7 的快讀摘要任務。
+// 如果未來你有地方還呼叫 enqueueWebReadTask，就導向 v1.7 的快讀摘要任務。
 function enqueueWebReadTask(event, conversationId, userPrompt) {
   return enqueueWebTask(event, conversationId, userPrompt, TASK_TYPE_WEB_LAZY_SUMMARY);
 }
@@ -1179,7 +1178,7 @@ function processSingleWebTask_(task) {
 
 
 // ======================================================
-// V7：快讀摘要任務
+// v1.7：快讀摘要任務
 //
 // 目的：
 // 1. 貼網址後，不做節目分析
@@ -1318,8 +1317,7 @@ function formatLazySummaryResultsForReply_(summaryResults) {
       '',
       '重點：',
       keyPointsText,
-      '',
-      '已放進 WebSummary 素材池。'
+      ''
     ].join('\n');
   });
 
@@ -1328,7 +1326,7 @@ function formatLazySummaryResultsForReply_(summaryResults) {
 
 
 // ======================================================
-// V7：#節目話題分析 + 網址
+// v1.7：#節目話題分析 + 網址
 //
 // 這條路才會進 DeepSeek。
 // 用途不是快讀，而是判斷這篇能不能變成節目段落。
@@ -1529,7 +1527,7 @@ function truncateHtmlForGemini(html) {
 // ======================================================
 // Gemini：快讀摘要
 //
-// V7 新增。
+// v1.7 新增。
 // 這個函式只負責「貼網址後的快速素材整理」。
 // 不做社群輿論推論，不做節目段落深度分析。
 // ======================================================
@@ -2107,7 +2105,7 @@ function logGeminiUsage(json) {
 
 
 // ======================================================
-// V7：#節目話題分析 沒貼網址
+// v1.7：#節目話題分析 沒貼網址
 //
 // 讓 LLM 根據最近聊天、WebSummary、WeeklySummary 判斷要分析什麼。
 // ======================================================
@@ -2174,7 +2172,7 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt)
 
 
 // ======================================================
-// V7：#統整話題
+// v1.7：#統整話題
 //
 // 整合最近聊天 + WebSummary + WeeklySummary，整理可用節目素材。
 // ======================================================
@@ -2539,7 +2537,7 @@ function ensureWeeklySummarySheet_() {
 // ======================================================
 // Google Sheet：確保 WebTaskQueue Sheet 存在
 //
-// V7 新增 TaskType，放在最後避免破壞 V6 既有欄位順序。
+// v1.7 新增 TaskType，放在最後避免破壞 V6 既有欄位順序。
 // ======================================================
 
 function ensureWebTaskQueueSheet_() {
@@ -2569,7 +2567,7 @@ function ensureWebTaskQueueSheet_() {
 // ======================================================
 // Google Sheet：確保 PendingReplies Sheet 存在
 //
-// V7 新增 ReplyMode，方便交付後記錄這次回覆類型。
+// v1.7 新增 ReplyMode，方便交付後記錄這次回覆類型。
 // ======================================================
 
 function ensurePendingRepliesSheet_() {
@@ -2594,7 +2592,7 @@ function ensurePendingRepliesSheet_() {
 // ======================================================
 // Google Sheet：確保 WebSummary Sheet 存在
 //
-// V7 新增。
+// v1.7 新增。
 // 用途：保存所有網址快讀摘要，讓 #統整話題 可以讀取。
 // ======================================================
 
@@ -2748,7 +2746,7 @@ function getRecentConversationText(conversationId, limit, includeAssistant) {
 // includeAssistant = false：
 //   沿用 V6 行為，以 user 訊息為主，避免 AI 回覆污染摘要。
 // includeAssistant = true：
-//   V7 給 #統整話題 / #節目話題分析 使用，因為小浣快讀摘要與分析結果也要納入脈絡。
+//   v1.7 給 #統整話題 / #節目話題分析 使用，因為小浣快讀摘要與分析結果也要納入脈絡。
 // ======================================================
 
 function getRecentConversationItems(conversationId, limit, includeAssistant) {
@@ -3055,7 +3053,7 @@ function archiveWeeklyTopics(event, conversationId) {
     '用途：',
     '這份摘要未來會被 AI 助手讀取，用來判斷這個話題以前是否討論過，以及當時有哪些觀點。',
     '',
-    'V7 補充：',
+    'v1.7 補充：',
     '如果近期 WebSummary 中有與對話相關的網址快讀摘要，也可以納入封存脈絡。',
     '',
     '請輸出成 JSON，且只輸出 JSON，不要加任何解釋文字。',
