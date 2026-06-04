@@ -1,3 +1,28 @@
+// 版本：V7 Topic Pool Edition
+//
+// 核心架構：
+// 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
+// 2. 只要訊息中含網址：
+//    - 不需要 #小浣，也不需要 #讀網址
+//    - 立刻回覆：「收到網址，我先幫你抓重點。」
+//    - 任務寫入 WebTaskQueue，TaskType = web_lazy_summary
+//    - 由 time-driven trigger 背景處理
+//    - UrlFetchApp 抓網頁
+//    - Script 做基礎垃圾訊息清理
+//    - Gemini Flash-Lite 產生 100～500 字快讀摘要
+//    - 摘要寫入 WebSummary，作為未來 #統整話題 的素材池
+//    - 同時寫入 PendingReplies，下一次同聊天室有任何文字訊息時交付結果
+// 3. #節目話題分析 + 網址：
+//    - 任務寫入 WebTaskQueue，TaskType = program_topic_analysis
+//    - Gemini 抽正文
+//    - DeepSeek 做節目話題深度分析
+// 4. #節目話題分析 沒貼網址：
+//    - 讀最近 ConversationLog + WebSummary + WeeklySummary
+//    - 由 DeepSeek 判斷要分析剛剛聊天內容、正在寫的內容，或近期最有節目潛力的素材
+// 5. #統整話題：
+//    - 讀最近 ConversationLog + WebSummary + WeeklySummary
+//    - 整理成近期話題地圖、可做節目段落、素材來源與優先順序
+// 6. PendingReplies 仍只是交付機制，正式素材保存於 WebSummary
 // ======================================================
 // 小浣 LINE Bot on Google Apps Script
 // LINE Bot + DeepSeek API + Gemini Web Extractor + Google Sheet Log
