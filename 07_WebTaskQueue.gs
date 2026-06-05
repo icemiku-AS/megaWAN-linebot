@@ -2,13 +2,14 @@
 // 07_WebTaskQueue.gs
 // WebTaskQueue 與 PendingReplies 任務層。負責網址任務排程、背景處理、結果暫存與下次訊息交付。
 //
-// 小浣 LINE Bot v1.9 Service Split Edition
+// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
 //
 // 設計說明：
 // 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
 // 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
 // 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
 // 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
+// 5. v1.9.2 起，不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
 // ======================================================
 
 // ======================================================
@@ -21,7 +22,7 @@ function enqueueWebTask(event, conversationId, userPrompt, taskType) {
   if (!urls || urls.length === 0) {
     return {
       ok: false,
-      error: '沒有找到可讀取的網址。'
+      error: getBotTextNoReadableUrl_()
     };
   }
 
@@ -184,12 +185,7 @@ function processSingleWebTask_(task) {
   } catch (taskError) {
     console.error('processSingleWebTask_ error:', taskError && taskError.stack ? taskError.stack : taskError);
 
-    const errorText = [
-      '我剛剛處理網址任務時失敗了。',
-      '',
-      '錯誤訊息：',
-      String(taskError && taskError.message ? taskError.message : taskError).slice(0, 1000)
-    ].join('\n');
+    const errorText = getBotTextWebTaskFailed_(taskError && taskError.message ? taskError.message : taskError);
 
     // 任務失敗也寫入 PendingReplies，讓使用者下次知道失敗原因
     createPendingReplyFromTask(taskRowData, errorText, task.taskType);
@@ -298,19 +294,14 @@ function createLazySummaryForUrl_(task, url) {
 function formatLazySummaryResultsForReply_(summaryResults) {
   const blocks = summaryResults.map(function(result, index) {
     if (!result.ok) {
-      return [
-        '【網址 ' + (index + 1) + '】',
-        result.url,
-        '',
-        '讀取失敗：' + result.error
-      ].join('\n');
+      return getBotTextSingleUrlFailed_(index, result.url, result.error);
     }
 
     const keyPointsText = result.keyPoints && result.keyPoints.length > 0
       ? result.keyPoints.map(function(point, pointIndex) {
           return (pointIndex + 1) + '. ' + point;
         }).join('\n')
-      : '未取得明確重點';
+      : '目前沒有翻到明確重點。';
 
     const meta = [
       result.siteName ? '來源：' + result.siteName : '',
@@ -321,18 +312,7 @@ function formatLazySummaryResultsForReply_(summaryResults) {
       return line !== '';
     }).join('\n');
 
-    return [
-      '【網址快讀 ' + (index + 1) + '】',
-      result.title || '未取得標題',
-      meta,
-      '',
-      '這篇大概在講：',
-      result.summary || '未取得摘要',
-      '',
-      '重點：',
-      keyPointsText,
-      ''
-    ].join('\n');
+    return getBotTextLazySummaryBlock_(result, index, keyPointsText, meta);
   });
 
   return blocks.join('\n\n');
