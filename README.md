@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
+# 小浣 LINE Bot v1.9.3 Gemini JSON Mode Hotfix
 
 這是 MEGA浣 / 小浣 的 Google Apps Script 分檔版。
 
@@ -9,26 +9,26 @@
 
 ## 本版定位
 
-v1.9.2 Humanized System Reply Edition 以 v1.9.1 Structured Gemini Output Edition 為基礎，不改變 LINE 使用流程、不改變主要 Sheet 架構、不更換模型，主要目標是讓「不經過 LLM 的固定回覆」也具有一致的小浣語氣。
+v1.9.3 Gemini JSON Mode Hotfix 以 v1.9.2 Humanized System Reply Edition 為基礎，不改變 LINE 使用流程、不改變主要 Sheet 架構、不更換模型，主要目標是修正 Gemini API structured output 設定與目前 API / 模型組合不相容造成的網址讀取失敗。
 
 本版原則：
 
 1. 不主動新增複雜功能。
 2. 不主動改變原本 LINE 指令流程。
 3. 不改變主要 Sheet 架構。
-4. 新增版本查詢能力：`#版本`、`#版本紀錄`。
-5. 集中管理固定回覆文字，方便未來調整小浣語氣。
+4. 不更換 Gemini 模型。
+5. 只修正 Gemini generationConfig 的相容性問題。
 6. 保留詳細註解，方便未來人工維護與 AI 重新讀取。
 
-## v1.9.2 主要變更
+## v1.9.3 主要變更
 
-本版主要修改固定回覆與版本查詢：
+本版主要修改 `08_GeminiService.gs`：
 
-1. 新增 `12_ResponseTexts.gs`。
-2. 新增 `#版本` 指令，可回覆目前版本與本版新增功能。
-3. 新增 `#版本紀錄` 指令，可回覆主要版本更新摘要。
-4. 調整任務接收、pending reply、reset、清空紀錄、記錄、錯誤提示、封存完成等固定文案。
-5. 將不經過 LLM 的固定回覆集中管理，避免文案散落在主流程檔案中。
+1. 將 Gemini generationConfig 從 `responseFormat.text.mimeType/schema` 退回 `responseMimeType: 'application/json'`。
+2. 修正 Gemini API 400 `generation_config.response_format.text.mime_type INVALID_ARGUMENT` 問題。
+3. 保留 `getGeminiLazySummarySchema_()` 與 `getGeminiWebExtractorSchema_()`，但暫時只作為程式端資料契約與未來升級參考，不再直接送進 Gemini API。
+4. 補上詳細註解，說明目前 `v1beta + gemini-3.1-flash-lite` 與 `responseFormat.text.mimeType/schema` 不相容。
+5. 更新 `12_ResponseTexts.gs` 內建版本資料，讓 `#版本` 與 `#版本紀錄` 可回報本次 hotfix。
 
 ## 檔案配置
 
@@ -46,7 +46,7 @@ v1.9.2 Humanized System Reply Edition 以 v1.9.1 Structured Gemini Output Editio
 - 短期記憶設定
 - 網頁讀取限制
 
-v1.9.2 起，`TRIGGER_PREFIXES` 新增：
+`TRIGGER_PREFIXES` 包含：
 
 - `#版本`
 - `#版本紀錄`
@@ -63,7 +63,7 @@ v1.9.2 起，`TRIGGER_PREFIXES` 新增：
 - `handleLineEvent(event)`
 
 這個檔案負責 LINE webhook 入口、文字訊息判斷、主流程分流。  
-v1.9.2 起，`#版本` 與 `#版本紀錄` 在此檔案中被攔截處理，不呼叫 LLM。
+`#版本` 與 `#版本紀錄` 在此檔案中被攔截處理，不呼叫 LLM。
 
 ### `02_LineCommands.gs`
 
@@ -78,7 +78,7 @@ LINE 指令與回覆層。
 - Help 文字
 - 網址任務接受回覆文字
 
-v1.9.2 起，固定文案改由 `12_ResponseTexts.gs` 管理；本檔主要保留流程與既有函式名稱。
+固定文案由 `12_ResponseTexts.gs` 管理；本檔主要保留流程與既有函式名稱。
 
 ### `03_Utils.gs`
 
@@ -142,7 +142,7 @@ Google Sheet 資料層。
 - PendingReplies 建立與交付
 
 注意：`processWebTaskQueue()` 是 time-driven trigger 會呼叫的函式，函式名稱不可隨意更改。  
-v1.9.2 起，網址任務失敗、單篇網址讀取失敗、快讀結果區塊等固定回覆格式改由 `12_ResponseTexts.gs` 管理。
+網址任務失敗、單篇網址讀取失敗、快讀結果區塊等固定回覆格式由 `12_ResponseTexts.gs` 管理。
 
 ### `08_GeminiService.gs`
 
@@ -152,12 +152,18 @@ Gemini API 服務層。
 
 - Gemini 網頁快讀摘要
 - Gemini 網頁正文抽取
-- Gemini structured output schema
+- Gemini schema-like 資料契約
+- Gemini JSON mode generationConfig
 - Gemini 回應文字解析
 - Gemini usage log
 
-v1.9.1 起，此檔會集中管理 Gemini structured output schema。  
-維護時請注意：schema、normalizer、函式回傳格式應互相對齊。
+v1.9.3 起，此檔使用 `responseMimeType: 'application/json'` 作為 Gemini JSON mode。  
+`getGeminiLazySummarySchema_()` 與 `getGeminiWebExtractorSchema_()` 暫時不直接送進 Gemini API，只作為維護用資料契約。
+
+維護時請注意：
+
+- 若未來要重新啟用 structured output schema，必須先確認目前模型與 endpoint 是否支援。
+- 不要直接把 `responseFormat.text.mimeType/schema` 恢復到 `gemini-3.1-flash-lite + v1beta`，否則可能再次出現 400 INVALID_ARGUMENT。
 
 ### `09_DeepSeekService.gs`
 
@@ -183,7 +189,7 @@ DeepSeek API 服務層。
 - WeeklySummary 封存 JSON 解析
 
 未來若新增節目大綱、SEO 標題、社群貼文、逐字稿等高階功能，可以優先放在這裡，再視情況繼續拆。  
-v1.9.2 起，沒有足夠素材時的固定提醒、封存完成訊息，改由 `12_ResponseTexts.gs` 管理。
+沒有足夠素材時的固定提醒、封存完成訊息，由 `12_ResponseTexts.gs` 管理。
 
 ### `11_Prompts.gs`
 
