@@ -8,20 +8,21 @@
 
 ## Project
 
-正式名稱：MEGA浣
-小名：小浣
-用途：Podcast「現正熱潮中」的 LINE 群組企劃助理
-執行環境：Google Apps Script
-程式碼版本管理：GitHub
-主要資料儲存：Google Sheet
+正式名稱：MEGA浣  
+小名：小浣  
+用途：Podcast「現正熱潮中」的 LINE 群組企劃助理  
+執行環境：Google Apps Script  
+程式碼版本管理：GitHub  
+主要資料儲存：Google Sheet  
 外部服務：LINE Messaging API、DeepSeek API、Gemini API
 
 ---
 
 ## Current Version
 
-Current Version: v1.9.0 Service Split Edition
-Current Branch: main
+Repository: icemiku-AS/megaWAN-linebot  
+Current Version: v1.9.0 Service Split Edition  
+Current Branch: main  
 Source of Truth: GitHub main branch latest commit
 
 本專案目前以 GitHub `main` branch 的最新 commit 作為唯一現行程式碼來源。
@@ -40,18 +41,18 @@ Source of Truth: GitHub main branch latest commit
 
 以下檔案代表目前小浣正式版本的主要程式碼結構：
 
-* `00_Config.gs`
-* `01_Main.gs`
-* `02_LineCommands.gs`
-* `03_Utils.gs`
-* `04_Storage.gs`
-* `05_Memory.gs`
-* `06_WebReader.gs`
-* `07_WebTaskQueue.gs`
-* `08_GeminiService.gs`
-* `09_DeepSeekService.gs`
-* `10_TopicFeatures.gs`
-* `11_Prompts.gs`
+- `00_Config.gs`
+- `01_Main.gs`
+- `02_LineCommands.gs`
+- `03_Utils.gs`
+- `04_Storage.gs`
+- `05_Memory.gs`
+- `06_WebReader.gs`
+- `07_WebTaskQueue.gs`
+- `08_GeminiService.gs`
+- `09_DeepSeekService.gs`
+- `10_TopicFeatures.gs`
+- `11_Prompts.gs`
 
 ---
 
@@ -59,15 +60,15 @@ Source of Truth: GitHub main branch latest commit
 
 以下檔案為輔助文件：
 
-* `README.md`
-* `99_Changelog.md`
-* `CURRENT_VERSION.md`
+- `README.md`
+- `99_Changelog.md`
+- `CURRENT_VERSION.md`
 
 其中：
 
-* `README.md` 用於說明目前架構、檔案責任與維護方式。
-* `99_Changelog.md` 用於保存歷史版本紀錄。
-* `CURRENT_VERSION.md` 用於明確宣告目前版本與判定規則。
+- `README.md` 用於說明目前架構、檔案責任與維護方式。
+- `99_Changelog.md` 用於保存歷史版本紀錄。
+- `CURRENT_VERSION.md` 用於明確宣告目前版本與判定規則。
 
 ---
 
@@ -77,10 +78,10 @@ Source of Truth: GitHub main branch latest commit
 
 讀取 `99_Changelog.md` 時，請注意：
 
-* 舊版段落不代表目前實作。
-* 不可將 v1.6、v1.7、v1.8 等歷史版本描述直接視為目前程式邏輯。
-* 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
-* 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
+- 舊版段落不代表目前實作。
+- 不可將 v1.6、v1.7、v1.8 等歷史版本描述直接視為目前程式邏輯。
+- 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
+- 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
 
 ---
 
@@ -90,12 +91,12 @@ Source of Truth: GitHub main branch latest commit
 
 請勿預設本專案需要：
 
-* Node.js
-* npm
-* package.json
-* node_modules
-* npm install
-* npm start
+- Node.js
+- npm
+- package.json
+- node_modules
+- npm install
+- npm start
 
 除非維護者明確表示要導入 `clasp` 或將專案改為本機 / 自架伺服器執行，否則請一律視為 Google Apps Script 專案。
 
@@ -109,10 +110,10 @@ Source of Truth: GitHub main branch latest commit
 
 常見 Script Properties 包含：
 
-* `LINE_CHANNEL_ACCESS_TOKEN`
-* `DEEPSEEK_API_KEY`
-* `GEMINI_API_KEY`
-* `SPREADSHEET_ID`
+- `LINE_CHANNEL_ACCESS_TOKEN`
+- `DEEPSEEK_API_KEY`
+- `GEMINI_API_KEY`
+- `SPREADSHEET_ID`
 
 GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，但不可保存真正的 secret value。
 
@@ -132,6 +133,9 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 8. 若檔案之間出現矛盾，請優先相信實際 `.gs` 程式碼。
 9. 若要修改 GitHub repo，除非維護者明確要求，否則不要直接修改 main branch。
 10. 建議先產生可複製版本，或建立 feature branch / PR 供維護者確認。
+11. 預設工作模式為只讀與分析 GitHub 檔案，不直接修改 repository。
+12. 若需要修改 repository，必須先向維護者確認修改檔案、修改內容與修改方式。
+13. 除非維護者明確要求，否則不得直接 commit 到 main branch；建議使用 feature branch 或提供可複製程式碼。
 
 ---
 
@@ -161,17 +165,18 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 
 尤其是以下情況：
 
-* 新增或刪除主要 `.gs` 檔案
-* 改變目前正式版本號
-* 改變主要執行環境
-* 從 GAS 改為 clasp / Node.js / 其他部署方式
-* 變更 secret 管理策略
-* 變更 GitHub branch 流程
-* 新增 AI 協作規則
+- 新增或刪除主要 `.gs` 檔案
+- 改變目前正式版本號
+- 改變主要執行環境
+- 從 GAS 改為 clasp / Node.js / 其他部署方式
+- 變更 secret 管理策略
+- 變更 GitHub branch 流程
+- 新增 AI 協作規則
+- 變更 AI 與 GitHub repository 的讀寫協作流程
 
 ---
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.9.0 Service Split Edition
+Last Confirmed Version: v1.9.0 Service Split Edition  
 Last Confirmed Date: 2026-06-05
