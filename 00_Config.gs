@@ -1,22 +1,13 @@
 // ======================================================
-// 小浣 LINE Bot on Google Apps Script
-// LINE Bot + DeepSeek API + Gemini Web Reader + Google Sheet Log
+// 00_Config.gs
+// 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 版本：v1.8 Modular Edition
+// 小浣 LINE Bot v1.9 Service Split Edition
 //
-// 本版以 v1.7 Topic Pool Edition 為基礎拆分檔案。
-// 功能邏輯原則上不變，只將常數、入口、LINE 指令、AI/資料邏輯、Prompt 分離，方便後續維護。
-//
-// 必要 Script Properties：
-// 1. LINE_CHANNEL_ACCESS_TOKEN
-// 2. DEEPSEEK_API_KEY
-// 3. GEMINI_API_KEY
-// 4. SPREADSHEET_ID
-// ======================================================
-
-
-// ======================================================
-// API Endpoint 設定
+// 維護原則：
+// 1. 本版只拆分檔案職責，不主動改變功能邏輯。
+// 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
+// 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -26,7 +17,7 @@ const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.7 / v1.8 中 Gemini 有兩種用途：
+// v1.7 / v1.8 / v1.9 中 Gemini 有兩種用途：
 // 1. 快讀摘要：將網頁直接整理成 100～500 字懶人包
 // 2. 正文抽取：在 #節目話題分析 時，先將 HTML 抽成乾淨正文，再交給 DeepSeek
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
