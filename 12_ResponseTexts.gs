@@ -2,23 +2,36 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
+// 小浣 LINE Bot v1.9.3 Gemini JSON Mode Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格：親切、可靠、帶一點浣熊翻素材感。
 // 3. 主流程檔案（例如 01_Main.gs）應盡量只呼叫這裡的函式，不直接散落大量硬編文字。
 // 4. 若未來想調整小浣語氣，優先改這個檔案。
+// 5. v1.9.3 hotfix 同步更新 #版本 / #版本紀錄 內建資訊，讓小浣能回報目前 Gemini 修正狀態。
 // ======================================================
 
 // ======================================================
 // 版本資料
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.9.2 Humanized System Reply Edition';
+const BOT_CURRENT_VERSION = 'v1.9.3 Gemini JSON Mode Hotfix';
 const BOT_CURRENT_VERSION_DATE = '2026-06-05';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.9.3 Gemini JSON Mode Hotfix',
+    date: '2026-06-05',
+    summary: '修正 Gemini structured output 設定與目前 API / 模型組合不相容，導致網址快讀與正文抽取直接 400 失敗的問題。',
+    changes: [
+      '修正 08_GeminiService.gs 的 generationConfig。',
+      '將 Gemini 輸出設定從 responseFormat.text.mimeType/schema 退回 responseMimeType: application/json。',
+      '保留 schema 函式作為程式端資料契約與未來升級參考。',
+      '補上註解說明目前 v1beta + gemini-3.1-flash-lite 不接受 responseFormat.text.mimeType = application/json。',
+      '維持 Google Apps Script 架構，不更換模型、不改變 Sheet 欄位。'
+    ]
+  },
   {
     version: 'v1.9.2 Humanized System Reply Edition',
     date: '2026-06-05',
@@ -98,10 +111,10 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我主要升級的是「說話方式」和「版本查詢」。',
-    '以前有些地方像後台系統在吐訊息，現在我會盡量用比較像小浣自己的方式回覆。',
+    '這版我主要修的是 Gemini 網址讀取的相容性問題。',
+    '之前那包 responseFormat.text.mimeType/schema 送到目前 API 會被擋下來，現在我先改回穩定的 JSON mode。',
     '',
-    '本次新增：',
+    '本次新增 / 修正：',
     formatBulletList_(current.changes),
     '',
     '想看一路以來的更新，可以輸入：',
