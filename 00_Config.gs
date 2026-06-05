@@ -2,12 +2,13 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.9 Service Split Edition
+// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
 //
 // 維護原則：
-// 1. 本版只拆分檔案職責，不主動改變功能邏輯。
+// 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
+// 4. v1.9.2 新增 #版本 / #版本紀錄，並把固定回覆文字集中到 12_ResponseTexts.gs。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -64,12 +65,15 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 例外：
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會自動排入網址快讀。
 // 2. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
+// 3. v1.9.2 新增 #版本 / #版本紀錄，讓小浣可直接回覆目前版本與主要更新紀錄。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#摘要',
   '#標題',
   '#help',
   '#reset',
+  '#版本紀錄',
+  '#版本',
   '#摘要最近',
   '#回顧最近',
   '#記錄',
