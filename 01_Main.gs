@@ -2,12 +2,13 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.9 Service Split Edition
+// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
 //
 // 維護原則：
-// 1. 本版只拆分檔案職責，不主動改變功能邏輯。
-// 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
-// 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
+// 1. 本檔負責 LINE webhook 主流程與事件分流。
+// 2. v1.9.2 起，不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
+// 3. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
+// 4. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
 // ======================================================
 
 function setupLogSheet() {
@@ -86,7 +87,7 @@ function handleLineEvent(event) {
   // 只處理文字訊息
   if (event.type !== 'message' || !event.message || event.message.type !== 'text') {
     if (!isGroupLike) {
-      replyToLine(event.replyToken, '目前我先支援文字訊息，圖片、貼圖、語音之後可以再加。');
+      replyToLine(event.replyToken, getBotTextUnsupportedMessage_());
     }
     return;
   }
@@ -110,31 +111,16 @@ function handleLineEvent(event) {
   // ======================================================
   // Pending Reply 優先交付
   //
-  // V6 設計：有 pending reply 時，任何文字訊息都會觸發交付。
-  // v1.7 保留這個設計。
-  //
-  // 但 v1.7 新增一個小補強：
-  // 如果使用者這次訊息本身也貼了網址，不能因為交付舊 pending reply 就完全忽略新網址。
-  // 所以會先把新網址也 enqueue，然後把「舊 pending 交付」與「新網址已收到」合併成同一則回覆。
+  // 有 pending reply 時，任何文字訊息都會觸發交付。
+  // 如果使用者這次訊息本身也貼了網址，會先把新網址 enqueue，
+  // 然後把「舊 pending 交付」與「新網址已收到」合併成同一則回覆。
   // ======================================================
 
   const pendingReply = getAndDeletePendingReply(conversationId);
 
   if (pendingReply && pendingReply.text) {
     const enqueueResult = enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
-
-    let deliveryText = [
-      '剛才的任務整理好了：',
-      '',
-      pendingReply.text
-    ].join('\n');
-
-    if (enqueueResult && enqueueResult.ok) {
-      deliveryText += [
-        '',
-        '另外也收到你這次貼的網址，我會接著處理'
-      ].join('\n');
-    }
+    const deliveryText = getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok));
 
     replyToLine(event.replyToken, deliveryText);
     logAssistantReplyToSheet(
@@ -148,12 +134,7 @@ function handleLineEvent(event) {
   }
 
   // ======================================================
-  // v1.7：群組一般訊息如果沒有觸發詞，但含網址，也要自動進入快讀摘要。
-  //
-  // 這是本版最重要的行為改變：
-  // 貼網址 = 自動進入 WebSummary 素材池
-  // 不需要 #小浣
-  // 不需要 #讀網址
+  // 群組一般訊息如果沒有觸發詞，但含網址，也會自動進入快讀摘要。
   // ======================================================
 
   if (isGroupLike && !hasTriggerPrefix(userText)) {
@@ -167,7 +148,7 @@ function handleLineEvent(event) {
 
       const replyText = enqueueResult.ok
         ? buildWebTaskAcceptedText_(TASK_TYPE_WEB_LAZY_SUMMARY, enqueueResult.urls.length)
-        : enqueueResult.error || '我沒有找到可以讀取的網址';
+        : enqueueResult.error || getBotTextNoReadableUrl_();
 
       replyToLine(event.replyToken, replyText);
       logAssistantReplyToSheet(event, conversationId, replyText, 'web_lazy_summary_accepted');
@@ -189,11 +170,31 @@ function handleLineEvent(event) {
     return;
   }
 
+  // #版本：回覆目前版本與本版新增功能，不呼叫 LLM。
+  if (userText === '#版本' || userText === '#小浣 版本') {
+    const versionText = getBotVersionText_();
+
+    replyToLine(event.replyToken, versionText);
+    logAssistantReplyToSheet(event, conversationId, versionText, 'version');
+
+    return;
+  }
+
+  // #版本紀錄：回覆主要版本更新摘要，不呼叫 LLM。
+  if (userText === '#版本紀錄' || userText === '#小浣 版本紀錄') {
+    const versionHistoryText = getBotVersionHistoryText_();
+
+    replyToLine(event.replyToken, versionHistoryText);
+    logAssistantReplyToSheet(event, conversationId, versionHistoryText, 'version_history');
+
+    return;
+  }
+
   // #reset：只清除短期多輪記憶，不刪 Google Sheet
   if (userText === '#reset' || userText === '#小浣 reset') {
     clearConversationHistory(conversationId);
 
-    const resetText = '已清除這個聊天室的短期對話記憶。長期紀錄不會被刪除';
+    const resetText = getBotTextResetDone_();
 
     replyToLine(event.replyToken, resetText);
     logAssistantReplyToSheet(event, conversationId, resetText, 'reset');
@@ -203,16 +204,7 @@ function handleLineEvent(event) {
 
   // #清空紀錄：先提示，不直接刪除
   if (userText === '#清空紀錄') {
-    const warningText = [
-      '你正在準備清空這個聊天室的長期紀錄',
-      '',
-      '這個動作會刪除目前聊天室在 ConversationLog 裡的歷史訊息。',
-      '不會影響其他私訊、其他群組，也不會刪除 WeeklySummary 封存摘要。',
-      '也不會刪除 WebSummary 裡已保存的網址快讀摘要。',
-      '',
-      '如果確定要清空，請輸入：',
-      '#清空紀錄 確認'
-    ].join('\n');
+    const warningText = getBotTextClearWarning_();
 
     replyToLine(event.replyToken, warningText);
     logAssistantReplyToSheet(event, conversationId, warningText, 'clear_warning');
@@ -225,14 +217,7 @@ function handleLineEvent(event) {
     const deletedCount = deleteConversationLogs(conversationId);
     clearConversationHistory(conversationId);
 
-    const doneText = [
-      '已清空這個聊天室的 ConversationLog 長期紀錄',
-      '同時也清除了短期對話記憶。',
-      '',
-      '刪除筆數：' + deletedCount,
-      '',
-      '提醒：WeeklySummary 封存摘要與 WebSummary 網址快讀摘要不會被刪除。'
-    ].join('\n');
+    const doneText = getBotTextClearDone_(deletedCount);
 
     replyToLine(event.replyToken, doneText);
     logAssistantReplyToSheet(event, conversationId, doneText, 'clear_done');
@@ -245,8 +230,8 @@ function handleLineEvent(event) {
     const noteText = userText.replace('#記錄', '').trim();
 
     const replyText = noteText
-      ? '已記錄這段重點。'
-      : '你可以用「#記錄 內容」把重要資訊寫進紀錄。';
+      ? getBotTextNoteSaved_()
+      : getBotTextNoteEmpty_();
 
     replyToLine(event.replyToken, replyText);
     logAssistantReplyToSheet(event, conversationId, replyText, 'note');
@@ -262,7 +247,7 @@ function handleLineEvent(event) {
       archiveReply = archiveWeeklyTopics(event, conversationId);
     } catch (error) {
       console.error('archiveWeeklyTopics error:', error && error.stack ? error.stack : error);
-      archiveReply = '封存本週話題時發生問題，可以稍後再試一次。';
+      archiveReply = getBotTextArchiveError_();
     }
 
     replyToLine(event.replyToken, archiveReply);
@@ -282,7 +267,7 @@ function handleLineEvent(event) {
       const recentText = getRecentConversationText(conversationId, recentCount, false);
 
       if (!recentText) {
-        aiReply = '目前還沒有足夠的 Google Sheet 對話紀錄可以整理。';
+        aiReply = getBotTextNoRecentSummaryData_();
       } else {
         aiReply = callDeepSeekWithMemory(
           conversationId,
@@ -296,7 +281,7 @@ function handleLineEvent(event) {
       const recentText = getRecentConversationText(conversationId, recentCount, false);
 
       if (!recentText) {
-        aiReply = '目前還沒有足夠的 Google Sheet 對話紀錄可以回顧。';
+        aiReply = getBotTextNoRecentReviewData_();
       } else {
         aiReply = callDeepSeekWithMemory(
           conversationId,
@@ -321,7 +306,7 @@ function handleLineEvent(event) {
 
         aiReply = enqueueResult.ok
           ? buildWebTaskAcceptedText_(TASK_TYPE_PROGRAM_TOPIC_ANALYSIS, enqueueResult.urls.length)
-          : enqueueResult.error || '我沒有找到可以讀取的網址。';
+          : enqueueResult.error || getBotTextNoReadableUrl_();
 
       } else {
         // 沒貼網址時，讓 LLM 根據最近對話、網址快讀與封存記憶判斷要分析哪個主題。
@@ -329,7 +314,7 @@ function handleLineEvent(event) {
       }
 
     } else {
-      // v1.7：任何含網址的一般指令，預設走「快讀摘要」
+      // 任何含網址的一般指令，預設走「快讀摘要」。
       // 只有 #節目話題分析 才走深度分析。
       if (shouldUseWebReading(commandInfo.userPrompt)) {
         const enqueueResult = enqueueWebTask(
@@ -341,7 +326,7 @@ function handleLineEvent(event) {
 
         aiReply = enqueueResult.ok
           ? buildWebTaskAcceptedText_(TASK_TYPE_WEB_LAZY_SUMMARY, enqueueResult.urls.length)
-          : enqueueResult.error || '我沒有找到可以讀取的網址。';
+          : enqueueResult.error || getBotTextNoReadableUrl_();
 
       } else {
         aiReply = callDeepSeekWithMemory(
@@ -356,7 +341,7 @@ function handleLineEvent(event) {
     console.error('AI call error stack:', error && error.stack ? error.stack : error);
     console.error('AI call error message:', error && error.message ? error.message : String(error));
 
-    aiReply = '我剛剛連接 AI、讀取網頁或讀取紀錄時發生問題，可以稍後再試一次。';
+    aiReply = getBotTextAiError_();
   }
 
   replyToLine(event.replyToken, aiReply);

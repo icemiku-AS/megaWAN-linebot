@@ -2,13 +2,14 @@
 // 10_TopicFeatures.gs
 // 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
 //
-// 小浣 LINE Bot v1.9 Service Split Edition
+// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
 //
 // 設計說明：
 // 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
 // 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
 // 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
 // 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
+// 5. v1.9.2 起，不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
 // ======================================================
 
 // ======================================================
@@ -30,7 +31,7 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt)
   const recentWeeklySummaryText = getRecentWeeklySummaryText(conversationId, 8);
 
   if (!recentConversationText && !recentWebSummaryText && !recentWeeklySummaryText) {
-    return '目前還沒有足夠的對話紀錄、網址快讀摘要或封存記憶可以分析。';
+    return getBotTextNoTopicContextForAnalysis_();
   }
 
   const prompt = [
@@ -94,7 +95,7 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
   const recentWeeklySummaryText = getRecentWeeklySummaryText(conversationId, 8);
 
   if (!recentConversationText && !recentWebSummaryText && !recentWeeklySummaryText) {
-    return '目前還沒有足夠的聊天紀錄、網址快讀摘要或封存記憶可以統整。';
+    return getBotTextNoTopicContextForIntegration_();
   }
 
   const prompt = [
@@ -147,7 +148,7 @@ function archiveWeeklyTopics(event, conversationId) {
   const recentItems = getRecentConversationItems(conversationId, recentCount, false);
 
   if (!recentItems || recentItems.length === 0) {
-    return '目前還沒有足夠的對話紀錄可以封存。';
+    return getBotTextArchiveNoData_();
   }
 
   const recentText = recentItems.map(function(item, index) {
@@ -211,18 +212,7 @@ function archiveWeeklyTopics(event, conversationId) {
     recentItems.length
   ]);
 
-  return [
-    '已封存本週話題到 WeeklySummary。',
-    '',
-    '主題：' + (archiveJson.topicTitle || '未命名主題'),
-    '',
-    '摘要：',
-    archiveJson.summary || '已建立摘要，但內容較短。',
-    '',
-    '封存訊息數：' + recentItems.length,
-    '',
-    '之後我可以把這些封存摘要當成極簡長期記憶使用。'
-  ].join('\n');
+  return getBotTextArchiveDone_(archiveJson, recentItems.length);
 }
 
 function parseArchiveJson(text) {

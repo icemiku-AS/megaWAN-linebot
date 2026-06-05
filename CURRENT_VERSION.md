@@ -21,7 +21,7 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.9.1 Structured Gemini Output Edition  
+Current Version: v1.9.2 Humanized System Reply Edition  
 Current Branch: main  
 Source of Truth: GitHub main branch latest commit
 
@@ -53,6 +53,7 @@ Source of Truth: GitHub main branch latest commit
 - `09_DeepSeekService.gs`
 - `10_TopicFeatures.gs`
 - `11_Prompts.gs`
+- `12_ResponseTexts.gs`
 
 ---
 
@@ -79,7 +80,7 @@ Source of Truth: GitHub main branch latest commit
 讀取 `99_changelog.md` 時，請注意：
 
 - 舊版段落不代表目前實作。
-- 不可將 v1.6、v1.7、v1.8、v1.9.0 等歷史版本描述直接視為目前程式邏輯。
+- 不可將 v1.6、v1.7、v1.8、v1.9.0、v1.9.1 等歷史版本描述直接視為目前程式邏輯。
 - 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
 - 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
 
@@ -156,10 +157,27 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 9. DeepSeek API 相關流程由 `09_DeepSeekService.gs` 處理
 10. 節目企劃功能由 `10_TopicFeatures.gs` 處理
 11. Prompt 內容集中於 `11_Prompts.gs`
+12. 不經過 LLM 的固定回覆、版本資訊與版本紀錄集中於 `12_ResponseTexts.gs`
 
 ---
 
-## v1.9.1 Key Difference
+## v1.9.2 Key Difference
+
+v1.9.2 的主要變更集中在固定回覆文字與版本查詢。
+
+本版新增：
+
+1. 新增 `12_ResponseTexts.gs`，集中管理不經過 LLM 的固定回覆文字。
+2. 新增 `#版本` 指令，可查看目前版本與本版新增功能。
+3. 新增 `#版本紀錄` 指令，可查看主要版本更新摘要。
+4. 調整任務接收、pending reply、reset、清空紀錄、記錄、錯誤提示、封存完成等固定回覆語氣。
+5. 保留既有 LINE 指令流程、Sheet 架構與模型呼叫方式。
+
+此版本不改變 Google Sheet 主要欄位、不導入 Node.js / npm、不改變 DeepSeek 或 Gemini 模型設定，主要目標是讓非 LLM 回覆也維持小浣一致的人格與可維護性。
+
+---
+
+## Previous Key Difference
 
 v1.9.1 的主要變更集中在 `08_GeminiService.gs`。
 
@@ -170,8 +188,6 @@ v1.9.1 的主要變更集中在 `08_GeminiService.gs`。
 3. Gemini JSON generation config 集中於 `buildGeminiJsonGenerationConfig_()`。
 4. 新增 normalizer helper，對字串、字串陣列、數字與 enum 做最後防守。
 5. 保留 `parseJsonObjectLoose()` 作為 fallback，避免偶發格式問題造成任務中斷。
-
-此版本不改變 LINE 指令、不改變 Sheet 主要欄位、不新增使用者可見功能，主要目標是提升 Gemini 回傳資料的穩定性與後續工具串接效率。
 
 ---
 
@@ -194,5 +210,5 @@ v1.9.1 的主要變更集中在 `08_GeminiService.gs`。
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.9.1 Structured Gemini Output Edition  
+Last Confirmed Version: v1.9.2 Humanized System Reply Edition  
 Last Confirmed Date: 2026-06-05

@@ -1,4 +1,20 @@
 2026-06-05
+v1.9.2 Humanized System Reply Edition
+- 以 v1.9.1 Structured Gemini Output Edition 為基礎，維持 Google Apps Script 分檔架構、既有 LINE 指令流程與主要 Sheet 架構。
+- 新增 12_ResponseTexts.gs，集中管理不經過 LLM 的固定回覆文字、版本資訊與版本紀錄。
+- 新增 #版本 指令，可回覆目前版本與本次新增功能。
+- 新增 #版本紀錄 指令，可回覆主要版本更新摘要。
+- 調整任務接收、pending reply 交付、reset、清空紀錄、#記錄、錯誤提示、封存完成等固定回覆語氣。
+- 修改 00_Config.gs，將 #版本 / #版本紀錄 加入 TRIGGER_PREFIXES。
+- 修改 01_Main.gs，加入 #版本 / #版本紀錄 指令處理，並改用 12_ResponseTexts.gs 的固定文案。
+- 修改 02_LineCommands.gs，新增 version log mode 與 help 說明。
+- 修改 07_WebTaskQueue.gs，調整網址任務失敗與快讀結果格式。
+- 修改 10_TopicFeatures.gs，調整沒有素材與封存完成時的固定提示。
+- 同步更新 README.md 與 CURRENT_VERSION.md。
+
+// ==================================================
+
+2026-06-05
 v1.9.1 Structured Gemini Output Edition
 - 以 v1.9.0 Service Split Edition 為基礎，維持 Google Apps Script 分檔架構與既有 LINE 指令流程。
 - 修改 08_GeminiService.gs，將 Gemini 網頁快讀摘要與 Gemini 網頁正文抽取改為 structured output schema。
