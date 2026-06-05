@@ -2,7 +2,7 @@
 
 本文件是 MEGA浣 / 小浣 專案的「現行版本判定文件」。
 
-本文件主要供 AI 助手、維護者、協作者在讀取 GitHub 專案時，快速判斷哪一批檔案代表目前正式架構，避免誤用舊版對話、舊版備份檔案或 `99_Changelog.md` 中的歷史內容。
+本文件主要供 AI 助手、維護者、協作者在讀取 GitHub 專案時，快速判斷哪一批檔案代表目前正式架構，避免誤用舊版對話、舊版備份檔案或 `99_changelog.md` 中的歷史內容。
 
 ---
 
@@ -21,7 +21,7 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.9.0 Service Split Edition  
+Current Version: v1.9.1 Structured Gemini Output Edition  
 Current Branch: main  
 Source of Truth: GitHub main branch latest commit
 
@@ -32,7 +32,7 @@ Source of Truth: GitHub main branch latest commit
 1. GitHub main branch 最新 commit 中的實際 `.gs` 程式碼
 2. `CURRENT_VERSION.md`
 3. `README.md`
-4. `99_Changelog.md` 的最新版本段落
+4. `99_changelog.md` 的最新版本段落
 5. 舊版 changelog、舊對話紀錄、過去上傳檔案、歷史備份內容
 
 ---
@@ -61,25 +61,25 @@ Source of Truth: GitHub main branch latest commit
 以下檔案為輔助文件：
 
 - `README.md`
-- `99_Changelog.md`
+- `99_changelog.md`
 - `CURRENT_VERSION.md`
 
 其中：
 
 - `README.md` 用於說明目前架構、檔案責任與維護方式。
-- `99_Changelog.md` 用於保存歷史版本紀錄。
+- `99_changelog.md` 用於保存歷史版本紀錄。
 - `CURRENT_VERSION.md` 用於明確宣告目前版本與判定規則。
 
 ---
 
 ## Changelog Reading Rule
 
-`99_Changelog.md` 僅作為歷史版本紀錄。
+`99_changelog.md` 僅作為歷史版本紀錄。
 
-讀取 `99_Changelog.md` 時，請注意：
+讀取 `99_changelog.md` 時，請注意：
 
 - 舊版段落不代表目前實作。
-- 不可將 v1.6、v1.7、v1.8 等歷史版本描述直接視為目前程式邏輯。
+- 不可將 v1.6、v1.7、v1.8、v1.9.0 等歷史版本描述直接視為目前程式邏輯。
 - 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
 - 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
 
@@ -126,7 +126,7 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 1. 以 GitHub main branch 最新 commit 為準。
 2. 優先讀取 `CURRENT_VERSION.md` 與 `README.md`。
 3. 再讀取現行 `.gs` 程式碼。
-4. `99_Changelog.md` 只作為歷史參考。
+4. `99_changelog.md` 只作為歷史參考。
 5. 不要使用舊對話、舊記憶、過去上傳檔案來覆蓋 GitHub 最新版本。
 6. 若本次任務需要修改程式，請先提出修改方案，不要直接假設舊版架構仍存在。
 7. 若 GitHub 檔案中找不到某個函式、常數或流程，請先指出缺少依據，不要根據舊記憶補寫。
@@ -159,6 +159,22 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 
 ---
 
+## v1.9.1 Key Difference
+
+v1.9.1 的主要變更集中在 `08_GeminiService.gs`。
+
+本版將 Gemini 網頁快讀摘要與 Gemini 網頁正文抽取改為 structured output schema：
+
+1. 快讀摘要 schema 集中於 `getGeminiLazySummarySchema_()`。
+2. 正文抽取 schema 集中於 `getGeminiWebExtractorSchema_()`。
+3. Gemini JSON generation config 集中於 `buildGeminiJsonGenerationConfig_()`。
+4. 新增 normalizer helper，對字串、字串陣列、數字與 enum 做最後防守。
+5. 保留 `parseJsonObjectLoose()` 作為 fallback，避免偶發格式問題造成任務中斷。
+
+此版本不改變 LINE 指令、不改變 Sheet 主要欄位、不新增使用者可見功能，主要目標是提升 Gemini 回傳資料的穩定性與後續工具串接效率。
+
+---
+
 ## Update Rule
 
 每次專案架構有重大變動時，請同步更新本文件。
@@ -178,5 +194,5 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.9.0 Service Split Edition  
+Last Confirmed Version: v1.9.1 Structured Gemini Output Edition  
 Last Confirmed Date: 2026-06-05
