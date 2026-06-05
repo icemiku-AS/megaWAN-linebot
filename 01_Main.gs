@@ -1,9 +1,14 @@
 // ======================================================
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
-// v1.8 Modular Edition
+//
+// 小浣 LINE Bot v1.9 Service Split Edition
+//
+// 維護原則：
+// 1. 本版只拆分檔案職責，不主動改變功能邏輯。
+// 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
+// 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
 // ======================================================
-
 
 function setupLogSheet() {
   const logSheet = ensureLogSheet_();
