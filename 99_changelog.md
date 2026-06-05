@@ -1,4 +1,16 @@
 2026-06-05
+v1.9.3 Gemini JSON Mode Hotfix
+- 以 v1.9.2 Humanized System Reply Edition 為基礎，維持 Google Apps Script 分檔架構、既有 LINE 指令流程與主要 Sheet 架構。
+- 修正 Gemini API 400 錯誤：generation_config.response_format.text.mime_type INVALID_ARGUMENT。
+- 修改 08_GeminiService.gs，將 Gemini generationConfig 從 responseFormat.text.mimeType/schema 退回 responseMimeType: 'application/json'。
+- 保留 getGeminiLazySummarySchema_() 與 getGeminiWebExtractorSchema_()，但暫時只作為程式端資料契約與未來升級參考，不直接送進 Gemini API。
+- 補上詳細註解，說明目前 v1beta + gemini-3.1-flash-lite 與 responseFormat.text.mimeType/schema 不相容。
+- 更新 12_ResponseTexts.gs 的 #版本 / #版本紀錄 內建版本資訊。
+- 同步更新 README.md 與 CURRENT_VERSION.md。
+
+// ==================================================
+
+2026-06-05
 v1.9.2 Humanized System Reply Edition
 - 以 v1.9.1 Structured Gemini Output Edition 為基礎，維持 Google Apps Script 分檔架構、既有 LINE 指令流程與主要 Sheet 架構。
 - 新增 12_ResponseTexts.gs，集中管理不經過 LLM 的固定回覆文字、版本資訊與版本紀錄。
