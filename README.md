@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.9 Service Split Edition
+# 小浣 LINE Bot v1.9.1 Structured Gemini Output Edition
 
 這是 MEGA浣 / 小浣 的 Google Apps Script 分檔版。
 
@@ -9,14 +9,30 @@
 
 ## 本版定位
 
-v1.9 Service Split Edition 以 v1.8 Modular Edition 為基礎，主要目標是拆分原本過於肥大的 `03_AiLogic.gs`。
+v1.9.1 Structured Gemini Output Edition 以 v1.9.0 Service Split Edition 為基礎，不改變 LINE 使用流程、不新增使用者可見指令，主要目標是強化 Gemini 回傳資料的穩定性。
 
 本版原則：
 
-1. 不主動新增功能。
-2. 不主動改變原本流程。
-3. 只依照責任邊界拆分檔案。
-4. 保留詳細註解，方便未來人工維護與 AI 重新讀取。
+1. 不主動新增使用者可見功能。
+2. 不主動改變原本 LINE 指令流程。
+3. 不改變主要 Sheet 架構。
+4. 將 Gemini 網頁快讀摘要與正文抽取改為 structured output schema。
+5. 保留詳細註解，方便未來人工維護與 AI 重新讀取。
+
+## v1.9.1 主要變更
+
+本版主要修改 `08_GeminiService.gs`：
+
+1. 新增 `getGeminiLazySummarySchema_()`，集中定義快讀摘要 JSON 結構。
+2. 新增 `getGeminiWebExtractorSchema_()`，集中定義網頁正文抽取 JSON 結構。
+3. 新增 `buildGeminiJsonGenerationConfig_()`，統一建立 Gemini JSON structured output 設定。
+4. 新增 normalizer helper：
+   - `normalizeGeminiString_()`
+   - `normalizeGeminiStringArray_()`
+   - `normalizeGeminiNumber_()`
+   - `normalizeGeminiEnum_()`
+5. 快讀摘要的 `contentTypeLabel` 與 `topicPotential` 改用 enum 防守，避免模型輸出不利程式判斷的自由文字。
+6. 保留 `parseJsonObjectLoose()` 作為 fallback，避免偶發格式問題讓排程任務整個中斷。
 
 ## 檔案配置
 
@@ -131,8 +147,12 @@ Gemini API 服務層。
 
 - Gemini 網頁快讀摘要
 - Gemini 網頁正文抽取
+- Gemini structured output schema
 - Gemini 回應文字解析
 - Gemini usage log
+
+v1.9.1 起，此檔會集中管理 Gemini structured output schema。  
+維護時請注意：schema、normalizer、函式回傳格式應互相對齊。
 
 ### `09_DeepSeekService.gs`
 
@@ -174,7 +194,7 @@ Prompt 管理層。
 - 封存 prompt
 - 一般聊天 prompt
 
-### `99_Changelog.md`
+### `99_changelog.md`
 
 版本紀錄。
 
