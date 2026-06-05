@@ -21,7 +21,7 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.9.2 Humanized System Reply Edition  
+Current Version: v1.9.3 Gemini JSON Mode Hotfix  
 Current Branch: main  
 Source of Truth: GitHub main branch latest commit
 
@@ -80,7 +80,7 @@ Source of Truth: GitHub main branch latest commit
 讀取 `99_changelog.md` 時，請注意：
 
 - 舊版段落不代表目前實作。
-- 不可將 v1.6、v1.7、v1.8、v1.9.0、v1.9.1 等歷史版本描述直接視為目前程式邏輯。
+- 不可將 v1.6、v1.7、v1.8、v1.9.0、v1.9.1、v1.9.2 等歷史版本描述直接視為目前程式邏輯。
 - 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
 - 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
 
@@ -161,7 +161,23 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 
 ---
 
-## v1.9.2 Key Difference
+## v1.9.3 Key Difference
+
+v1.9.3 是 Gemini JSON mode 相容性 hotfix。
+
+本版修正：
+
+1. 修改 `08_GeminiService.gs` 的 `buildGeminiJsonGenerationConfig_()`。
+2. 將 Gemini generationConfig 從 `responseFormat.text.mimeType/schema` 退回 `responseMimeType: 'application/json'`。
+3. 保留 schema 函式作為程式端資料契約與未來升級參考，但不再直接送進 Gemini API。
+4. 修正 v1.9.1 / v1.9.2 中 Gemini API 400 `generation_config.response_format.text.mime_type INVALID_ARGUMENT` 導致網址快讀與正文抽取失敗的問題。
+5. 更新 `12_ResponseTexts.gs` 的 `#版本` 與 `#版本紀錄` 內建資料。
+
+此版本不改變 Google Sheet 主要欄位、不導入 Node.js / npm、不改變 DeepSeek 或 Gemini 模型設定，主要目標是恢復 Gemini 網頁讀取流程的穩定性。
+
+---
+
+## Previous Key Difference
 
 v1.9.2 的主要變更集中在固定回覆文字與版本查詢。
 
@@ -172,22 +188,6 @@ v1.9.2 的主要變更集中在固定回覆文字與版本查詢。
 3. 新增 `#版本紀錄` 指令，可查看主要版本更新摘要。
 4. 調整任務接收、pending reply、reset、清空紀錄、記錄、錯誤提示、封存完成等固定回覆語氣。
 5. 保留既有 LINE 指令流程、Sheet 架構與模型呼叫方式。
-
-此版本不改變 Google Sheet 主要欄位、不導入 Node.js / npm、不改變 DeepSeek 或 Gemini 模型設定，主要目標是讓非 LLM 回覆也維持小浣一致的人格與可維護性。
-
----
-
-## Previous Key Difference
-
-v1.9.1 的主要變更集中在 `08_GeminiService.gs`。
-
-本版將 Gemini 網頁快讀摘要與 Gemini 網頁正文抽取改為 structured output schema：
-
-1. 快讀摘要 schema 集中於 `getGeminiLazySummarySchema_()`。
-2. 正文抽取 schema 集中於 `getGeminiWebExtractorSchema_()`。
-3. Gemini JSON generation config 集中於 `buildGeminiJsonGenerationConfig_()`。
-4. 新增 normalizer helper，對字串、字串陣列、數字與 enum 做最後防守。
-5. 保留 `parseJsonObjectLoose()` 作為 fallback，避免偶發格式問題造成任務中斷。
 
 ---
 
@@ -210,5 +210,5 @@ v1.9.1 的主要變更集中在 `08_GeminiService.gs`。
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.9.2 Humanized System Reply Edition  
+Last Confirmed Version: v1.9.3 Gemini JSON Mode Hotfix  
 Last Confirmed Date: 2026-06-05
