@@ -1,3 +1,13 @@
+2026-06-05
+v1.9.0 Service Split Edition
+- 拆分原本過於肥大的 03_AiLogic.gs。
+- 新增 03_Utils.gs、04_Storage.gs、05_Memory.gs、06_WebReader.gs、07_WebTaskQueue.gs、08_GeminiService.gs、09_DeepSeekService.gs、10_TopicFeatures.gs。
+- 將原本 04_Prompts.gs 調整為 11_Prompts.gs，讓檔案順序符合系統流程。
+- 功能邏輯原則上不變，主要改善可維護性與未來擴充性。
+- 每個程式碼檔案補上責任說明與維護註解，方便未來人工或 AI 重新讀取。
+
+// ==================================================
+
 2026-06-04
 V1.7.1
 -調整小浣回覆內容，讓回答更精簡
@@ -6,7 +16,7 @@ V1.7.1
 // ==================================================
 
 
-// 版本：V7 Topic Pool Edition
+// 版本：V1.7.0 Topic Pool Edition
 //
 // 核心架構：
 // 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
@@ -35,7 +45,7 @@ V1.7.1
 // 小浣 LINE Bot on Google Apps Script
 // LINE Bot + DeepSeek API + Gemini Web Extractor + Google Sheet Log
 //
-// 版本：V6 Queue Edition
+// 版本：V1.6.2 Queue Edition
 //
 // 核心架構：
 // 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
@@ -54,6 +64,7 @@ V1.7.1
 // 4. SPREADSHEET_ID
 // ======================================================
 2026-06-04
+v1.6.1
 - 小甜正式改名為小浣
 - 調整群組回覆口吻
 - 移除 LINE markdown 格式
@@ -61,7 +72,7 @@ V1.7.1
 // ======================================================
 // LINE Bot + DeepSeek API + Gemini Web Extractor + Google Sheet Log
 //
-// 版本：V6 Queue Edition
+// 版本：V1.6.0 Queue Edition
 //
 // 核心架構：
 // 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
@@ -82,7 +93,7 @@ V1.7.1
 // 小甜 LINE Bot on Google Apps Script
 // LINE Bot + DeepSeek API + Google Sheet Log + WeeklySummary
 //
-// 版本：V5 WebReader Integrated
+// 版本：V1.5.0 WebReader Integrated
 //
 // 功能：
 // 1. 使用 DeepSeek deepseek-v4-flash 作為主要回覆模型
@@ -99,7 +110,7 @@ V1.7.1
 // 小甜 LINE Bot on Google Apps Script
 // LINE Bot + DeepSeek API + Google Sheet Log + WeeklySummary
 //
-// 版本：V4 Integrated
+// 版本：V1.4.0 Integrated
 //
 // 功能：
 // 1. 使用 DeepSeek deepseek-v4-flash
