@@ -1,3 +1,17 @@
+2026-06-07
+v1.10.2 Secretary Cleanup Edition
+- 以 v1.10.1 News Inbox Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 移除 #摘要、#摘要最近、#回顧最近、#標題，降低指令重疊與維護成本。
+- 移除 #讀網址，保留 #懶人包 作為唯一明確網址快讀入口。
+- 個人聊天室直接貼網址時，改與群組一致，收進 NewsUrlQueue / NewsInbox，不再自動走 WebTaskQueue 快讀摘要。
+- 清理 01_Main.gs 中已廢止的 summary_recent / review_recent 分支。
+- 清理 02_LineCommands.gs 中已廢止的指令解析、log mode、help 內容與 extractNumber()。
+- 清理 09_DeepSeekService.gs 中不再使用的 summary / review / title 模式參數。
+- 清理 11_Prompts.gs 中不再使用的 summary / review / title prompt。
+- 更新 12_ResponseTexts.gs、13_NewsInbox.gs、README.md、CURRENT_VERSION.md。
+
+// ==================================================
+
 2026-06-06
 v1.10.1 News Inbox Hotfix
 - 以 v1.10.0 News Inbox Edition 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
