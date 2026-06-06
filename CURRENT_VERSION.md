@@ -21,12 +21,12 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.10.0 News Inbox Edition  
-Current Branch: feature/v1.10.0-news-inbox  
+Current Version: v1.10.1 News Inbox Hotfix  
+Current Branch: hotfix/v1.10.1-news-inbox-format  
 Target Branch: main  
-Source of Truth: GitHub feature branch latest commit before PR merge; after merge, GitHub main branch latest commit
+Source of Truth: GitHub hotfix branch before PR merge; after merge, GitHub main branch latest commit
 
-本專案目前以 GitHub 上本次 v1.10.0 PR 分支作為待合併版本來源。合併後，仍以 `main` branch 最新 commit 作為唯一現行程式碼來源。
+本專案目前以 GitHub 上本次 v1.10.1 hotfix 分支作為待合併版本來源。合併後，仍以 `main` branch 最新 commit 作為唯一現行程式碼來源。
 
 若本文件、README、Changelog、舊對話紀錄或先前上傳檔案之間出現矛盾，請依照下列優先順序判斷：
 
@@ -144,24 +144,20 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 
 ---
 
-## v1.10.0 Key Difference
+## v1.10.1 Key Difference
 
-v1.10.0 是 News Inbox Edition。
+v1.10.1 是 News Inbox Hotfix。
 
-本版主要變更：
+本版主要修正：
 
-1. 直接貼網址不再自動產生懶人包，而是收進 `NewsUrlQueue`。
-2. 新增 `NewsUrlQueue`，由 `processNewsUrlQueue()` time-driven trigger 背景處理，每次最多處理 2 筆。
-3. 新增 `NewsInbox`，儲存標題、網址、分類、50 字內簡介、觀點標籤、節目潛力與來源模式。
-4. 新增新聞分類：科技與 AI、社群輿論、ACG娛樂、商業財經、國際政治、生活文化、馬斯克、川普、待分類。
-5. 新增 `#本週新聞`，由 DeepSeek 整理最近 7 天 NewsInbox，只輸出分類、標題、來源網址與節目潛力。
-6. 新增 `#新聞補充`，使用者可用自然語言加網址補進 NewsInbox。
-7. 新增 `#懶人包`，作為明確網址快讀指令；`#讀網址` 保留為舊習慣。
-8. `#節目話題分析` 與 `#統整話題` 保留原定位。
+1. 修正 v1.10.0 可能把 Gemini 分類不足的結果直接寫入 `NewsInbox`，造成「待分類 / 標題是網址 / 簡介空白」仍顯示 `ok` 的問題。
+2. 自動分類若回傳無效分類、`待分類` 或內容不足，會回到 `NewsUrlQueue` 依既有規則重試；重試失敗才建立 PendingReplies 通知。
+3. `#本週新聞` 改由程式端固定排版，確保 LINE 內顯示為分類、標題、來源、節目潛力的多行格式。
+4. 保留 `#新聞補充` 的 DeepSeek 自然語言解析流程；人工補充仍可寫入 `待分類`。
 
 ---
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.10.0 News Inbox Edition  
+Last Confirmed Version: v1.10.1 News Inbox Hotfix  
 Last Confirmed Date: 2026-06-06
