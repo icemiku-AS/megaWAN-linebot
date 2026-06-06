@@ -1,12 +1,13 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.10.0 News Inbox Edition：新聞素材池、新聞網址佇列、#本週新聞、#新聞補充。
+// v1.10.1 News Inbox Hotfix：新聞素材池、新聞網址佇列、#本週新聞、#新聞補充。
 //
 // 維護重點：
 // 1. 直接貼網址只收件分類，不產生懶人包。
 // 2. NewsUrlQueue 用 time-driven trigger 慢慢處理，每次最多 2 筆。
-// 3. Gemini 負責自動網址入庫分類；DeepSeek 負責 #本週新聞 排版與 #新聞補充 解析。
-// 4. 本檔盡量不改動舊 WebTaskQueue，避免影響 #讀網址 / #懶人包 / #節目話題分析。
+// 3. Gemini 負責自動網址入庫分類；DeepSeek 負責 #新聞補充 解析。
+// 4. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
+// 5. 本檔盡量不改動舊 WebTaskQueue，避免影響 #讀網址 / #懶人包 / #節目話題分析。
 // ======================================================
 
 const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '馬斯克', '川普', '待分類'];
@@ -107,6 +108,15 @@ function processSingleNewsUrlTask_(task) {
     }
 
     const classified = callGeminiNewsInboxClassifier_(task.url, rawPage.rawHtml, rawPage.contentType, task.userPrompt);
+
+    // v1.10.1 Hotfix：
+    // v1.10.0 會把 Gemini 輸出異常或內容不足的結果正規化成「待分類」後直接寫入 NewsInbox，
+    // 實際使用時會造成大量「待分類 / 標題是網址 / 簡介空白」的 ok 資料。
+    // 這裡把這類結果視為「分類未完成」，讓它回到 queue 重試；重試仍失敗才走 PendingReplies。
+    if (isWeakAutoNewsClassification_(classified, task.url)) {
+      throw new Error('Gemini 新聞分類結果不足，暫不寫入 NewsInbox，改回 NewsUrlQueue 重試。');
+    }
+
     saveNewsInboxItem_({ conversationId: task.conversationId, sourceType: task.sourceType, userId: task.userId, groupId: task.groupId, roomId: task.roomId, url: task.url, title: classified.title, category: classified.category, brief: classified.brief, angle: classified.angle, topicPotential: classified.topicPotential, sourceMode: 'auto', status: 'ok', errorText: '' });
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', new Date());
@@ -163,6 +173,7 @@ function callGeminiNewsInboxClassifier_(url, rawHtml, contentType, originalMessa
     '如果核心主體是 Elon Musk、Tesla、SpaceX、X、xAI、Neuralink，優先分類為馬斯克。',
     '如果核心主體是 Donald Trump、川普政府、川普政策、川普選舉、川普司法或其公開發言，優先分類為川普。',
     'brief 必須 50 字以內。angle 是 12 字以內觀點標籤，可空白。topicPotential 只能是低、中、高。',
+    '如果無法判斷分類，category 才能用待分類；但仍必須盡量給出 title 與 brief。',
     '只輸出合法 JSON，不要 Markdown，不要解釋。',
     '{"title":"","category":"科技與 AI","brief":"50字以內簡介","angle":"","topicPotential":"中"}'
   ].join('\n');
@@ -179,7 +190,18 @@ function callGeminiNewsInboxClassifier_(url, rawHtml, contentType, originalMessa
   const parsed = parseJsonObjectLoose(extractGeminiText(json));
   if (!parsed) throw new Error('Gemini 新聞分類回傳格式不是合法 JSON。');
 
-  return { title: normalizeGeminiString_(parsed.title) || url, category: normalizeNewsCategory_(parsed.category), brief: normalizeGeminiString_(parsed.brief).slice(0, 80), angle: normalizeGeminiString_(parsed.angle).slice(0, 20), topicPotential: normalizeNewsTopicPotential_(parsed.topicPotential) };
+  const rawCategory = String(parsed.category || '').trim();
+  const rawTopicPotential = String(parsed.topicPotential || '').trim();
+
+  return {
+    title: normalizeGeminiString_(parsed.title) || url,
+    category: normalizeNewsCategory_(rawCategory),
+    rawCategory: rawCategory,
+    brief: normalizeGeminiString_(parsed.brief).slice(0, 80),
+    angle: normalizeGeminiString_(parsed.angle).slice(0, 20),
+    topicPotential: normalizeNewsTopicPotential_(rawTopicPotential),
+    rawTopicPotential: rawTopicPotential
+  };
 }
 
 function normalizeNewsCategory_(value) {
@@ -190,6 +212,30 @@ function normalizeNewsCategory_(value) {
 function normalizeNewsTopicPotential_(value) {
   const text = String(value || '').trim();
   return NEWS_TOPIC_POTENTIAL_VALUES.indexOf(text) >= 0 ? text : '中';
+}
+
+function isWeakAutoNewsClassification_(classified, originalUrl) {
+  const category = String(classified && classified.category ? classified.category : '').trim();
+  const rawCategory = String(classified && classified.rawCategory ? classified.rawCategory : '').trim();
+  const title = String(classified && classified.title ? classified.title : '').trim();
+  const brief = String(classified && classified.brief ? classified.brief : '').trim();
+  const angle = String(classified && classified.angle ? classified.angle : '').trim();
+
+  // Gemini 沒有回傳合法分類時，不要悄悄落到「待分類」後直接入庫。
+  if (!rawCategory || NEWS_INBOX_CATEGORIES.indexOf(rawCategory) < 0) return true;
+
+  // 自動流程若回傳「待分類」，通常代表模型沒有讀懂內容或輸出品質不足；
+  // 讓 queue 重試，比把未分類資料寫入 NewsInbox 更安全。
+  if (category === '待分類') return true;
+
+  // 標題是網址、簡介又空白時，幾乎等同沒有完成分類。
+  const titleLooksLikeUrl = /^https?:\/\//i.test(title) || title === originalUrl;
+  if (titleLooksLikeUrl && !brief && !angle) return true;
+
+  // 標題與簡介都沒有實質內容時，也回到 queue。
+  if (!title && !brief) return true;
+
+  return false;
 }
 
 function saveNewsInboxItem_(item) {
@@ -233,20 +279,77 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
 }
 
 function buildWeeklyNewsDigestWithDeepSeek_(items) {
-  const prompt = [
-    '你是 Podcast「現正熱潮中」的新聞素材秘書，不是共同主持人，也不是評論者。',
-    '請把以下 NewsInbox 素材依分類整理成「本週新聞素材整理」。',
-    '只做整理、分組與排版；不要評論，不要延伸分析，不要寫可聊角度。',
-    '每筆只輸出：標題、來源、節目潛力。來源直接使用網址。',
-    '如果有觀點標籤，請放在標題後方括號內。沒有素材的分類不要顯示。',
-    '同分類內依節目潛力高、中、低排序。不要 Markdown，不要表格。',
-    '分類順序：' + NEWS_INBOX_CATEGORIES.join('、'),
-    '',
-    '以下是素材：',
-    buildNewsInboxItemsText_(items)
-  ].join('\n');
+  // v1.10.1 Hotfix：
+  // v1.10.0 讓 DeepSeek 自由輸出 #本週新聞，實測容易把多筆素材壓成一段文字，
+  // 在 LINE 裡閱讀成本很高。這個功能本質上只需要「分類、排序、固定格式」，
+  // 因此 hotfix 改成程式端固定排版，確保每筆都有明確換行。
+  //
+  // 函式名稱暫時保留 buildWeeklyNewsDigestWithDeepSeek_，避免影響其他呼叫點；
+  // 之後若要整理命名，可在小版本中改成 buildWeeklyNewsDigestText_。
+  return formatWeeklyNewsDigest_(items);
+}
 
-  return callDeepSeekApi_([{ role: 'system', content: '你是小浣的新聞素材整理子任務。請精準整理，不要閒聊。' }, { role: 'user', content: prompt }], 'integrate_topics');
+function formatWeeklyNewsDigest_(items) {
+  const grouped = {};
+  NEWS_INBOX_CATEGORIES.forEach(function(category) {
+    if (category !== '待分類') grouped[category] = [];
+  });
+  grouped['待分類'] = [];
+
+  items.forEach(function(item) {
+    const category = normalizeNewsCategory_(item.category);
+    if (!grouped[category]) grouped[category] = [];
+    grouped[category].push(item);
+  });
+
+  const blocks = ['本週新聞素材整理'];
+  let sectionIndex = 1;
+
+  NEWS_INBOX_CATEGORIES.forEach(function(category) {
+    const list = grouped[category] || [];
+    if (!list.length) return;
+
+    list.sort(compareNewsItemsByPotential_);
+    const lines = [toChineseSectionNumber_(sectionIndex) + '、' + category];
+
+    list.forEach(function(item, index) {
+      const title = formatNewsItemTitle_(item);
+      lines.push((index + 1) + '. ' + title);
+      lines.push('   來源：' + sanitizeWeeklyNewsLine_(item.url || ''));
+      lines.push('   節目潛力：' + normalizeNewsTopicPotential_(item.topicPotential));
+      if (index < list.length - 1) lines.push('');
+    });
+
+    blocks.push(lines.join('\n'));
+    sectionIndex++;
+  });
+
+  if (blocks.length === 1) return getBotTextWeeklyNewsNoData_();
+  return blocks.join('\n\n');
+}
+
+function compareNewsItemsByPotential_(a, b) {
+  const scoreMap = { '高': 3, '中': 2, '低': 1 };
+  const scoreA = scoreMap[normalizeNewsTopicPotential_(a.topicPotential)] || 2;
+  const scoreB = scoreMap[normalizeNewsTopicPotential_(b.topicPotential)] || 2;
+  if (scoreA !== scoreB) return scoreB - scoreA;
+  return String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hant');
+}
+
+function formatNewsItemTitle_(item) {
+  const title = sanitizeWeeklyNewsLine_(item.title || '未命名素材');
+  const angle = sanitizeWeeklyNewsLine_(item.angle || '');
+  if (!angle || angle === '無') return title;
+  return title + '（' + angle + '）';
+}
+
+function sanitizeWeeklyNewsLine_(value) {
+  return String(value || '').replace(/\s+/g, ' ').trim();
+}
+
+function toChineseSectionNumber_(index) {
+  const numbers = ['一', '二', '三', '四', '五', '六', '七', '八', '九', '十'];
+  return numbers[index - 1] || String(index);
 }
 
 function handleManualNewsSupplement_(event, conversationId, userText) {
