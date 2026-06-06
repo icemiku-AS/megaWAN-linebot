@@ -1,3 +1,20 @@
+2026-06-06
+v1.10.0 News Inbox Edition
+- 以 v1.9.3 Gemini JSON Mode Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 將「群組直接貼網址」從自動快讀懶人包改為 NewsInbox 新聞素材池收件分類。
+- 新增 13_NewsInbox.gs，集中管理 NewsUrlQueue、NewsInbox、#本週新聞、#新聞補充。
+- 新增 NewsUrlQueue Sheet，直接貼網址會先進佇列，由 processNewsUrlQueue() 背景排程處理。
+- NewsUrlQueue 每次 trigger 最多處理 2 筆，降低 UrlFetchApp / Gemini 連續呼叫壓力。
+- 新增 NewsInbox Sheet，儲存標題、網址、分類、50 字內簡介、觀點標籤、節目潛力、來源模式。
+- 新聞分類固定為：科技與 AI、社群輿論、ACG娛樂、商業財經、國際政治、生活文化、馬斯克、川普、待分類。
+- 直接貼網址成功入隊後只回覆收件，不再建立成功 pending reply；若網址讀不到或重試失敗，才建立 PendingReplies 通知使用者。
+- 新增 #本週新聞，讀取最近 7 天 NewsInbox，由 DeepSeek 做秘書式整理，只輸出分類、標題、來源網址與節目潛力。
+- 新增 #新聞補充，使用者可用自然語言加網址補充素材，由 DeepSeek 解析後寫入 NewsInbox。
+- 新增 #懶人包 作為明確網址快讀指令；#讀網址 保留為舊習慣。
+- 同步更新 00_Config.gs、01_Main.gs、02_LineCommands.gs、12_ResponseTexts.gs、README.md、CURRENT_VERSION.md。
+
+// ==================================================
+
 2026-06-05
 v1.9.3 Gemini JSON Mode Hotfix
 - 以 v1.9.2 Humanized System Reply Edition 為基礎，維持 Google Apps Script 分檔架構、既有 LINE 指令流程與主要 Sheet 架構。
@@ -118,48 +135,3 @@ v1.6.1
 // 核心架構：
 // 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
 // 2. #讀網址 或指令中含網址：
-//    - 立刻回覆：「收到你的網址摘要了，我先處理。」
-//    - 任務寫入 WebTaskQueue
-//    - 由 time-driven trigger 背景處理
-//    - 處理完成後寫入 PendingReplies
-//    - 下次同聊天室有任何文字訊息時，優先用新的 replyToken 交付結果
-//    - 交付後直接刪除 PendingReplies 該筆資料，避免跟後續任務混淆
-//
-// 必要 Script Properties：
-// 1. LINE_CHANNEL_ACCESS_TOKEN
-// 2. DEEPSEEK_API_KEY
-// 3. GEMINI_API_KEY
-// 4. SPREADSHEET_ID
-// ======================================================
-// 小甜 LINE Bot on Google Apps Script
-// LINE Bot + DeepSeek API + Google Sheet Log + WeeklySummary
-//
-// 版本：V1.5.0 WebReader Integrated
-//
-// 功能：
-// 1. 使用 DeepSeek deepseek-v4-flash 作為主要回覆模型
-// 2. 使用 Gemini 3.1 Flash-Lite 作為網頁正文抽取模型
-// 3. 支援 LINE 私訊多輪對話
-// 4. 支援 LINE 群組指令觸發，避免每句話都回覆
-// 5. 將使用者與 AI 回覆寫入 Google Sheet：ConversationLog
-// 6. 可讀取最近 N 則對話進行摘要與回顧
-// 7. 可清除短期記憶與指定聊天室長期紀錄
-// 8. 可將本週話題封存成極簡長期記憶：WeeklySummary
-// 9. 回覆時會讀取 WeeklySummary，作為過去討論脈絡
-// 10. 支援 #讀網址：UrlFetchApp 讀網頁 → Gemini 抽正文 → DeepSeek 做整理
-// ======================================================
-// 小甜 LINE Bot on Google Apps Script
-// LINE Bot + DeepSeek API + Google Sheet Log + WeeklySummary
-//
-// 版本：V1.4.0 Integrated
-//
-// 功能：
-// 1. 使用 DeepSeek deepseek-v4-flash
-// 2. 支援 LINE 私訊多輪對話
-// 3. 支援 LINE 群組指令觸發，避免每句話都回覆
-// 4. 將使用者與 AI 回覆寫入 Google Sheet：ConversationLog
-// 5. 可讀取最近 N 則對話進行摘要與回顧
-// 6. 可清除短期記憶與指定聊天室長期紀錄
-// 7. 可將本週話題封存成極簡長期記憶：WeeklySummary
-// 8. 回覆時會讀取 WeeklySummary，作為過去討論脈絡
-// ======================================================
