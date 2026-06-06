@@ -1,244 +1,44 @@
-# 小浣 LINE Bot v1.10.1 News Inbox Hotfix
+# 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
 
 這是 MEGA浣 / 小浣 的 Google Apps Script 分檔版。
 
-正式名稱：MEGA浣  
-小名：小浣  
-定位：Podcast「現正熱潮中」的 LINE 群組企劃助理。  
-形象：長著浣熊耳朵與尾巴、會從垃圾桶探出頭，把雜亂社群資訊翻成可用素材的小幫手。
+## 本版重點
 
-## 本版定位
+v1.10.2 將小浣收斂成新聞素材秘書。
 
-v1.10.1 News Inbox Hotfix 以 v1.10.0 News Inbox Edition 為基礎，修正實際使用時發現的兩個問題：
+直接貼網址會收進 NewsInbox。這個行為在群組與個人聊天室一致。
 
-1. 自動網址分類結果不足時，不應直接寫入 `NewsInbox` 變成 `待分類 / ok`。
-2. `#本週新聞` 在 LINE 內需要穩定換行，避免多筆素材被壓成一段難讀文字。
+需要快讀摘要時，請使用 #懶人包。
 
-本版原則：
+## 保留指令
 
-1. 小浣像新聞素材秘書，不是第三位共同編輯。
-2. 直接貼網址只做收件、抓取、分類、入庫。
-3. 需要快讀摘要時，使用 `#懶人包` 或 `#讀網址`。
-4. 需要本週剪報整理時，使用 `#本週新聞`。
-5. 需要人工補充讀不到的網址時，使用 `#新聞補充`。
-6. 保留 Google Apps Script 架構，不導入 Node.js / npm。
-7. 程式碼保留詳細註解，方便未來人工維護與 AI 重新讀取。
+- #本週新聞
+- #新聞補充
+- #懶人包
+- #節目話題分析
+- #統整話題
+- #封存本週話題
+- #記錄
+- #小浣
+- #help
+- #版本
+- #版本紀錄
+- #reset
+- #清空紀錄
+- #清空紀錄 確認
 
-## v1.10.1 主要修正
+## 已移除指令
 
-1. `13_NewsInbox.gs` 新增 `isWeakAutoNewsClassification_()`，自動網址分類若結果不足會回到 `NewsUrlQueue` 重試。
-2. Gemini 若回傳無效分類、`待分類`、標題是網址且簡介空白，不再直接以 `ok` 寫入 `NewsInbox`。
-3. 重試規則沿用 v1.10.0：暫時性錯誤最多重試 3 次，失敗後建立 PendingReplies 通知。
-4. `#本週新聞` 改由程式端固定排版，確保輸出為：分類、標題、來源網址、節目潛力。
-5. `#新聞補充` 保留 DeepSeek 自然語言解析；人工補充仍可寫入 `待分類`，避免使用者補件被過度擋下。
-
-## v1.10.0 主要變更
-
-1. 新增 `13_NewsInbox.gs`，集中管理新聞素材池相關流程。
-2. 新增 `NewsUrlQueue` Sheet，直接貼網址會先寫入這張佇列表。
-3. 新增 `NewsInbox` Sheet，儲存已分類新聞素材。
-4. `processNewsUrlQueue()` 每次最多處理 2 筆網址，降低 Gemini 連續呼叫壓力。
-5. Gemini 負責自動網址分類，輸出標題、分類、50 字內簡介、觀點標籤與節目潛力。
-6. `#本週新聞` 讀取最近 7 天 NewsInbox，整理分類、標題、來源網址與節目潛力。
-7. `#新聞補充` 支援自然語言補充，文字內有網址即可由 DeepSeek 判斷分類後寫入 NewsInbox。
-8. 新增 `#懶人包`，作為明確網址快讀指令；`#讀網址` 保留。
-
-## 新聞分類
-
-NewsInbox 固定分類：
-
-- 科技與 AI
-- 社群輿論
-- ACG娛樂
-- 商業財經
-- 國際政治
-- 生活文化
-- 馬斯克
-- 川普
-- 待分類
-
-分類優先順序：馬斯克 > 川普 > 其他分類 > 待分類。
+- #摘要
+- #摘要最近
+- #回顧最近
+- #標題
+- #讀網址
 
 ## 檔案配置
 
-### `00_Config.gs`
+主要程式碼仍位於 00_Config.gs 到 13_NewsInbox.gs。
 
-集中管理系統常數。
+本專案目前是 Google Apps Script 專案，不是 Node.js 專案。
 
-包含：
-
-- LINE / DeepSeek / Gemini endpoint
-- 模型名稱
-- Google Sheet 名稱
-- TaskType
-- LINE 觸發指令
-- 短期記憶設定
-- 網頁讀取限制
-- NewsInbox / NewsUrlQueue Sheet 名稱
-
-### `01_Main.gs`
-
-主要入口與主流程。
-
-包含：
-
-- `setupLogSheet()`
-- `installWebTaskQueueTrigger()`
-- `doPost(e)`
-- `handleLineEvent(event)`
-
-v1.10.0 起，群組直接貼網址會進 `NewsUrlQueue`，不再直接進 `WebTaskQueue` 快讀摘要。
-
-### `02_LineCommands.gs`
-
-LINE 指令與回覆層。
-
-包含：
-
-- 指令解析
-- mode 判斷
-- conversationId 取得
-- LINE Reply API
-- Help 文字
-
-新增指令：
-
-- `#本週新聞`
-- `#新聞補充`
-- `#懶人包`
-
-### `03_Utils.gs`
-
-通用工具層。
-
-包含：
-
-- 簡單 ID 產生
-- 寬鬆 JSON 解析
-
-### `04_Storage.gs`
-
-Google Sheet 資料層。
-
-包含：
-
-- Script Properties / Spreadsheet 入口
-- Sheet 表頭建立與相容式補欄位
-- ConversationLog / WebSummary / WeeklySummary / WebTaskQueue / PendingReplies 的讀寫
-- 最近對話與摘要讀取
-- ConversationLog 清空
-- Sheet 單格長度截斷
-
-### `05_Memory.gs`
-
-短期記憶層。
-
-包含：
-
-- CacheService 讀寫
-- 同聊天室短期多輪記憶
-- 記憶修剪
-- `#reset` 使用的清除功能
-
-### `06_WebReader.gs`
-
-網址與網頁讀取層。
-
-包含：
-
-- URL 擷取
-- 網址安全檢查
-- UrlFetchApp 抓網頁
-- HTML 輕量清理
-- 網頁正文抽取流程輔助
-- 建立送給 DeepSeek 的網頁閱讀 prompt
-
-### `07_WebTaskQueue.gs`
-
-舊網址任務與 Pending Reply 層。
-
-包含：
-
-- 建立 WebTaskQueue 任務
-- `processWebTaskQueue()` 排程處理
-- 快讀摘要任務
-- 節目話題網址分析任務
-- PendingReplies 建立與交付
-
-注意：`processWebTaskQueue()` 仍給 `#懶人包`、`#讀網址`、`#節目話題分析` 使用。
-
-### `08_GeminiService.gs`
-
-Gemini API 服務層。
-
-包含：
-
-- Gemini 網頁快讀摘要
-- Gemini 網頁正文抽取
-- Gemini schema-like 資料契約
-- Gemini JSON mode generationConfig
-- Gemini 回應文字解析
-- Gemini usage log
-
-v1.9.3 起，此檔使用 `responseMimeType: 'application/json'` 作為 Gemini JSON mode。
-
-### `09_DeepSeekService.gs`
-
-DeepSeek API 服務層。
-
-包含：
-
-- DeepSeek API 呼叫
-- 短期記憶與長期記憶組裝
-- 網頁閱讀內容交給 DeepSeek
-- temperature / max_tokens 控制
-- DeepSeek usage log
-
-### `10_TopicFeatures.gs`
-
-節目企劃功能層。
-
-包含：
-
-- `#節目話題分析`
-- `#統整話題`
-- `#封存本週話題`
-- WeeklySummary 封存 JSON 解析
-
-### `11_Prompts.gs`
-
-Prompt 管理層。
-
-包含：
-
-- 小浣基礎人格
-- 摘要模式 prompt
-- 回顧模式 prompt
-- 標題模式 prompt
-- 節目話題分析 prompt
-- 統整話題 prompt
-- 封存 prompt
-- 一般聊天 prompt
-
-### `12_ResponseTexts.gs`
-
-固定回覆文字層。
-
-包含：
-
-- 小浣目前版本資料
-- 主要版本紀錄資料
-- `#版本` 回覆文字
-
-### `13_NewsInbox.gs`
-
-新聞素材池層。
-
-包含：
-
-- `NewsUrlQueue` 初始化與處理
-- `NewsInbox` 初始化與寫入
-- Gemini 自動新聞分類
-- 自動分類品質檢查與重試
-- `#本週新聞` 固定格式排版
-- `#新聞補充` DeepSeek 自然語言解析
+99_changelog.md 只作為歷史紀錄；若文件與實際 .gs 程式碼衝突，以目前 GitHub 目標版本分支或 main branch 最新 commit 中的 .gs 為準。

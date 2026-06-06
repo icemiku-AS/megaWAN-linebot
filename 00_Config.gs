@@ -2,13 +2,13 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.10.0 News Inbox Edition
+// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
-// 4. v1.10.0 新增 NewsUrlQueue / NewsInbox，讓直接貼網址改成新聞素材池收件。
+// 4. v1.10.2 聚焦「新聞素材秘書」定位：直接貼網址收進 NewsInbox，明確指令才做懶人包或節目分析。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -18,8 +18,8 @@ const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.10.0 中 Gemini 仍負責：
-// 1. 快讀摘要：#讀網址 / #懶人包 指令使用
+// v1.10.2 中 Gemini 仍負責：
+// 1. 快讀摘要：#懶人包 指令使用
 // 2. 正文抽取：#節目話題分析 使用
 // 3. 新聞素材分類：直接貼網址進 NewsInbox 使用
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
@@ -36,10 +36,10 @@ const SHEET_NAME = 'ConversationLog';
 // 封存後的極簡長期記憶 Sheet
 const WEEKLY_SUMMARY_SHEET_NAME = 'WeeklySummary';
 
-// 網頁讀取任務佇列 Sheet：保留給 #讀網址 / #懶人包 / #節目話題分析
+// 網頁讀取任務佇列 Sheet：保留給 #懶人包 / #節目話題分析
 const WEB_TASK_QUEUE_SHEET_NAME = 'WebTaskQueue';
 
-// 新聞網址待處理佇列 Sheet：v1.10.0 直接貼網址會先進這裡
+// 新聞網址待處理佇列 Sheet：直接貼網址會先進這裡
 const NEWS_URL_QUEUE_SHEET_NAME = 'NewsUrlQueue';
 
 // 新聞素材池 Sheet：#本週新聞 的資料來源
@@ -49,7 +49,7 @@ const NEWS_INBOX_SHEET_NAME = 'NewsInbox';
 const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
 
 // 網址快讀摘要素材池
-// 這張表仍保留給 #讀網址 / #懶人包 與 #統整話題 使用
+// 這張表仍保留給 #懶人包 與 #統整話題 使用
 const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
 
 
@@ -57,7 +57,7 @@ const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
 // WebTaskQueue TaskType
 // ======================================================
 
-// #讀網址 / #懶人包：做 Gemini 快讀摘要，不做 DeepSeek 深度分析
+// #懶人包：做 Gemini 快讀摘要，不做 DeepSeek 深度分析
 const TASK_TYPE_WEB_LAZY_SUMMARY = 'web_lazy_summary';
 
 // #節目話題分析 + 網址：做 Gemini 抽取 + DeepSeek 深度節目分析
@@ -71,22 +71,18 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 群組中只有這些開頭才會觸發一般 Bot 回覆。
 // 例外：
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會自動排入 NewsInbox 新聞素材池。
-// 2. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
-// 3. v1.10.0 新增 #本週新聞 / #新聞補充 / #懶人包。
+// 2. 個人聊天室直接貼網址也走相同 NewsInbox 收件流程，方便在私訊測試群組行為。
+// 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
+// 4. v1.10.2 移除 #摘要 / #摘要最近 / #回顧最近 / #標題 / #讀網址，避免與核心素材秘書流程重疊。
 const TRIGGER_PREFIXES = [
   '#小浣',
-  '#摘要',
-  '#標題',
   '#help',
   '#reset',
   '#版本紀錄',
   '#版本',
-  '#摘要最近',
-  '#回顧最近',
   '#記錄',
   '#清空紀錄',
   '#封存本週話題',
-  '#讀網址',
   '#懶人包',
   '#本週新聞',
   '#新聞補充',

@@ -2,13 +2,14 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.10.0 News Inbox Edition
+// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. v1.10.0 起，群組直接貼網址改成 NewsInbox 收件分類；#讀網址 / #懶人包 才走快讀摘要。
-// 4. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
+// 3. v1.10.2 起，群組與個人聊天室「直接貼網址」都改成 NewsInbox 收件分類。
+// 4. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
+// 5. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // ======================================================
 
 function setupLogSheet() {
@@ -36,8 +37,8 @@ function setupLogSheet() {
 function installWebTaskQueueTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
 
-  // v1.10.0：同一個安裝函式同時管理舊 WebTaskQueue 與新 NewsUrlQueue 的排程。
-  // 保留函式名稱 installWebTaskQueueTrigger()，避免既有使用習慣失效。
+  // v1.10.2：同一個安裝函式同時管理舊 WebTaskQueue 與新 NewsUrlQueue 的排程。
+  // 保留函式名稱 installWebTaskQueueTrigger()，避免既有維護習慣失效。
   triggers.forEach(function(trigger) {
     const handler = trigger.getHandlerFunction();
     if (handler === 'processWebTaskQueue' || handler === 'processNewsUrlQueue') {
@@ -111,8 +112,11 @@ function handleLineEvent(event) {
   // ======================================================
   // Pending Reply 優先交付
   //
-  // v1.10.0：如果使用者這次訊息本身也貼了網址，會先把新網址收進 NewsInbox queue，
-  // 再交付舊 pending。這樣舊結果不會被新收件中斷。
+  // 如果使用者這次訊息本身也貼了網址，會先根據目前規則收件：
+  // 1. #懶人包：排入 WebTaskQueue 快讀摘要。
+  // 2. #節目話題分析：排入 WebTaskQueue 深度分析。
+  // 3. 其他直接貼網址：排入 NewsUrlQueue，後續進 NewsInbox。
+  // 接著再交付舊 pending，避免舊結果被新收件中斷。
   // ======================================================
 
   const pendingReply = getAndDeletePendingReply(conversationId);
@@ -128,6 +132,9 @@ function handleLineEvent(event) {
 
   // ======================================================
   // 群組一般訊息：沒有觸發詞但含網址 → NewsInbox 收件分類
+  //
+  // 群組裡沒有觸發詞、也沒有網址時，小浣保持安靜，避免打擾聊天。
+  // 個人聊天室不走這段，因為個人聊天室可以直接聊天；但後面會有共用的直接貼網址判斷。
   // ======================================================
 
   if (isGroupLike && !hasTriggerPrefix(userText)) {
@@ -216,21 +223,7 @@ function handleLineEvent(event) {
   let aiReply = '';
 
   try {
-    if (commandInfo.mode === 'summary_recent') {
-      const recentCount = commandInfo.recentCount || 50;
-      const recentText = getRecentConversationText(conversationId, recentCount, false);
-      aiReply = recentText
-        ? callDeepSeekWithMemory(conversationId, '請根據以下最近對話紀錄進行摘要：\n\n' + recentText, 'summary')
-        : getBotTextNoRecentSummaryData_();
-
-    } else if (commandInfo.mode === 'review_recent') {
-      const recentCount = commandInfo.recentCount || 50;
-      const recentText = getRecentConversationText(conversationId, recentCount, false);
-      aiReply = recentText
-        ? callDeepSeekWithMemory(conversationId, '請根據以下最近對話紀錄，整理出討論回顧、關鍵決策、可延伸話題：\n\n' + recentText, 'review')
-        : getBotTextNoRecentReviewData_();
-
-    } else if (commandInfo.mode === 'integrate_topics') {
+    if (commandInfo.mode === 'integrate_topics') {
       aiReply = integrateRecentTopics(event, conversationId, commandInfo.userPrompt);
 
     } else if (commandInfo.mode === 'weekly_news') {
@@ -257,12 +250,12 @@ function handleLineEvent(event) {
         : enqueueResult.error || getBotTextNoReadableUrl_();
 
     } else {
-      // v1.10.0：有觸發詞的一般指令若含網址，仍保留舊「快讀摘要」行為。
-      // 無觸發詞的群組直接貼網址，才會改進 NewsInbox。
+      // v1.10.2：個人聊天室直接貼網址也與群組一致，收進 NewsInbox。
+      // 只有明確使用 #懶人包 時，才會排入 WebTaskQueue 產生快讀摘要。
       if (shouldUseWebReading(commandInfo.userPrompt)) {
-        const enqueueResult = enqueueWebTask(event, conversationId, commandInfo.userPrompt, TASK_TYPE_WEB_LAZY_SUMMARY);
+        const enqueueResult = enqueueNewsUrlTasks(event, conversationId, commandInfo.userPrompt);
         aiReply = enqueueResult.ok
-          ? buildWebTaskAcceptedText_(TASK_TYPE_WEB_LAZY_SUMMARY, enqueueResult.urls.length)
+          ? getBotTextNewsInboxAccepted_(enqueueResult.urls.length)
           : enqueueResult.error || getBotTextNoReadableUrl_();
       } else {
         aiReply = callDeepSeekWithMemory(conversationId, commandInfo.userPrompt, commandInfo.mode);

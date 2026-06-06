@@ -21,12 +21,14 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.10.1 News Inbox Hotfix  
-Current Branch: hotfix/v1.10.1-news-inbox-format  
+Current Version: v1.10.2 Secretary Cleanup Edition  
+Current Working Branch: feature/v1102-cleanup  
 Target Branch: main  
-Source of Truth: GitHub hotfix branch before PR merge; after merge, GitHub main branch latest commit
+Source of Truth: GitHub pull request branch before PR merge; after merge, GitHub main branch latest commit
 
-本專案目前以 GitHub 上本次 v1.10.1 hotfix 分支作為待合併版本來源。合併後，仍以 `main` branch 最新 commit 作為唯一現行程式碼來源。
+本文件在 PR 尚未合併前，描述的是本次 v1.10.2 工作分支內容。
+
+PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；請改以 `main` branch 最新 commit 作為唯一現行程式碼來源。
 
 若本文件、README、Changelog、舊對話紀錄或先前上傳檔案之間出現矛盾，請依照下列優先順序判斷：
 
@@ -111,13 +113,6 @@ Source of Truth: GitHub hotfix branch before PR merge; after merge, GitHub main 
 
 真正的敏感值應放在 Google Apps Script 的 Script Properties。
 
-常見 Script Properties 包含：
-
-- `LINE_CHANNEL_ACCESS_TOKEN`
-- `DEEPSEEK_API_KEY`
-- `GEMINI_API_KEY`
-- `SPREADSHEET_ID`
-
 GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，但不可保存真正的 secret value。
 
 ---
@@ -144,20 +139,21 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 
 ---
 
-## v1.10.1 Key Difference
+## v1.10.2 Key Difference
 
-v1.10.1 是 News Inbox Hotfix。
+v1.10.2 是 Secretary Cleanup Edition。
 
-本版主要修正：
+本版主要調整：
 
-1. 修正 v1.10.0 可能把 Gemini 分類不足的結果直接寫入 `NewsInbox`，造成「待分類 / 標題是網址 / 簡介空白」仍顯示 `ok` 的問題。
-2. 自動分類若回傳無效分類、`待分類` 或內容不足，會回到 `NewsUrlQueue` 依既有規則重試；重試失敗才建立 PendingReplies 通知。
-3. `#本週新聞` 改由程式端固定排版，確保 LINE 內顯示為分類、標題、來源、節目潛力的多行格式。
-4. 保留 `#新聞補充` 的 DeepSeek 自然語言解析流程；人工補充仍可寫入 `待分類`。
+1. 移除 `#摘要`、`#摘要最近`、`#回顧最近`、`#標題`。
+2. 移除 `#讀網址`，保留 `#懶人包` 作為唯一明確網址快讀入口。
+3. 個人聊天室直接貼網址時，改與群組一致，收進 `NewsUrlQueue` / `NewsInbox`。
+4. 清理不再使用的 command parsing、prompt mode、DeepSeek mode 參數與固定回覆文案。
+5. 保留 Google Apps Script 分檔架構，不導入 Node.js / npm。
 
 ---
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.10.1 News Inbox Hotfix  
-Last Confirmed Date: 2026-06-06
+Last Confirmed Version: v1.10.2 Secretary Cleanup Edition  
+Last Confirmed Date: 2026-06-07
