@@ -21,15 +21,16 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.9.3 Gemini JSON Mode Hotfix  
-Current Branch: main  
-Source of Truth: GitHub main branch latest commit
+Current Version: v1.10.0 News Inbox Edition  
+Current Branch: feature/v1.10.0-news-inbox  
+Target Branch: main  
+Source of Truth: GitHub feature branch latest commit before PR merge; after merge, GitHub main branch latest commit
 
-本專案目前以 GitHub `main` branch 的最新 commit 作為唯一現行程式碼來源。
+本專案目前以 GitHub 上本次 v1.10.0 PR 分支作為待合併版本來源。合併後，仍以 `main` branch 最新 commit 作為唯一現行程式碼來源。
 
 若本文件、README、Changelog、舊對話紀錄或先前上傳檔案之間出現矛盾，請依照下列優先順序判斷：
 
-1. GitHub main branch 最新 commit 中的實際 `.gs` 程式碼
+1. GitHub 目標版本分支 / main branch 最新 commit 中的實際 `.gs` 程式碼
 2. `CURRENT_VERSION.md`
 3. `README.md`
 4. `99_changelog.md` 的最新版本段落
@@ -54,6 +55,7 @@ Source of Truth: GitHub main branch latest commit
 - `10_TopicFeatures.gs`
 - `11_Prompts.gs`
 - `12_ResponseTexts.gs`
+- `13_NewsInbox.gs`
 
 ---
 
@@ -80,7 +82,7 @@ Source of Truth: GitHub main branch latest commit
 讀取 `99_changelog.md` 時，請注意：
 
 - 舊版段落不代表目前實作。
-- 不可將 v1.6、v1.7、v1.8、v1.9.0、v1.9.1、v1.9.2 等歷史版本描述直接視為目前程式邏輯。
+- 不可將 v1.6、v1.7、v1.8、v1.9.x 等歷史版本描述直接視為目前程式邏輯。
 - 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
 - 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
 
@@ -120,26 +122,6 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 
 ---
 
-## AI Collaboration Rule
-
-當 AI 助手協助本專案時，請遵守以下規則：
-
-1. 以 GitHub main branch 最新 commit 為準。
-2. 優先讀取 `CURRENT_VERSION.md` 與 `README.md`。
-3. 再讀取現行 `.gs` 程式碼。
-4. `99_changelog.md` 只作為歷史參考。
-5. 不要使用舊對話、舊記憶、過去上傳檔案來覆蓋 GitHub 最新版本。
-6. 若本次任務需要修改程式，請先提出修改方案，不要直接假設舊版架構仍存在。
-7. 若 GitHub 檔案中找不到某個函式、常數或流程，請先指出缺少依據，不要根據舊記憶補寫。
-8. 若檔案之間出現矛盾，請優先相信實際 `.gs` 程式碼。
-9. 若要修改 GitHub repo，除非維護者明確要求，否則不要直接修改 main branch。
-10. 建議先產生可複製版本，或建立 feature branch / PR 供維護者確認。
-11. 預設工作模式為只讀與分析 GitHub 檔案，不直接修改 repository。
-12. 若需要修改 repository，必須先向維護者確認修改檔案、修改內容與修改方式。
-13. 除非維護者明確要求，否則不得直接 commit 到 main branch；建議使用 feature branch 或提供可複製程式碼。
-
----
-
 ## Current Architecture Summary
 
 小浣目前是 Google Apps Script 分檔架構。
@@ -152,63 +134,34 @@ GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，
 4. Google Sheet 與 Script Properties 入口集中於 `04_Storage.gs`
 5. 短期記憶由 `05_Memory.gs` 管理
 6. 網址擷取與 HTML 清理由 `06_WebReader.gs` 處理
-7. 背景任務與 Pending Reply 由 `07_WebTaskQueue.gs` 處理
+7. 舊網址快讀 / 節目分析背景任務由 `07_WebTaskQueue.gs` 處理
 8. Gemini API 相關流程由 `08_GeminiService.gs` 處理
 9. DeepSeek API 相關流程由 `09_DeepSeekService.gs` 處理
 10. 節目企劃功能由 `10_TopicFeatures.gs` 處理
 11. Prompt 內容集中於 `11_Prompts.gs`
-12. 不經過 LLM 的固定回覆、版本資訊與版本紀錄集中於 `12_ResponseTexts.gs`
+12. 固定回覆、版本資訊與版本紀錄集中於 `12_ResponseTexts.gs`
+13. 新聞素材池、NewsUrlQueue、NewsInbox、#本週新聞、#新聞補充由 `13_NewsInbox.gs` 處理
 
 ---
 
-## v1.9.3 Key Difference
+## v1.10.0 Key Difference
 
-v1.9.3 是 Gemini JSON mode 相容性 hotfix。
+v1.10.0 是 News Inbox Edition。
 
-本版修正：
+本版主要變更：
 
-1. 修改 `08_GeminiService.gs` 的 `buildGeminiJsonGenerationConfig_()`。
-2. 將 Gemini generationConfig 從 `responseFormat.text.mimeType/schema` 退回 `responseMimeType: 'application/json'`。
-3. 保留 schema 函式作為程式端資料契約與未來升級參考，但不再直接送進 Gemini API。
-4. 修正 v1.9.1 / v1.9.2 中 Gemini API 400 `generation_config.response_format.text.mime_type INVALID_ARGUMENT` 導致網址快讀與正文抽取失敗的問題。
-5. 更新 `12_ResponseTexts.gs` 的 `#版本` 與 `#版本紀錄` 內建資料。
-
-此版本不改變 Google Sheet 主要欄位、不導入 Node.js / npm、不改變 DeepSeek 或 Gemini 模型設定，主要目標是恢復 Gemini 網頁讀取流程的穩定性。
-
----
-
-## Previous Key Difference
-
-v1.9.2 的主要變更集中在固定回覆文字與版本查詢。
-
-本版新增：
-
-1. 新增 `12_ResponseTexts.gs`，集中管理不經過 LLM 的固定回覆文字。
-2. 新增 `#版本` 指令，可查看目前版本與本版新增功能。
-3. 新增 `#版本紀錄` 指令，可查看主要版本更新摘要。
-4. 調整任務接收、pending reply、reset、清空紀錄、記錄、錯誤提示、封存完成等固定回覆語氣。
-5. 保留既有 LINE 指令流程、Sheet 架構與模型呼叫方式。
-
----
-
-## Update Rule
-
-每次專案架構有重大變動時，請同步更新本文件。
-
-尤其是以下情況：
-
-- 新增或刪除主要 `.gs` 檔案
-- 改變目前正式版本號
-- 改變主要執行環境
-- 從 GAS 改為 clasp / Node.js / 其他部署方式
-- 變更 secret 管理策略
-- 變更 GitHub branch 流程
-- 新增 AI 協作規則
-- 變更 AI 與 GitHub repository 的讀寫協作流程
+1. 直接貼網址不再自動產生懶人包，而是收進 `NewsUrlQueue`。
+2. 新增 `NewsUrlQueue`，由 `processNewsUrlQueue()` time-driven trigger 背景處理，每次最多處理 2 筆。
+3. 新增 `NewsInbox`，儲存標題、網址、分類、50 字內簡介、觀點標籤、節目潛力與來源模式。
+4. 新增新聞分類：科技與 AI、社群輿論、ACG娛樂、商業財經、國際政治、生活文化、馬斯克、川普、待分類。
+5. 新增 `#本週新聞`，由 DeepSeek 整理最近 7 天 NewsInbox，只輸出分類、標題、來源網址與節目潛力。
+6. 新增 `#新聞補充`，使用者可用自然語言加網址補進 NewsInbox。
+7. 新增 `#懶人包`，作為明確網址快讀指令；`#讀網址` 保留為舊習慣。
+8. `#節目話題分析` 與 `#統整話題` 保留原定位。
 
 ---
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.9.3 Gemini JSON Mode Hotfix  
-Last Confirmed Date: 2026-06-05
+Last Confirmed Version: v1.10.0 News Inbox Edition  
+Last Confirmed Date: 2026-06-06

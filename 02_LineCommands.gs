@@ -2,13 +2,12 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
+// 小浣 LINE Bot v1.10.0 News Inbox Edition
 //
 // 維護原則：
-// 1. 本檔負責 LINE 指令解析與 Reply API，不直接管理大量固定文案。
-// 2. v1.9.2 起，不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
-// 4. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
+// 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
+// 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
+// 3. v1.10.0 新增 #本週新聞 / #新聞補充 / #懶人包。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -16,16 +15,23 @@ function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userTe
     return null;
   }
 
-  const taskType = userText.startsWith('#節目話題分析')
-    ? TASK_TYPE_PROGRAM_TOPIC_ANALYSIS
-    : TASK_TYPE_WEB_LAZY_SUMMARY;
+  // v1.10.0：
+  // 1. #節目話題分析 + 網址：仍走深度網址分析 queue。
+  // 2. #讀網址 / #懶人包：仍走快讀摘要 queue。
+  // 3. 其他含網址訊息：收進 NewsInbox queue，不再自動產出懶人包。
+  if (userText.startsWith('#節目話題分析')) {
+    return enqueueWebTask(event, conversationId, userText, TASK_TYPE_PROGRAM_TOPIC_ANALYSIS);
+  }
 
-  return enqueueWebTask(event, conversationId, userText, taskType);
+  if (userText.startsWith('#讀網址') || userText.startsWith('#懶人包')) {
+    return enqueueWebTask(event, conversationId, userText, TASK_TYPE_WEB_LAZY_SUMMARY);
+  }
+
+  return enqueueNewsUrlTasks(event, conversationId, userText);
 }
 
 
 function buildWebTaskAcceptedText_(taskType, urlCount) {
-  // v1.9.2：實際文案集中於 12_ResponseTexts.gs，這裡保留舊函式名稱供既有流程呼叫。
   return getBotTextWebTaskAccepted_(taskType, urlCount);
 }
 
@@ -40,10 +46,13 @@ function hasTriggerPrefix(text) {
 function getUserLogMode(text) {
   if (text.startsWith('#節目話題分析')) return 'program_topic_analysis_command';
   if (text.startsWith('#統整話題')) return 'integrate_topics_command';
+  if (text.startsWith('#本週新聞')) return 'weekly_news_command';
+  if (text.startsWith('#新聞補充')) return 'manual_news_supplement_command';
   if (text.startsWith('#摘要最近')) return 'summary_recent_command';
   if (text.startsWith('#回顧最近')) return 'review_recent_command';
   if (text.startsWith('#封存本週話題')) return 'archive_command';
   if (text.startsWith('#讀網址')) return 'web_read_command';
+  if (text.startsWith('#懶人包')) return 'web_read_command';
   if (text.startsWith('#清空紀錄')) return 'clear_command';
   if (text.startsWith('#版本紀錄')) return 'version_history_command';
   if (text.startsWith('#版本')) return 'version_command';
@@ -54,7 +63,7 @@ function getUserLogMode(text) {
   if (text.startsWith('#reset')) return 'reset_command';
   if (text.startsWith('#help')) return 'help_command';
 
-  if (shouldUseWebReading(text)) return 'url_message';
+  if (shouldUseWebReading(text)) return 'news_inbox_url_message';
 
   return 'input';
 }
@@ -73,9 +82,21 @@ function parseCommand(text) {
     mode = 'integrate_topics';
     userPrompt = text.replace('#統整話題', '').trim();
 
+  } else if (text.startsWith('#本週新聞')) {
+    mode = 'weekly_news';
+    userPrompt = text.replace('#本週新聞', '').trim();
+
+  } else if (text.startsWith('#新聞補充')) {
+    mode = 'manual_news_supplement';
+    userPrompt = text.replace('#新聞補充', '').trim();
+
   } else if (text.startsWith('#讀網址')) {
     mode = 'web_read';
     userPrompt = text.replace('#讀網址', '').trim();
+
+  } else if (text.startsWith('#懶人包')) {
+    mode = 'web_read';
+    userPrompt = text.replace('#懶人包', '').trim();
 
   } else if (text.startsWith('#摘要最近')) {
     mode = 'summary_recent';
@@ -111,6 +132,10 @@ function parseCommand(text) {
       userPrompt = '請根據最近聊天內容、網址快讀摘要與封存記憶，判斷目前最值得分析的節目話題。';
     } else if (mode === 'integrate_topics') {
       userPrompt = '請統整最近聊天內容、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
+    } else if (mode === 'weekly_news') {
+      userPrompt = '請整理最近 7 天 NewsInbox 中的新聞素材。';
+    } else if (mode === 'manual_news_supplement') {
+      userPrompt = '請補充新聞素材；如果要寫入素材池，需要附上網址。';
     } else if (mode === 'chat') {
       userPrompt = '請簡短介紹你可以協助的事情。';
     }
@@ -137,8 +162,6 @@ function extractNumber(text, defaultValue) {
     return defaultValue;
   }
 
-  // 避免一次撈太多導致 Apps Script 或 API 過慢。
-  // 最低 5 則，最高 200 則。
   return Math.min(Math.max(number, 5), 200);
 }
 
@@ -165,9 +188,6 @@ function getConversationId(event) {
 
 function replyToLine(replyToken, text) {
   const token = getRequiredScriptProperty_('LINE_CHANNEL_ACCESS_TOKEN');
-
-  // LINE 單則文字訊息上限約 5000 字，這裡保守切到 4500。
-  // 若 text 為空，改用 12_ResponseTexts.gs 的固定提醒，避免 LINE 收到空訊息。
   const safeText = String(text || '').slice(0, 4500);
 
   const payload = {
@@ -205,10 +225,19 @@ function getHelpText() {
     '目前可用指令如下：',
     '',
     '直接貼網址',
-    '我會自動做快讀摘要，放進 WebSummary 素材池。整理完成後，下一次群組有任何訊息時交付結果。',
+    '我會先收進 NewsInbox 新聞素材池，背景慢慢抓內容、分類、標記節目潛力。需要整理時輸入 #本週新聞。',
+    '',
+    '#本週新聞',
+    '整理最近 7 天 NewsInbox 中的新聞素材，只列分類、標題、網址與節目潛力，不主動分析。',
+    '',
+    '#新聞補充 文字 + 網址',
+    '如果網址讀不到，或你想人工補充素材，可以用自然語言告訴我。我會交給 DeepSeek 判斷分類後寫入 NewsInbox。',
+    '',
+    '#懶人包 網址',
+    '明確指定我要做網址快讀摘要。這會走 WebSummary 與 PendingReplies。',
     '',
     '#讀網址 網址',
-    '手動指定網址快讀。效果跟直接貼網址類似。',
+    '等同 #懶人包，保留舊習慣。',
     '',
     '#節目話題分析 網址',
     '針對該網址做深度節目話題分析，包含事件重點、爭議焦點、主持切角、段落拆法與待查證點。',
@@ -253,13 +282,12 @@ function getHelpText() {
     '查看清空目前聊天室 ConversationLog 紀錄的確認提示。',
     '',
     '#清空紀錄 確認',
-    '刪除目前聊天室的 ConversationLog 長期紀錄，並清除短期記憶；不刪 WeeklySummary 與 WebSummary。',
+    '刪除目前聊天室的 ConversationLog 長期紀錄，並清除短期記憶；不刪 WeeklySummary、WebSummary、NewsInbox。',
     '',
     '#help',
     '查看指令說明。',
     '',
     '在私訊裡可以直接聊天；在群組裡請用指令開頭叫我。',
-    '例外：群組裡直接貼網址會自動觸發快讀摘要。',
-    'WebSummary 是網址素材池，WeeklySummary 是封存後的極簡長期記憶。'
+    '例外：群組裡直接貼網址會自動收進 NewsInbox 新聞素材池。'
   ].join('\n');
 }

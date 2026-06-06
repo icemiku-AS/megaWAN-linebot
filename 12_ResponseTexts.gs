@@ -2,24 +2,31 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.9.3 Gemini JSON Mode Hotfix
+// 小浣 LINE Bot v1.10.0 News Inbox Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
-// 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格：親切、可靠、帶一點浣熊翻素材感。
-// 3. 主流程檔案（例如 01_Main.gs）應盡量只呼叫這裡的函式，不直接散落大量硬編文字。
-// 4. 若未來想調整小浣語氣，優先改這個檔案。
-// 5. v1.9.3 hotfix 同步更新 #版本 / #版本紀錄 內建資訊，讓小浣能回報目前 Gemini 修正狀態。
+// 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
+// 3. v1.10.0 新增 NewsInbox 相關固定回覆。
 // ======================================================
 
-// ======================================================
-// 版本資料
-// ======================================================
-
-const BOT_CURRENT_VERSION = 'v1.9.3 Gemini JSON Mode Hotfix';
-const BOT_CURRENT_VERSION_DATE = '2026-06-05';
+const BOT_CURRENT_VERSION = 'v1.10.0 News Inbox Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-06-06';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.0 News Inbox Edition',
+    date: '2026-06-06',
+    summary: '將直接貼網址改為新聞素材池收件分類，新增 NewsUrlQueue、NewsInbox、#本週新聞、#新聞補充與 #懶人包。',
+    changes: [
+      '直接貼網址不再自動吐懶人包，改為收進 NewsInbox 新聞素材池。',
+      '新增 NewsUrlQueue，由 time-driven trigger 每次最多處理 2 筆網址。',
+      '新增 Gemini 新聞入庫分類，儲存標題、網址、分類、50 字內簡介、觀點標籤與節目潛力。',
+      '新增 #本週新聞，由 DeepSeek 依分類整理最近 7 天素材，只輸出標題、來源網址與節目潛力。',
+      '新增 #新聞補充，允許使用者用自然語言加網址人工補進 NewsInbox。',
+      '新增 #懶人包 作為明確網址快讀指令，#讀網址 繼續保留。'
+    ]
+  },
   {
     version: 'v1.9.3 Gemini JSON Mode Hotfix',
     date: '2026-06-05',
@@ -28,8 +35,7 @@ const BOT_VERSION_HISTORY = [
       '修正 08_GeminiService.gs 的 generationConfig。',
       '將 Gemini 輸出設定從 responseFormat.text.mimeType/schema 退回 responseMimeType: application/json。',
       '保留 schema 函式作為程式端資料契約與未來升級參考。',
-      '補上註解說明目前 v1beta + gemini-3.1-flash-lite 不接受 responseFormat.text.mimeType = application/json。',
-      '維持 Google Apps Script 架構，不更換模型、不改變 Sheet 欄位。'
+      '維持 Google Apps Script 架構，不更換模型。'
     ]
   },
   {
@@ -38,22 +44,8 @@ const BOT_VERSION_HISTORY = [
     summary: '集中管理小浣不經過 LLM 的固定回覆文字，讓系統提示、任務接收、錯誤訊息與版本查詢更有人味。',
     changes: [
       '新增 12_ResponseTexts.gs，集中管理固定回覆文字。',
-      '新增 #版本，可查看目前版本與本版新增功能。',
-      '新增 #版本紀錄，可查看主要版本更新摘要。',
-      '調整任務接收、pending reply、reset、清空紀錄、記錄、錯誤提示等固定回覆語氣。',
-      '維持 Google Apps Script 架構，不導入 Node.js / npm。'
-    ]
-  },
-  {
-    version: 'v1.9.1 Structured Gemini Output Edition',
-    date: '2026-06-05',
-    summary: '將 Gemini 網頁快讀摘要與正文抽取改為 structured output schema，提升 JSON 回傳穩定性。',
-    changes: [
-      '新增 Gemini 快讀摘要 schema。',
-      '新增 Gemini 正文抽取 schema。',
-      '新增 Gemini JSON generation config helper。',
-      '新增 normalizer helper，對字串、陣列、數字與 enum 做最後防守。',
-      '保留 parseJsonObjectLoose() fallback，降低任務中斷風險。'
+      '新增 #版本 與 #版本紀錄。',
+      '調整任務接收、pending reply、reset、清空紀錄、記錄、錯誤提示等固定回覆語氣。'
     ]
   },
   {
@@ -65,54 +57,19 @@ const BOT_VERSION_HISTORY = [
       '將 prompt 管理調整為 11_Prompts.gs。',
       '維持原功能邏輯，主要改善可維護性。'
     ]
-  },
-  {
-    version: 'v1.7.1',
-    date: '2026-06-04',
-    summary: '調整小浣回覆內容、重新定義程式版號，並將單次讀網址數量調整為 3 個。',
-    changes: [
-      '調整小浣回覆內容，讓回答更精簡。',
-      '重新定義程式版號。',
-      '一次性讀網址調整為 3 個。'
-    ]
-  },
-  {
-    version: 'v1.7.0 Topic Pool Edition',
-    date: '2026-06-04',
-    summary: '建立網址素材池與節目話題統整流程，讓貼網址可以進入 WebSummary，供 #統整話題 使用。',
-    changes: [
-      '群組直接貼網址會自動進入快讀摘要任務。',
-      '新增 WebSummary 作為網址快讀素材池。',
-      '新增 #節目話題分析 與 #統整話題 的近期素材整合邏輯。'
-    ]
-  },
-  {
-    version: 'v1.6.2 Queue Edition',
-    date: '2026-06-04',
-    summary: '建立 WebTaskQueue 與 PendingReplies，讓網址處理可以排程背景處理，完成後於下次訊息交付。',
-    changes: [
-      '網址任務寫入 WebTaskQueue。',
-      'time-driven trigger 背景處理任務。',
-      '處理完成後寫入 PendingReplies。'
-    ]
   }
 ];
 
-// ======================================================
-// 版本查詢回覆
-// ======================================================
-
 function getBotVersionText_() {
   const current = BOT_VERSION_HISTORY[0];
-
   return [
     '小浣目前版本：',
     BOT_CURRENT_VERSION,
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我主要修的是 Gemini 網址讀取的相容性問題。',
-    '之前那包 responseFormat.text.mimeType/schema 送到目前 API 會被擋下來，現在我先改回穩定的 JSON mode。',
+    '這版我把網址流程改成比較像節目秘書的新聞素材池。',
+    '直接貼網址會先收進 NewsInbox，等你下 #本週新聞，我再把最近 7 天素材整理出來。',
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),
@@ -124,30 +81,15 @@ function getBotVersionText_() {
 
 function getBotVersionHistoryText_() {
   const blocks = BOT_VERSION_HISTORY.map(function(item) {
-    return [
-      item.version + '｜' + item.date,
-      item.summary,
-      formatBulletList_(item.changes)
-    ].join('\n');
+    return [item.version + '｜' + item.date, item.summary, formatBulletList_(item.changes)].join('\n');
   });
 
-  return [
-    '我把目前記得的版本紀錄翻出來了：',
-    '',
-    blocks.join('\n\n'),
-    '',
-    '提醒：這裡是小浣執行時內建的版本摘要，完整歷史仍以 GitHub 的 99_changelog.md 為準。'
-  ].join('\n');
+  return ['我把目前記得的版本紀錄翻出來了：', '', blocks.join('\n\n'), '', '提醒：這裡是小浣執行時內建的版本摘要，完整歷史仍以 GitHub 的 99_changelog.md 為準。'].join('\n');
 }
 
 function formatBulletList_(items) {
-  if (!items || !Array.isArray(items) || items.length === 0) {
-    return '・目前沒有列出細項。';
-  }
-
-  return items.map(function(item) {
-    return '・' + item;
-  }).join('\n');
+  if (!items || !Array.isArray(items) || items.length === 0) return '・目前沒有列出細項。';
+  return items.map(function(item) { return '・' + item; }).join('\n');
 }
 
 // ======================================================
@@ -155,40 +97,42 @@ function formatBulletList_(items) {
 // ======================================================
 
 function getBotTextWebTaskAccepted_(taskType, urlCount) {
-  const countText = urlCount > 1
-    ? '前 ' + urlCount + ' 個網址'
-    : '這個網址';
+  const countText = urlCount > 1 ? '前 ' + urlCount + ' 個網址' : '這個網址';
 
   if (taskType === TASK_TYPE_PROGRAM_TOPIC_ANALYSIS) {
-    return [
-      '收到，' + countText + '我先叼回素材堆裡整理。',
-      '我會把事件重點、可聊切角和需要補查的地方一起翻出來。',
-      '等我處理完，下一次群組有人說話時，我就把結果送上來。'
-    ].join('\n');
+    return ['收到，' + countText + '我先叼回素材堆裡整理。', '我會把事件重點、可聊切角和需要補查的地方一起翻出來。', '等我處理完，下一次群組有人說話時，我就把結果送上來。'].join('\n');
   }
 
-  return [
-    '收到網址，我先鑽進素材堆裡翻一下重點。',
-    '整理好後，下一次群組有人說話時，我會把快讀摘要送上來。'
-  ].join('\n');
+  return ['收到，' + countText + '我會做成懶人包。', '整理好後，下一次群組有人說話時，我會把快讀摘要送上來。'].join('\n');
+}
+
+function getBotTextNewsInboxAccepted_(urlCount) {
+  const countText = urlCount > 1 ? '這 ' + urlCount + ' 個網址' : '這篇';
+  return ['收到，' + countText + '我先收進本週新聞素材池。', '我會在背景慢慢分類整理；之後用 #本週新聞，就可以看到這週的剪報。'].join('\n');
 }
 
 function getBotTextPendingDelivery_(pendingText, alsoAcceptedNewUrl) {
-  let text = [
-    '我剛剛那包資料整理好了，先端上來：',
-    '',
-    pendingText || ''
-  ].join('\n');
-
+  let text = ['我剛剛那包資料整理好了，先端上來：', '', pendingText || ''].join('\n');
   if (alsoAcceptedNewUrl) {
-    text += [
-      '',
-      '另外，你這次貼的新網址我也收到了。',
-      '我會接著翻，整理好再送上來。'
-    ].join('\n');
+    text += ['','另外，你這次貼的新網址我也收到了。', '如果是一般貼網址，我會放進 NewsInbox；如果是 #懶人包 或 #讀網址，我會照指令做快讀。'].join('\n');
   }
-
   return text;
+}
+
+function getBotTextNewsUrlFailed_(url, errorMessage) {
+  return ['小浣剛剛有一個網址讀不到，可能是網站擋爬蟲、需要登入，或內容抓取失敗：', '', url || '', '', '原因：', String(errorMessage || '未知錯誤').slice(0, 1000), '', '你可以用 #新聞補充 加上網址和簡單說明，我再幫你手動放進本週新聞素材池。'].join('\n');
+}
+
+function getBotTextManualNewsSupplementNeedUrl_() {
+  return ['我大概懂你想補一個素材，不過新聞素材池需要有網址，之後你們才找得到原文。', '你可以用這種方式丟我：', '#新聞補充 這篇大概是在講某某事件，偏社群輿論，節目潛力高 https://example.com'].join('\n');
+}
+
+function getBotTextManualNewsSupplementSaved_(parsed) {
+  return ['收到，我幫你補進本週新聞素材池了。', '我先理解成：' + (parsed.category || '待分類') + '，節目潛力：' + (parsed.topicPotential || '中') + '。'].join('\n');
+}
+
+function getBotTextWeeklyNewsNoData_() {
+  return ['我翻了一下，最近 7 天 NewsInbox 還沒有可整理的新聞素材。', '你可以先直接貼網址讓我收進素材池，或用 #新聞補充 手動補一筆。'].join('\n');
 }
 
 // ======================================================
@@ -208,64 +152,29 @@ function getBotTextNoReadableUrl_() {
 }
 
 function getBotTextResetDone_() {
-  return [
-    '好，這個聊天室的短期記憶我先清掉了。',
-    '剛剛腦袋裡暫存的小紙條會消失，但 Google Sheet 裡的長期紀錄還在，不會被我亂丟。'
-  ].join('\n');
+  return ['好，這個聊天室的短期記憶我先清掉了。', '剛剛腦袋裡暫存的小紙條會消失，但 Google Sheet 裡的長期紀錄還在，不會被我亂丟。'].join('\n');
 }
 
 function getBotTextClearWarning_() {
-  return [
-    '先等一下，這個動作比較大包。',
-    '你準備清空的是這個聊天室在 ConversationLog 裡的長期紀錄。',
-    '',
-    '不會影響：',
-    '・其他私訊',
-    '・其他群組',
-    '・WeeklySummary 封存摘要',
-    '・WebSummary 網址快讀素材池',
-    '',
-    '如果你真的確定要丟掉這包紀錄，請輸入：',
-    '#清空紀錄 確認'
-  ].join('\n');
+  return ['先等一下，這個動作比較大包。', '你準備清空的是這個聊天室在 ConversationLog 裡的長期紀錄。', '', '不會影響：', '・其他私訊', '・其他群組', '・WeeklySummary 封存摘要', '・WebSummary 網址快讀素材池', '・NewsInbox 新聞素材池', '', '如果你真的確定要丟掉這包紀錄，請輸入：', '#清空紀錄 確認'].join('\n');
 }
 
 function getBotTextClearDone_(deletedCount) {
-  return [
-    '我已經把這個聊天室的 ConversationLog 長期紀錄清掉了。',
-    '短期對話記憶也一起清空。',
-    '',
-    '這次刪除筆數：' + deletedCount,
-    '',
-    'WeeklySummary 封存摘要和 WebSummary 網址快讀素材池沒有被刪掉，這兩包資料我會繼續留著。'
-  ].join('\n');
+  return ['我已經把這個聊天室的 ConversationLog 長期紀錄清掉了。', '短期對話記憶也一起清空。', '', '這次刪除筆數：' + deletedCount, '', 'WeeklySummary、WebSummary 和 NewsInbox 沒有被刪掉，這幾包素材我會繼續留著。'].join('\n');
 }
 
-function getBotTextNoteSaved_() {
-  return '記好了，這段我先收進紀錄袋。';
-}
+function getBotTextNoteSaved_() { return '記好了，這段我先收進紀錄袋。'; }
 
 function getBotTextNoteEmpty_() {
-  return [
-    '你可以這樣叫我記東西：',
-    '#記錄 這段內容很重要',
-    '',
-    '我會把它收進 ConversationLog，之後整理話題時就比較不容易漏掉。'
-  ].join('\n');
+  return ['你可以這樣叫我記東西：', '#記錄 這段內容很重要', '', '我會把它收進 ConversationLog，之後整理話題時就比較不容易漏掉。'].join('\n');
 }
 
 function getBotTextNoRecentSummaryData_() {
-  return [
-    '目前素材還有點少，我翻不到足夠的對話紀錄可以整理。',
-    '你們可以再聊一點，或直接貼一段想摘要的內容給我。'
-  ].join('\n');
+  return ['目前素材還有點少，我翻不到足夠的對話紀錄可以整理。', '你們可以再聊一點，或直接貼一段想摘要的內容給我。'].join('\n');
 }
 
 function getBotTextNoRecentReviewData_() {
-  return [
-    '目前素材還不太夠，我翻不到足夠的對話紀錄可以回顧。',
-    '等群組多累積一些討論，我就比較能幫你們整理脈絡和下一步。'
-  ].join('\n');
+  return ['目前素材還不太夠，我翻不到足夠的對話紀錄可以回顧。', '等群組多累積一些討論，我就比較能幫你們整理脈絡和下一步。'].join('\n');
 }
 
 function getBotTextArchiveError_() {
@@ -276,30 +185,12 @@ function getBotTextAiError_() {
   return '我剛剛連接 AI、讀取網頁或翻紀錄時卡住了。你可以稍後再叫我一次，或把任務拆小一點給我處理。';
 }
 
-function getBotTextArchiveNoData_() {
-  return '目前還沒有足夠的對話紀錄可以封存。等群組多累積一點討論，我再幫你把重點收進 WeeklySummary。';
-}
-
-function getBotTextNoTopicContextForAnalysis_() {
-  return '目前我還翻不到足夠的對話紀錄、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或多補一點想討論的脈絡。';
-}
-
-function getBotTextNoTopicContextForIntegration_() {
-  return '目前我還翻不到足夠的聊天紀錄、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。';
-}
+function getBotTextArchiveNoData_() { return '目前還沒有足夠的對話紀錄可以封存。等群組多累積一點討論，我再幫你把重點收進 WeeklySummary。'; }
+function getBotTextNoTopicContextForAnalysis_() { return '目前我還翻不到足夠的對話紀錄、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或多補一點想討論的脈絡。'; }
+function getBotTextNoTopicContextForIntegration_() { return '目前我還翻不到足夠的聊天紀錄、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。'; }
 
 function getBotTextArchiveDone_(archiveJson, recentCount) {
-  return [
-    '本週話題我收好了，已經放進 WeeklySummary。',
-    '',
-    '主題：' + (archiveJson.topicTitle || '未命名主題'),
-    '',
-    '摘要：',
-    archiveJson.summary || '已建立摘要，但內容比較短。',
-    '',
-    '這次封存了 ' + recentCount + ' 則訊息。',
-    '之後你們再聊到相關主題時，我就能把這份極簡記憶翻出來接著用。'
-  ].join('\n');
+  return ['本週話題我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名主題'), '', '摘要：', archiveJson.summary || '已建立摘要，但內容比較短。', '', '這次封存了 ' + recentCount + ' 則訊息。', '之後你們再聊到相關主題時，我就能把這份極簡記憶翻出來接著用。'].join('\n');
 }
 
 // ======================================================
@@ -307,41 +198,13 @@ function getBotTextArchiveDone_(archiveJson, recentCount) {
 // ======================================================
 
 function getBotTextWebTaskFailed_(errorMessage) {
-  return [
-    '我剛剛翻這個網址任務時卡住了。',
-    '',
-    '可能原因：',
-    '・網址擋爬蟲',
-    '・內容需要登入',
-    '・頁面格式太亂',
-    '・API 暫時不穩',
-    '',
-    '錯誤訊息：',
-    String(errorMessage || '未知錯誤').slice(0, 1000)
-  ].join('\n');
+  return ['我剛剛翻這個網址任務時卡住了。', '', '可能原因：', '・網址擋爬蟲', '・內容需要登入', '・頁面格式太亂', '・API 暫時不穩', '', '錯誤訊息：', String(errorMessage || '未知錯誤').slice(0, 1000)].join('\n');
 }
 
 function getBotTextSingleUrlFailed_(index, url, errorMessage) {
-  return [
-    '【網址 ' + (index + 1) + '】',
-    url,
-    '',
-    '這個網址我翻到一半卡住了：',
-    errorMessage || '讀取失敗'
-  ].join('\n');
+  return ['【網址 ' + (index + 1) + '】', url, '', '這個網址我翻到一半卡住了：', errorMessage || '讀取失敗'].join('\n');
 }
 
 function getBotTextLazySummaryBlock_(result, index, keyPointsText, metaText) {
-  return [
-    '【網址快讀 ' + (index + 1) + '】',
-    '標題：' + (result.title || '未取得標題'),
-    metaText,
-    '',
-    '我翻到的重點是：',
-    result.summary || '未取得摘要',
-    '',
-    '可以先抓這幾點：',
-    keyPointsText,
-    ''
-  ].join('\n');
+  return ['【網址快讀 ' + (index + 1) + '】', '標題：' + (result.title || '未取得標題'), metaText, '', '我翻到的重點是：', result.summary || '未取得摘要', '', '可以先抓這幾點：', keyPointsText, ''].join('\n');
 }
