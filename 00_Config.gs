@@ -2,13 +2,13 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
+// 小浣 LINE Bot v1.10.0 News Inbox Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
-// 4. v1.9.2 新增 #版本 / #版本紀錄，並把固定回覆文字集中到 12_ResponseTexts.gs。
+// 4. v1.10.0 新增 NewsUrlQueue / NewsInbox，讓直接貼網址改成新聞素材池收件。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -18,9 +18,10 @@ const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.7 / v1.8 / v1.9 中 Gemini 有兩種用途：
-// 1. 快讀摘要：將網頁直接整理成 100～500 字懶人包
-// 2. 正文抽取：在 #節目話題分析 時，先將 HTML 抽成乾淨正文，再交給 DeepSeek
+// v1.10.0 中 Gemini 仍負責：
+// 1. 快讀摘要：#讀網址 / #懶人包 指令使用
+// 2. 正文抽取：#節目話題分析 使用
+// 3. 新聞素材分類：直接貼網址進 NewsInbox 使用
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 const GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
@@ -35,14 +36,20 @@ const SHEET_NAME = 'ConversationLog';
 // 封存後的極簡長期記憶 Sheet
 const WEEKLY_SUMMARY_SHEET_NAME = 'WeeklySummary';
 
-// 網頁讀取任務佇列 Sheet
+// 網頁讀取任務佇列 Sheet：保留給 #讀網址 / #懶人包 / #節目話題分析
 const WEB_TASK_QUEUE_SHEET_NAME = 'WebTaskQueue';
+
+// 新聞網址待處理佇列 Sheet：v1.10.0 直接貼網址會先進這裡
+const NEWS_URL_QUEUE_SHEET_NAME = 'NewsUrlQueue';
+
+// 新聞素材池 Sheet：#本週新聞 的資料來源
+const NEWS_INBOX_SHEET_NAME = 'NewsInbox';
 
 // 已完成但尚未交付給使用者的回覆 Sheet
 const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
 
 // 網址快讀摘要素材池
-// 這張表是 #統整話題 的核心資料來源之一
+// 這張表仍保留給 #讀網址 / #懶人包 與 #統整話題 使用
 const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
 
 
@@ -50,7 +57,7 @@ const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
 // WebTaskQueue TaskType
 // ======================================================
 
-// 一般貼網址或 #讀網址：只做 Gemini 快讀摘要，不做 DeepSeek 深度分析
+// #讀網址 / #懶人包：做 Gemini 快讀摘要，不做 DeepSeek 深度分析
 const TASK_TYPE_WEB_LAZY_SUMMARY = 'web_lazy_summary';
 
 // #節目話題分析 + 網址：做 Gemini 抽取 + DeepSeek 深度節目分析
@@ -63,9 +70,9 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 
 // 群組中只有這些開頭才會觸發一般 Bot 回覆。
 // 例外：
-// 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會自動排入網址快讀。
+// 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會自動排入 NewsInbox 新聞素材池。
 // 2. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
-// 3. v1.9.2 新增 #版本 / #版本紀錄，讓小浣可直接回覆目前版本與主要更新紀錄。
+// 3. v1.10.0 新增 #本週新聞 / #新聞補充 / #懶人包。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#摘要',
@@ -80,6 +87,9 @@ const TRIGGER_PREFIXES = [
   '#清空紀錄',
   '#封存本週話題',
   '#讀網址',
+  '#懶人包',
+  '#本週新聞',
+  '#新聞補充',
   '#節目話題分析',
   '#統整話題'
 ];
@@ -105,11 +115,10 @@ const MAX_HISTORY_PAIRS = 6;
 const MAX_URLS_PER_MESSAGE = 3;
 
 // 每次排程最多處理幾個 pending 網頁任務
-// Apps Script 有執行時間限制，MVP 建議先保持 1
+// 這裡仍只給舊 WebTaskQueue 使用；NewsUrlQueue 有自己的每批處理量。
 const MAX_WEB_TASKS_PER_RUN = 1;
 
 // 送給 Gemini 的 HTML 最大長度
-// Gemini context 很大，但 Apps Script、API 成本與速度仍要控管
 const MAX_HTML_FOR_GEMINI = 180000;
 
 // Gemini 抽出的正文送給 DeepSeek 前的最大長度
