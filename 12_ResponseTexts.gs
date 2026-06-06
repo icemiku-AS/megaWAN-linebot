@@ -2,18 +2,29 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.0 News Inbox Edition
+// 小浣 LINE Bot v1.10.1 News Inbox Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.0 新增 NewsInbox 相關固定回覆。
+// 3. v1.10.1 更新 NewsInbox hotfix 的版本資訊。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.0 News Inbox Edition';
+const BOT_CURRENT_VERSION = 'v1.10.1 News Inbox Hotfix';
 const BOT_CURRENT_VERSION_DATE = '2026-06-06';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.1 News Inbox Hotfix',
+    date: '2026-06-06',
+    summary: '修正 NewsInbox 自動分類不足仍入庫，以及 #本週新聞 LINE 換行格式不佳的問題。',
+    changes: [
+      '自動網址分類若回傳無效分類、待分類，或標題是網址且簡介空白，會回到 NewsUrlQueue 重試。',
+      '避免分類不足的資料直接以 ok 寫入 NewsInbox。',
+      '#本週新聞 改由程式端固定排版，確保分類、標題、來源網址與節目潛力分行顯示。',
+      '#新聞補充 保留 DeepSeek 自然語言解析，人工補充仍可寫入待分類。'
+    ]
+  },
   {
     version: 'v1.10.0 News Inbox Edition',
     date: '2026-06-06',
@@ -22,7 +33,7 @@ const BOT_VERSION_HISTORY = [
       '直接貼網址不再自動吐懶人包，改為收進 NewsInbox 新聞素材池。',
       '新增 NewsUrlQueue，由 time-driven trigger 每次最多處理 2 筆網址。',
       '新增 Gemini 新聞入庫分類，儲存標題、網址、分類、50 字內簡介、觀點標籤與節目潛力。',
-      '新增 #本週新聞，由 DeepSeek 依分類整理最近 7 天素材，只輸出標題、來源網址與節目潛力。',
+      '新增 #本週新聞，依分類整理最近 7 天素材，只輸出標題、來源網址與節目潛力。',
       '新增 #新聞補充，允許使用者用自然語言加網址人工補進 NewsInbox。',
       '新增 #懶人包 作為明確網址快讀指令，#讀網址 繼續保留。'
     ]
@@ -68,8 +79,7 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我把網址流程改成比較像節目秘書的新聞素材池。',
-    '直接貼網址會先收進 NewsInbox，等你下 #本週新聞，我再把最近 7 天素材整理出來。',
+    '這版我把新聞素材池補上兩個小修：分類不足會回到佇列重試，#本週新聞 也會乖乖換行。',
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),
