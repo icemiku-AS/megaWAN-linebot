@@ -1,4 +1,16 @@
 2026-06-06
+v1.10.1 News Inbox Hotfix
+- 以 v1.10.0 News Inbox Edition 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 修正 Gemini 自動新聞分類結果不足時，仍被正規化成「待分類」並以 ok 寫入 NewsInbox 的問題。
+- 新增 isWeakAutoNewsClassification_()，自動分類若回傳無效分類、待分類，或標題是網址且簡介空白，會回到 NewsUrlQueue 重試。
+- 重試規則沿用 v1.10.0：暫時性錯誤最多重試 3 次，失敗後建立 PendingReplies 通知使用者。
+- 修正 #本週新聞 在 LINE 內排版過於擠壓的問題，改由程式端固定輸出分類、標題、來源網址與節目潛力的多行格式。
+- 保留 #新聞補充 的 DeepSeek 自然語言解析；人工補充仍可寫入待分類，避免補件流程過度阻擋。
+- 同步更新 12_ResponseTexts.gs、README.md、CURRENT_VERSION.md。
+
+// ==================================================
+
+2026-06-06
 v1.10.0 News Inbox Edition
 - 以 v1.9.3 Gemini JSON Mode Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
 - 將「群組直接貼網址」從自動快讀懶人包改為 NewsInbox 新聞素材池收件分類。
@@ -77,61 +89,4 @@ V1.7.1
 // 版本：V1.7.0 Topic Pool Edition
 //
 // 核心架構：
-// 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
-// 2. 只要訊息中含網址：
-//    - 不需要 #小浣，也不需要 #讀網址
-//    - 立刻回覆：「收到網址，我先幫你抓重點。」
-//    - 任務寫入 WebTaskQueue，TaskType = web_lazy_summary
-//    - 由 time-driven trigger 背景處理
-//    - UrlFetchApp 抓網頁
-//    - Script 做基礎垃圾訊息清理
-//    - Gemini Flash-Lite 產生 100～500 字快讀摘要
-//    - 摘要寫入 WebSummary，作為未來 #統整話題 的素材池
-//    - 同時寫入 PendingReplies，下一次同聊天室有任何文字訊息時交付結果
-// 3. #節目話題分析 + 網址：
-//    - 任務寫入 WebTaskQueue，TaskType = program_topic_analysis
-//    - Gemini 抽正文
-//    - DeepSeek 做節目話題深度分析
-// 4. #節目話題分析 沒貼網址：
-//    - 讀最近 ConversationLog + WebSummary + WeeklySummary
-//    - 由 DeepSeek 判斷要分析剛剛聊天內容、正在寫的內容，或近期最有節目潛力的素材
-// 5. #統整話題：
-//    - 讀最近 ConversationLog + WebSummary + WeeklySummary
-//    - 整理成近期話題地圖、可做節目段落、素材來源與優先順序
-// 6. PendingReplies 仍只是交付機制，正式素材保存於 WebSummary
-// ======================================================
-// 小浣 LINE Bot on Google Apps Script
-// LINE Bot + DeepSeek API + Gemini Web Extractor + Google Sheet Log
-//
-// 版本：V1.6.2 Queue Edition
-//
-// 核心架構：
-// 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
-// 2. #讀網址 或指令中含網址：
-//    - 立刻回覆：「收到你的網址摘要了，我先處理。」
-//    - 任務寫入 WebTaskQueue
-//    - 由 time-driven trigger 背景處理
-//    - 處理完成後寫入 PendingReplies
-//    - 下次同聊天室有任何文字訊息時，優先用新的 replyToken 交付結果
-//    - 交付後直接刪除 PendingReplies 該筆資料，避免跟後續任務混淆
-//
-// 必要 Script Properties：
-// 1. LINE_CHANNEL_ACCESS_TOKEN
-// 2. DEEPSEEK_API_KEY
-// 3. GEMINI_API_KEY
-// 4. SPREADSHEET_ID
-// ======================================================
-2026-06-04
-v1.6.1
-- 小甜正式改名為小浣
-- 調整群組回覆口吻
-- 移除 LINE markdown 格式
-- 加入網址 pending reply 流程
-// ======================================================
-// LINE Bot + DeepSeek API + Gemini Web Extractor + Google Sheet Log
-//
-// 版本：V1.6.0 Queue Edition
-//
-// 核心架構：
-// 1. 一般聊天、摘要、標題：即時呼叫 DeepSeek 回覆
-// 2. #讀網址 或指令中含網址：
+// 1. 一般聊天、摘要、標題：
