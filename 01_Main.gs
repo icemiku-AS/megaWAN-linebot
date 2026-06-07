@@ -2,18 +2,19 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
+// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. v1.10.2 起，群組與個人聊天室「直接貼網址」都改成 NewsInbox 收件分類。
+// 3. 群組與個人聊天室「直接貼網址」都維持 NewsInbox 收件分類。
 // 4. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
-// 5. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
+// 5. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
 // ======================================================
 
 function setupLogSheet() {
   const logSheet = ensureLogSheet_();
+  const highlightSheet = ensureTopicHighlightsSheet_();
   const weeklySheet = ensureWeeklySummarySheet_();
   const webTaskSheet = ensureWebTaskQueueSheet_();
   const newsQueueSheet = ensureNewsUrlQueueSheet_();
@@ -24,6 +25,7 @@ function setupLogSheet() {
   return [
     'Sheet setup completed:',
     logSheet.getName(),
+    highlightSheet.getName(),
     weeklySheet.getName(),
     webTaskSheet.getName(),
     newsQueueSheet.getName(),
@@ -37,7 +39,7 @@ function setupLogSheet() {
 function installWebTaskQueueTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
 
-  // v1.10.2：同一個安裝函式同時管理舊 WebTaskQueue 與新 NewsUrlQueue 的排程。
+  // 同一個安裝函式同時管理舊 WebTaskQueue 與新 NewsUrlQueue 的排程。
   // 保留函式名稱 installWebTaskQueueTrigger()，避免既有維護習慣失效。
   triggers.forEach(function(trigger) {
     const handler = trigger.getHandlerFunction();
@@ -197,11 +199,19 @@ function handleLineEvent(event) {
     return;
   }
 
-  if (userText.startsWith('#記錄')) {
-    const noteText = userText.replace('#記錄', '').trim();
-    const replyText = noteText ? getBotTextNoteSaved_() : getBotTextNoteEmpty_();
-    replyToLine(event.replyToken, replyText);
-    logAssistantReplyToSheet(event, conversationId, replyText, 'note');
+  if (userText.startsWith('#畫重點')) {
+    const highlightText = userText.replace('#畫重點', '').trim();
+    if (!highlightText) {
+      const emptyText = getBotTextHighlightEmpty_();
+      replyToLine(event.replyToken, emptyText);
+      logAssistantReplyToSheet(event, conversationId, emptyText, 'highlight_empty');
+      return;
+    }
+
+    saveTopicHighlight_(event, conversationId, userText, highlightText);
+    const savedText = getBotTextHighlightSaved_();
+    replyToLine(event.replyToken, savedText);
+    logAssistantReplyToSheet(event, conversationId, savedText, 'highlight_saved');
     return;
   }
 
@@ -250,7 +260,7 @@ function handleLineEvent(event) {
         : enqueueResult.error || getBotTextNoReadableUrl_();
 
     } else {
-      // v1.10.2：個人聊天室直接貼網址也與群組一致，收進 NewsInbox。
+      // 個人聊天室直接貼網址也與群組一致，收進 NewsInbox。
       // 只有明確使用 #懶人包 時，才會排入 WebTaskQueue 產生快讀摘要。
       if (shouldUseWebReading(commandInfo.userPrompt)) {
         const enqueueResult = enqueueNewsUrlTasks(event, conversationId, commandInfo.userPrompt);
