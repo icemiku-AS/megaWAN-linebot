@@ -1,23 +1,10 @@
 2026-06-08
-v1.10.3 Highlight & Cleanup Edition
-- 以 v1.10.2 Secretary Cleanup Edition 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
-- 將 #記錄 升級為 #畫重點，新增 TopicHighlights 作為人工重點資料表。
-- #畫重點 會將去除指令後的內容寫入 TopicHighlights，而不是只留在 ConversationLog。
-- #統整話題、無網址版 #節目話題分析、#封存本週話題 會納入 TopicHighlights。
-- 節目整理相關功能從 ConversationLog 讀取資料時，只讀使用者訊息，不納入小浣回覆。
-- 避免小浣自己的功能性回覆被反覆納入話題整理，降低資料污染。
-- 新增分層 help：#help、#help 清理、#help 管理、#help 資料、#help 全部。
-- #help 只保留常用入口，清理、管理、資料表說明改由分層 help 顯示。
-- 新增多資料表維護入口，所有維護動作只作用於目前 conversationId。
-- 維護指令不會跨聊天室處理資料，不刪整張 Sheet，也不刪表頭。
-- 新增 14_HighlightsCleanup.gs，集中管理 TopicHighlights 與資料維護工具。
-- 新增 15_BuiltInCommands.gs，將 help、version、reset、畫重點、維護、封存等內建指令從 01_Main.gs 中抽離。
-- 新增 16_ResponseTextsV1103.gs，放置 v1.10.3 新增固定回覆文案。
-- 新增 17_VersionTextsV1103.gs，提供 v1.10.3 的 #版本 與 #版本紀錄顯示。
-- 01_Main.gs 進一步瘦身，只保留 webhook 主流程、高階事件分流與一般指令流程。
-- 10_TopicFeatures.gs 更新為 user-only ConversationLog + TopicHighlights + WebSummary + WeeklySummary 的話題資料結構。
-- CURRENT_VERSION.md 更新為 v1.10.3 版本判定文件。
-- README.md 更新 v1.10.3 專案說明與維護規則。
+v1.10.2 Restore Baseline
+- 回溯並整理目前 main 的正式基準為 v1.10.2 Secretary Cleanup Edition。
+- v1.10.3 Highlight & Cleanup Edition 曾嘗試導入 #畫重點、TopicHighlights、分層 help 與多資料表清理，但該批變更已被 revert，不視為目前正式實作。
+- 修復 README.md 中殘留 v1.10.3 內容導致 markdown 結構混亂的問題。
+- 更新 CURRENT_VERSION.md，明確宣告目前 Source of Truth 為 main branch 最新 commit。
+- 後續若要重新導入 #畫重點 / TopicHighlights，建議從乾淨 v1.10.2 baseline 重新規劃與開新 PR。
 
 // ==================================================
 
@@ -63,67 +50,3 @@ v1.10.0 News Inbox Edition
 - 同步更新 00_Config.gs、01_Main.gs、02_LineCommands.gs、12_ResponseTexts.gs、README.md、CURRENT_VERSION.md。
 
 // ==================================================
-
-2026-06-05
-v1.9.3 Gemini JSON Mode Hotfix
-- 以 v1.9.2 Humanized System Reply Edition 為基礎，維持 Google Apps Script 分檔架構、既有 LINE 指令流程與主要 Sheet 架構。
-- 修正 Gemini API 400 錯誤：generation_config.response_format.text.mime_type INVALID_ARGUMENT。
-- 修改 08_GeminiService.gs，將 Gemini generationConfig 從 responseFormat.text.mimeType/schema 退回 responseMimeType: 'application/json'。
-- 保留 getGeminiLazySummarySchema_() 與 getGeminiWebExtractorSchema_()，但暫時只作為程式端資料契約與未來升級參考，不直接送進 Gemini API。
-- 補上詳細註解，說明目前 v1beta + gemini-3.1-flash-lite 與 responseFormat.text.mimeType/schema 不相容。
-- 更新 12_ResponseTexts.gs 的 #版本 / #版本紀錄 內建版本資訊。
-- 同步更新 README.md 與 CURRENT_VERSION.md。
-
-// ==================================================
-
-2026-06-05
-v1.9.2 Humanized System Reply Edition
-- 以 v1.9.1 Structured Gemini Output Edition 為基礎，維持 Google Apps Script 分檔架構、既有 LINE 指令流程與主要 Sheet 架構。
-- 新增 12_ResponseTexts.gs，集中管理不經過 LLM 的固定回覆文字、版本資訊與版本紀錄。
-- 新增 #版本 指令，可回覆目前版本與本次新增功能。
-- 新增 #版本紀錄 指令，可回覆主要版本更新摘要。
-- 調整任務接收、pending reply 交付、reset、清空紀錄、#記錄、錯誤提示、封存完成等固定回覆語氣。
-- 修改 00_Config.gs，將 #版本 / #版本紀錄 加入 TRIGGER_PREFIXES。
-- 修改 01_Main.gs，加入 #版本 / #版本紀錄 指令處理，並改用 12_ResponseTexts.gs 的固定文案。
-- 修改 02_LineCommands.gs，新增 version log mode 與 help 說明。
-- 修改 07_WebTaskQueue.gs，調整網址任務失敗與快讀結果格式。
-- 修改 10_TopicFeatures.gs，調整沒有素材與封存完成時的固定提示。
-- 同步更新 README.md 與 CURRENT_VERSION.md。
-
-// ==================================================
-
-2026-06-05
-v1.9.1 Structured Gemini Output Edition
-- 以 v1.9.0 Service Split Edition 為基礎，維持 Google Apps Script 分檔架構與既有 LINE 指令流程。
-- 修改 08_GeminiService.gs，將 Gemini 網頁快讀摘要與 Gemini 網頁正文抽取改為 structured output schema。
-- 新增 getGeminiLazySummarySchema_()，集中定義快讀摘要 JSON 欄位、型別、必要欄位與 enum。
-- 新增 getGeminiWebExtractorSchema_()，集中定義正文抽取 JSON 欄位、型別與必要欄位。
-- 新增 buildGeminiJsonGenerationConfig_()，統一建立 Gemini REST API 的 JSON structured output generationConfig。
-- 新增 normalizeGeminiString_()、normalizeGeminiStringArray_()、normalizeGeminiNumber_()、normalizeGeminiEnum_()，作為 structured output 之外的最後防守。
-- 保留 parseJsonObjectLoose() fallback，避免偶發格式問題造成 WebTaskQueue 任務整個中斷。
-- 同步更新 README.md 與 CURRENT_VERSION.md。
-
-// ==================================================
-
-2026-06-05
-v1.9.0 Service Split Edition
-- 拆分原本過於肥大的 03_AiLogic.gs。
-- 新增 03_Utils.gs、04_Storage.gs、05_Memory.gs、06_WebReader.gs、07_WebTaskQueue.gs、08_GeminiService.gs、09_DeepSeekService.gs、10_TopicFeatures.gs。
-- 將原本 04_Prompts.gs 調整為 11_Prompts.gs，讓檔案順序符合系統流程。
-- 功能邏輯原則上不變，主要改善可維護性與未來擴充性。
-- 每個程式碼檔案補上責任說明與維護註解，方便未來人工或 AI 重新讀取。
-
-// ==================================================
-
-2026-06-04
-V1.7.1
--調整小浣回覆內容，讓回答更精簡
--重新定義程式版號
--一次性讀網址調整程3個
-// ==================================================
-
-
-// 版本：V1.7.0 Topic Pool Edition
-//
-// 核心架構：
-// 1. 一般聊天、摘要、標題：
