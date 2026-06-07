@@ -1,10 +1,23 @@
 2026-06-08
 v1.10.3 Highlight & Cleanup Edition
-- 新增 #畫重點 與 TopicHighlights。
-- 話題分析、統整、封存會參考 TopicHighlights。
-- 節目整理只讀使用者訊息，不納入小浣回覆。
-- 新增分層 help 與資料維護入口。
-- 新增 14_HighlightsCleanup.gs、15_BuiltInCommands.gs、16_ResponseTextsV1103.gs、17_VersionTextsV1103.gs。
+- 以 v1.10.2 Secretary Cleanup Edition 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 將 #記錄 升級為 #畫重點，新增 TopicHighlights 作為人工重點資料表。
+- #畫重點 會將去除指令後的內容寫入 TopicHighlights，而不是只留在 ConversationLog。
+- #統整話題、無網址版 #節目話題分析、#封存本週話題 會納入 TopicHighlights。
+- 節目整理相關功能從 ConversationLog 讀取資料時，只讀使用者訊息，不納入小浣回覆。
+- 避免小浣自己的功能性回覆被反覆納入話題整理，降低資料污染。
+- 新增分層 help：#help、#help 清理、#help 管理、#help 資料、#help 全部。
+- #help 只保留常用入口，清理、管理、資料表說明改由分層 help 顯示。
+- 新增多資料表維護入口，所有維護動作只作用於目前 conversationId。
+- 維護指令不會跨聊天室處理資料，不刪整張 Sheet，也不刪表頭。
+- 新增 14_HighlightsCleanup.gs，集中管理 TopicHighlights 與資料維護工具。
+- 新增 15_BuiltInCommands.gs，將 help、version、reset、畫重點、維護、封存等內建指令從 01_Main.gs 中抽離。
+- 新增 16_ResponseTextsV1103.gs，放置 v1.10.3 新增固定回覆文案。
+- 新增 17_VersionTextsV1103.gs，提供 v1.10.3 的 #版本 與 #版本紀錄顯示。
+- 01_Main.gs 進一步瘦身，只保留 webhook 主流程、高階事件分流與一般指令流程。
+- 10_TopicFeatures.gs 更新為 user-only ConversationLog + TopicHighlights + WebSummary + WeeklySummary 的話題資料結構。
+- CURRENT_VERSION.md 更新為 v1.10.3 版本判定文件。
+- README.md 更新 v1.10.3 專案說明與維護規則。
 
 // ==================================================
 
