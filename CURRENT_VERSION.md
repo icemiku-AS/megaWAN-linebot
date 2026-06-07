@@ -1,6 +1,8 @@
 # CURRENT_VERSION
 
-本文件是 MEGA浣 / 小浣 專案的現行版本判定文件。
+本文件是 MEGA浣 / 小浣 專案的「現行版本判定文件」。
+
+本文件主要供 AI 助手、維護者、協作者在讀取 GitHub 專案時，快速判斷哪一批檔案代表目前正式架構，避免誤用舊版對話、舊版備份檔案或 `99_changelog.md` 中的歷史內容。
 
 ---
 
@@ -19,10 +21,12 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.10.3 Highlight & Cleanup Edition  
-Current Working Branch: feature/v1103-highlights-cleanup  
+Current Version: v1.10.2 Secretary Cleanup Edition  
+Current Working Branch: feature/v1102-cleanup  
 Target Branch: main  
 Source of Truth: GitHub pull request branch before PR merge; after merge, GitHub main branch latest commit
+
+本文件在 PR 尚未合併前，描述的是本次 v1.10.2 工作分支內容。
 
 PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；請改以 `main` branch 最新 commit 作為唯一現行程式碼來源。
 
@@ -38,6 +42,8 @@ PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；
 
 ## Active Source Files
 
+以下檔案代表目前小浣正式版本的主要程式碼結構：
+
 - `00_Config.gs`
 - `01_Main.gs`
 - `02_LineCommands.gs`
@@ -52,20 +58,35 @@ PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；
 - `11_Prompts.gs`
 - `12_ResponseTexts.gs`
 - `13_NewsInbox.gs`
-- `14_HighlightsCleanup.gs`
-- `15_BuiltInCommands.gs`
-- `16_ResponseTextsV1103.gs`
-- `17_VersionTextsV1103.gs`
 
 ---
 
 ## Documentation Files
 
+以下檔案為輔助文件：
+
 - `README.md`
 - `99_changelog.md`
 - `CURRENT_VERSION.md`
 
-`99_changelog.md` 僅作為歷史版本紀錄；若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
+其中：
+
+- `README.md` 用於說明目前架構、檔案責任與維護方式。
+- `99_changelog.md` 用於保存歷史版本紀錄。
+- `CURRENT_VERSION.md` 用於明確宣告目前版本與判定規則。
+
+---
+
+## Changelog Reading Rule
+
+`99_changelog.md` 僅作為歷史版本紀錄。
+
+讀取 `99_changelog.md` 時，請注意：
+
+- 舊版段落不代表目前實作。
+- 不可將 v1.6、v1.7、v1.8、v1.9.x 等歷史版本描述直接視為目前程式邏輯。
+- 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
+- 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
 
 ---
 
@@ -73,29 +94,66 @@ PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；
 
 本專案目前不是 Node.js 專案。
 
-請勿預設本專案需要 Node.js、npm、package.json、node_modules、npm install 或 npm start。
+請勿預設本專案需要：
+
+- Node.js
+- npm
+- package.json
+- node_modules
+- npm install
+- npm start
 
 除非維護者明確表示要導入 `clasp` 或將專案改為本機 / 自架伺服器執行，否則請一律視為 Google Apps Script 專案。
 
 ---
 
-## v1.10.3 Key Difference
+## Secret Management Rule
 
-v1.10.3 是 Highlight & Cleanup Edition。
+本專案的 API Key、Token、Sheet ID 等敏感資料，不應寫入 GitHub 版本管理檔案。
+
+真正的敏感值應放在 Google Apps Script 的 Script Properties。
+
+GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，但不可保存真正的 secret value。
+
+---
+
+## Current Architecture Summary
+
+小浣目前是 Google Apps Script 分檔架構。
+
+核心流程：
+
+1. LINE webhook 進入 `01_Main.gs`
+2. LINE 指令與回覆處理由 `02_LineCommands.gs` 管理
+3. 系統常數集中於 `00_Config.gs`
+4. Google Sheet 與 Script Properties 入口集中於 `04_Storage.gs`
+5. 短期記憶由 `05_Memory.gs` 管理
+6. 網址擷取與 HTML 清理由 `06_WebReader.gs` 處理
+7. 舊網址快讀 / 節目分析背景任務由 `07_WebTaskQueue.gs` 處理
+8. Gemini API 相關流程由 `08_GeminiService.gs` 處理
+9. DeepSeek API 相關流程由 `09_DeepSeekService.gs` 處理
+10. 節目企劃功能由 `10_TopicFeatures.gs` 處理
+11. Prompt 內容集中於 `11_Prompts.gs`
+12. 固定回覆、版本資訊與版本紀錄集中於 `12_ResponseTexts.gs`
+13. 新聞素材池、NewsUrlQueue、NewsInbox、#本週新聞、#新聞補充由 `13_NewsInbox.gs` 處理
+
+---
+
+## v1.10.2 Key Difference
+
+v1.10.2 是 Secretary Cleanup Edition。
 
 本版主要調整：
 
-1. `#記錄` 升級為 `#畫重點`。
-2. 新增 `TopicHighlights` Sheet，讓人工標記的重點從 ConversationLog 中獨立出來。
-3. `#統整話題`、無網址版 `#節目話題分析`、`#封存本週話題` 都會納入 TopicHighlights。
-4. 節目整理相關功能從 ConversationLog 只讀使用者訊息，不納入小浣回覆。
-5. 新增分層 help：`#help`、`#help 清理`、`#help 管理`、`#help 資料`、`#help 全部`。
-6. 新增多資料表維護指令，且都只作用於目前 conversationId。
-7. `01_Main.gs` 進一步瘦身，內建指令集中到 `15_BuiltInCommands.gs`。
+1. 移除 `#摘要`、`#摘要最近`、`#回顧最近`、`#標題`。
+2. 移除 `#讀網址`，保留 `#懶人包` 作為唯一明確網址快讀入口。
+3. 個人聊天室直接貼網址時，改與群組一致，收進 `NewsUrlQueue` / `NewsInbox`。
+4. 清理不再使用的 command parsing、prompt mode、DeepSeek mode 參數與固定回覆文案。
+5. 保留 Google Apps Script 分檔架構，不導入 Node.js / npm。
 
 ---
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.10.3 Highlight & Cleanup Edition  
-Last Confirmed Date: 2026-06-08
+Last Confirmed Version: v1.10.2 Secretary Cleanup Edition  
+Last Confirmed Date: 2026-06-07

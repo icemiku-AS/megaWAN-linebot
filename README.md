@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.10.3 Highlight & Cleanup Edition
+# 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
 
 這是 **MEGA浣 / 小浣** 的 LINE Bot 專案。
 
