@@ -2,13 +2,13 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
+// 小浣 LINE Bot v1.10.4 Data Cleanup Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
-// 4. v1.10.3 只做「重點資料層」：新增 TopicHighlights 與 #畫重點，不做多 Sheet 清理。
+// 4. v1.10.4 新增資料清理層：多資料表清理皆需二段確認，且只作用於目前 conversationId。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -18,7 +18,7 @@ const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.10.3 中 Gemini 仍負責：
+// v1.10.4 中 Gemini 仍負責：
 // 1. 快讀摘要：#懶人包 指令使用
 // 2. 正文抽取：#節目話題分析 使用
 // 3. 新聞素材分類：直接貼網址進 NewsInbox 使用
@@ -78,6 +78,7 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 2. 個人聊天室直接貼網址也走相同 NewsInbox 收件流程，方便在私訊測試群組行為。
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
 // 4. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
+// 5. v1.10.4 新增多資料表清理指令，所有清理都只作用於目前 conversationId。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#help',
@@ -86,6 +87,11 @@ const TRIGGER_PREFIXES = [
   '#版本',
   '#畫重點',
   '#清空紀錄',
+  '#清空重點',
+  '#清空快讀',
+  '#清空封存',
+  '#清空新聞',
+  '#清空待回覆',
   '#封存本週話題',
   '#懶人包',
   '#本週新聞',
