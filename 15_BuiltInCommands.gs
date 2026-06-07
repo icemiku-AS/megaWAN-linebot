@@ -35,12 +35,7 @@ function handleBuiltInCommandIfNeeded_(event, conversationId, userText) {
 
   const maintenanceInfo = getCleanupCommandInfo_(userText);
   if (maintenanceInfo) {
-    const text = maintenanceInfo.isConfirm
-      ? getBotTextAiError_()
-      : getBotTextCleanupWarning_(maintenanceInfo);
-    replyToLine(event.replyToken, text);
-    logAssistantReplyToSheet(event, conversationId, text, 'cleanup_warning');
-    return true;
+    return handleMaintenanceCommand_(event, conversationId, maintenanceInfo);
   }
 
   if (userText.startsWith('#畫重點')) {
@@ -68,6 +63,26 @@ function handleHighlightCommand_(event, conversationId, userText) {
   const savedText = getBotTextHighlightSaved_();
   replyToLine(event.replyToken, savedText);
   logAssistantReplyToSheet(event, conversationId, savedText, 'highlight_saved');
+  return true;
+}
+
+function handleMaintenanceCommand_(event, conversationId, maintenanceInfo) {
+  if (!maintenanceInfo.isConfirm) {
+    const warningText = getBotTextCleanupWarning_(maintenanceInfo);
+    replyToLine(event.replyToken, warningText);
+    logAssistantReplyToSheet(event, conversationId, warningText, 'cleanup_warning');
+    return true;
+  }
+
+  const maintenanceResult = performDataCleanup_(maintenanceInfo.key, conversationId);
+
+  if (maintenanceInfo.key === 'conversation_log') {
+    clearConversationHistory(conversationId);
+  }
+
+  const doneText = getBotTextCleanupDone_(maintenanceInfo, maintenanceResult);
+  replyToLine(event.replyToken, doneText);
+  logAssistantReplyToSheet(event, conversationId, doneText, 'cleanup_done');
   return true;
 }
 
