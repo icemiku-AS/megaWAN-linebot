@@ -12,14 +12,14 @@ function handleBuiltInCommandIfNeeded_(event, conversationId, userText) {
   }
 
   if (userText === '#版本' || userText === '#小浣 版本') {
-    const versionText = getBotVersionText_();
+    const versionText = getBotVersionTextV1103_();
     replyToLine(event.replyToken, versionText);
     logAssistantReplyToSheet(event, conversationId, versionText, 'version');
     return true;
   }
 
   if (userText === '#版本紀錄' || userText === '#小浣 版本紀錄') {
-    const versionHistoryText = getBotVersionHistoryText_();
+    const versionHistoryText = getBotVersionHistoryTextV1103_();
     replyToLine(event.replyToken, versionHistoryText);
     logAssistantReplyToSheet(event, conversationId, versionHistoryText, 'version_history');
     return true;
