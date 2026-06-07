@@ -2,12 +2,12 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
+// 小浣 LINE Bot v1.10.4 Data Cleanup Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. v1.10.3 將 #記錄 升級為 #畫重點，並新增 TopicHighlights 資料層。
+// 3. v1.10.4 新增分層 help，避免清理指令全部塞進主 help 造成壓力。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -15,9 +15,6 @@ function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userTe
     return null;
   }
 
-  // 1. #節目話題分析 + 網址：走深度網址分析 queue。
-  // 2. #懶人包：走快讀摘要 queue。
-  // 3. 其他含網址訊息：收進 NewsInbox queue，不再自動產出懶人包。
   if (userText.startsWith('#節目話題分析')) {
     return enqueueWebTask(event, conversationId, userText, TASK_TYPE_PROGRAM_TOPIC_ANALYSIS);
   }
@@ -29,18 +26,15 @@ function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userTe
   return enqueueNewsUrlTasks(event, conversationId, userText);
 }
 
-
 function buildWebTaskAcceptedText_(taskType, urlCount) {
   return getBotTextWebTaskAccepted_(taskType, urlCount);
 }
-
 
 function hasTriggerPrefix(text) {
   return TRIGGER_PREFIXES.some(function(prefix) {
     return text.startsWith(prefix);
   });
 }
-
 
 function getUserLogMode(text) {
   if (text.startsWith('#節目話題分析')) return 'program_topic_analysis_command';
@@ -49,7 +43,7 @@ function getUserLogMode(text) {
   if (text.startsWith('#新聞補充')) return 'manual_news_supplement_command';
   if (text.startsWith('#封存本週話題')) return 'archive_command';
   if (text.startsWith('#懶人包')) return 'web_read_command';
-  if (text.startsWith('#清空紀錄')) return 'clear_command';
+  if (text.startsWith('#清空')) return 'cleanup_command';
   if (text.startsWith('#版本紀錄')) return 'version_history_command';
   if (text.startsWith('#版本')) return 'version_command';
   if (text.startsWith('#畫重點')) return 'highlight_command';
@@ -61,7 +55,6 @@ function getUserLogMode(text) {
 
   return 'input';
 }
-
 
 function parseCommand(text) {
   let mode = 'chat';
@@ -114,26 +107,16 @@ function parseCommand(text) {
   };
 }
 
-
 function getConversationId(event) {
   const source = event.source || {};
   const sourceType = source.type || 'unknown';
 
-  if (sourceType === 'user') {
-    return 'user:' + source.userId;
-  }
-
-  if (sourceType === 'group') {
-    return 'group:' + source.groupId;
-  }
-
-  if (sourceType === 'room') {
-    return 'room:' + source.roomId;
-  }
+  if (sourceType === 'user') return 'user:' + source.userId;
+  if (sourceType === 'group') return 'group:' + source.groupId;
+  if (sourceType === 'room') return 'room:' + source.roomId;
 
   return 'unknown';
 }
-
 
 function replyToLine(replyToken, text) {
   const token = getRequiredScriptProperty_('LINE_CHANNEL_ACCESS_TOKEN');
@@ -141,20 +124,13 @@ function replyToLine(replyToken, text) {
 
   const payload = {
     replyToken: replyToken,
-    messages: [
-      {
-        type: 'text',
-        text: safeText || getBotTextEmptyReply_()
-      }
-    ]
+    messages: [{ type: 'text', text: safeText || getBotTextEmptyReply_() }]
   };
 
   const options = {
     method: 'post',
     contentType: 'application/json',
-    headers: {
-      Authorization: 'Bearer ' + token
-    },
+    headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify(payload),
     muteHttpExceptions: true
   };
@@ -167,61 +143,110 @@ function replyToLine(replyToken, text) {
   }
 }
 
+function normalizeHelpCommandText_(text) {
+  let normalized = String(text || '').trim();
+
+  if (normalized.startsWith('#小浣')) {
+    normalized = normalized.replace('#小浣', '').trim();
+  }
+
+  if (normalized === 'help' || normalized.startsWith('help ')) {
+    normalized = '#' + normalized;
+  }
+
+  return normalized;
+}
+
+function getHelpTextByCommand_(text) {
+  const normalized = normalizeHelpCommandText_(text);
+
+  if (normalized === '#help') return getHelpText();
+  if (normalized === '#help 清理') return getHelpCleanupText_();
+  if (normalized === '#help 管理') return getHelpAdminText_();
+  if (normalized === '#help 資料') return getHelpDataText_();
+  if (normalized === '#help 全部') return getHelpAllText_();
+
+  return null;
+}
 
 function getHelpText() {
   return [
     '小浣可以幫你把群組裡的雜訊、網址和討論，整理成節目素材。',
-    '目前可用指令如下：',
     '',
-    '直接貼網址',
-    '我會先收進 NewsInbox 新聞素材池，背景慢慢抓內容、分類、標記節目潛力。需要整理時輸入 #本週新聞。',
-    '這個行為在群組與個人聊天室都一樣；差別只是群組聊天要用 #小浣 叫我，私訊可以直接問。',
+    '常用功能：',
+    '・直接貼網址：收進 NewsInbox 新聞素材池。',
+    '・#本週新聞：整理最近 7 天新聞素材。',
+    '・#新聞補充 文字 + 網址：人工補充新聞素材。',
+    '・#懶人包 網址：產生網址快讀摘要。',
+    '・#節目話題分析：分析網址或近期素材。',
+    '・#統整話題：整理近期節目話題地圖。',
+    '・#畫重點 內容：寫入 TopicHighlights。',
+    '・#封存本週話題：寫入 WeeklySummary。',
     '',
-    '#本週新聞',
-    '整理最近 7 天 NewsInbox 中的新聞素材，只列分類、標題、網址與節目潛力，不主動分析。',
+    '更多說明：',
+    '・#help 清理',
+    '・#help 管理',
+    '・#help 資料',
+    '・#help 全部'
+  ].join('\n');
+}
+
+function getHelpCleanupText_() {
+  return [
+    '資料清理指令：',
     '',
-    '#新聞補充 文字 + 網址',
-    '如果網址讀不到，或你想人工補充素材，可以用自然語言告訴我。我會交給 DeepSeek 判斷分類後寫入 NewsInbox。',
+    '所有清理只處理目前聊天室，不會影響其他私訊或群組。',
+    '所有清理都需要二段確認。',
     '',
-    '#懶人包 網址',
-    '明確指定我要做網址快讀摘要。這會走 WebSummary 與 PendingReplies。',
+    '・#清空紀錄：ConversationLog，並清除短期記憶。',
+    '・#清空重點：TopicHighlights。',
+    '・#清空快讀：WebSummary 與 WebTaskQueue。',
+    '・#清空封存：WeeklySummary。',
+    '・#清空新聞：NewsInbox 與 NewsUrlQueue。',
+    '・#清空待回覆：PendingReplies。',
     '',
-    '#節目話題分析 網址',
-    '針對該網址做深度節目話題分析，包含事件重點、爭議焦點、主持切角、段落拆法與待查證點。',
+    '用法：先輸入清理指令看影響範圍，確認後再輸入「原指令 確認」。'
+  ].join('\n');
+}
+
+function getHelpAdminText_() {
+  return [
+    '管理指令：',
     '',
-    '#節目話題分析',
-    '沒有貼網址時，我會根據最近使用者聊天、TopicHighlights、WebSummary 與 WeeklySummary，自行判斷目前最值得分析的節目話題。',
+    '・#版本：查看目前版本。',
+    '・#版本紀錄：查看近期版本紀錄。',
+    '・#reset：清除短期對話記憶，不動 Google Sheet。',
+    '・#help 清理：查看資料清理指令。',
+    '・#help 資料：查看各 Sheet 用途。'
+  ].join('\n');
+}
+
+function getHelpDataText_() {
+  return [
+    '主要資料表：',
     '',
-    '#統整話題',
-    '整合最近使用者聊天、人工畫重點、網址快讀摘要與封存記憶，整理近期可用節目話題地圖。',
+    '・ConversationLog：原始對話紀錄。',
+    '・TopicHighlights：#畫重點 的人工重點。',
+    '・WeeklySummary：#封存本週話題 的長期記憶。',
+    '・WebTaskQueue：#懶人包 與網址分析任務。',
+    '・WebSummary：網址快讀摘要。',
+    '・NewsUrlQueue：直接貼網址後的待處理網址。',
+    '・NewsInbox：新聞素材池。',
+    '・PendingReplies：背景任務完成後等待交付的回覆。'
+  ].join('\n');
+}
+
+function getHelpAllText_() {
+  return [
+    getHelpText(),
     '',
-    '#封存本週話題',
-    '把最近使用者聊天、人工畫重點與網址摘要整理成極簡長期記憶，寫入 WeeklySummary。',
+    '---',
+    getHelpCleanupText_(),
     '',
-    '#小浣 你的問題',
-    '例：#小浣 幫我整理這週可以聊的 AI 話題',
+    '---',
+    getHelpAdminText_(),
     '',
-    '#畫重點 重要內容',
-    '把某段重點寫入 TopicHighlights。後續 #統整話題、#節目話題分析、#封存本週話題 都會優先參考。',
-    '',
-    '#版本',
-    '查看小浣目前版本與本次新增功能。',
-    '',
-    '#版本紀錄',
-    '查看小浣主要版本更新摘要。',
-    '',
-    '#reset',
-    '清除目前這個聊天室的短期對話記憶，不會刪除 Google Sheet 紀錄。',
-    '',
-    '#清空紀錄',
-    '查看清空目前聊天室 ConversationLog 紀錄的確認提示。',
-    '',
-    '#清空紀錄 確認',
-    '刪除目前聊天室的 ConversationLog 長期紀錄，並清除短期記憶；不刪 WeeklySummary、WebSummary、NewsInbox、TopicHighlights。',
-    '',
-    '#help',
-    '查看指令說明。',
-    '',
-    'v1.10.3 起，#記錄 已升級為 #畫重點；多資料表清理尚未在本版實作。'
+    '---',
+    getHelpDataText_()
   ].join('\n');
 }
