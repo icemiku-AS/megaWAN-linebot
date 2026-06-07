@@ -21,16 +21,15 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.10.3 Highlight Layer Edition  
-Current Pull Request: PR #14  
-Current Working Branch: feature/v1103-highlights  
+Current Version: v1.10.4 Data Cleanup Edition  
+Current Working Branch: feature/v1104-data-cleanup  
 Target Branch: main  
-Source of Truth before merge: GitHub PR #14 branch `feature/v1103-highlights`  
+Source of Truth before merge: GitHub PR branch `feature/v1104-data-cleanup`  
 Source of Truth after merge: GitHub `main` branch latest commit
 
-PR #14 合併前，若要檢查 v1.10.3，請讀 `feature/v1103-highlights`。
+PR 合併前，若要檢查 v1.10.4，請讀 `feature/v1104-data-cleanup`。
 
-PR #14 合併後，不要再把 `feature/v1103-highlights` 視為現行執行來源；請改以 `main` branch 最新 commit 作為唯一現行程式碼來源。
+PR 合併後，不要再把 `feature/v1104-data-cleanup` 視為現行執行來源；請改以 `main` branch 最新 commit 作為唯一現行程式碼來源。
 
 若本文件、README、Changelog、舊對話紀錄、先前上傳檔案或其他分支之間出現矛盾，請依照下列優先順序判斷：
 
@@ -57,7 +56,7 @@ PR #14 合併後，不要再把 `feature/v1103-highlights` 視為現行執行來
 
 ## Active Source Files
 
-以下檔案代表 v1.10.3 Highlight Layer Edition 的正式程式結構：
+以下檔案代表 v1.10.4 Data Cleanup Edition 的正式程式結構：
 
 - `00_Config.gs`
 - `01_Main.gs`
@@ -74,58 +73,55 @@ PR #14 合併後，不要再把 `feature/v1103-highlights` 視為現行執行來
 - `12_ResponseTexts.gs`
 - `13_NewsInbox.gs`
 - `14_TopicHighlights.gs`
+- `15_DataCleanup.gs`
 
 ---
 
-## v1.10.3 Key Difference
+## v1.10.4 Key Difference
 
-v1.10.3 是 Highlight Layer Edition。
+v1.10.4 是 Data Cleanup Edition。
 
-本版只做「重點資料層」，不做多資料表清理。
+本版只做「資料清理層」，不修改 AI prompt 主邏輯、不修改網址讀取架構、不導入 Node.js。
 
 主要調整：
 
-1. `#記錄` 升級為 `#畫重點`。
-2. 新增 `TopicHighlights` Sheet，保存使用者手動標記的重要內容。
-3. `#統整話題`、無網址版 `#節目話題分析`、`#封存本週話題` 會納入 TopicHighlights。
-4. 節目整理相關功能從 ConversationLog 讀資料時，只讀使用者訊息，不納入小浣回覆。
-5. 保留 v1.10.2 的網址行為：直接貼網址收進 NewsInbox；明確使用 `#懶人包` 才做快讀摘要。
-6. `#清空紀錄` 仍只處理 ConversationLog，不會清除 TopicHighlights、WeeklySummary、WebSummary 或 NewsInbox。
+1. 新增分層 help：`#help`、`#help 清理`、`#help 管理`、`#help 資料`、`#help 全部`。
+2. 新增多資料表清理指令：`#清空重點`、`#清空快讀`、`#清空封存`、`#清空新聞`、`#清空待回覆`。
+3. 保留並整理既有 `#清空紀錄`，改走與其他清理指令相同的資料清理流程。
+4. 所有清理都採二段式確認，例如 `#清空重點` → `#清空重點 確認`。
+5. 所有清理都只作用於目前 `conversationId`，不跨聊天室、不刪整張 Sheet、不刪表頭。
+6. 新增 `15_DataCleanup.gs`，集中管理清理指令解析、清理目標定義、依 ConversationId 刪除 row 與清理結果統計。
 
 ---
 
-## Explicitly Not Included in v1.10.3
+## Cleanup Command Scope
+
+清理指令與資料表對應如下：
+
+- `#清空紀錄`：`ConversationLog`，並清除短期記憶。
+- `#清空重點`：`TopicHighlights`。
+- `#清空快讀`：`WebSummary`、`WebTaskQueue`。
+- `#清空封存`：`WeeklySummary`。
+- `#清空新聞`：`NewsInbox`、`NewsUrlQueue`。
+- `#清空待回覆`：`PendingReplies`。
+
+所有清理都只限目前聊天室的 `conversationId`。
+
+---
+
+## Explicitly Not Included in v1.10.4
 
 以下功能不是本版內容，不要在讀取本版時誤判為已實作：
 
-- `#清空重點`
-- `#清空快讀`
-- `#清空封存`
-- `#清空新聞`
-- `#清空待回覆`
-- 多資料表清理指令
-- `15_BuiltInCommands.gs`
-- `16_ResponseTextsV1103.gs`
-- `17_VersionTextsV1103.gs`
-- 任何 Node.js / npm / 自架伺服器架構
+- `#資料狀態`
+- 跨聊天室全域清理
+- 自動排程清理
+- 清理前自動備份 Sheet
+- Node.js / npm / 自架伺服器架構
+- 改寫 Gemini / DeepSeek prompt 主邏輯
+- 改寫 NewsInbox 分類架構
 
-上述清理功能若要實作，應另開 v1.10.4 或後續 feature branch，不要把舊 PR #10 的失敗嘗試當作目前程式碼來源。
-
----
-
-## Reverted / Historical Work Warning
-
-曾經有一版 v1.10.3 Highlight & Cleanup Edition 嘗試同時導入：
-
-- TopicHighlights
-- 分層 help
-- 多資料表清理
-- 內建指令拆檔
-- 額外版本文字檔
-
-該批修改後來已被 revert，不是目前正式實作。
-
-目前 v1.10.3 Highlight Layer Edition 是從乾淨 v1.10.2 baseline 重新製作，只保留重點資料層，不延續舊失敗分支的多資料表清理架構。
+上述功能若要實作，應另開 v1.10.5 或後續 feature branch。
 
 ---
 
@@ -133,14 +129,7 @@ v1.10.3 是 Highlight Layer Edition。
 
 本專案目前不是 Node.js 專案。
 
-請勿預設本專案需要：
-
-- Node.js
-- npm
-- package.json
-- node_modules
-- npm install
-- npm start
+請勿預設本專案需要 Node.js、npm、package.json、node_modules、npm install 或 npm start。
 
 除非維護者明確表示要導入 `clasp` 或將專案改為本機 / 自架伺服器執行，否則請一律視為 Google Apps Script 專案。
 
@@ -152,22 +141,25 @@ PR 合併後，建議先在 Apps Script 執行：
 
 - `setupLogSheet()`
 
-確認 `TopicHighlights` 已建立。
-
 接著在 LINE 測試：
 
 - `#版本`
 - `#help`
-- `#畫重點 測試一段節目重點`
-- `#統整話題`
-- `#節目話題分析`
-- `#封存本週話題`
-- `#清空紀錄`，確認它只提示清 ConversationLog，不影響 TopicHighlights
+- `#help 清理`
+- `#help 管理`
+- `#help 資料`
+- `#清空重點`
+- `#清空重點 確認`
+- `#清空快讀`
+- `#清空封存`
+- `#清空新聞`
+- `#清空待回覆`
+
+測試清理時建議先使用測試聊天室，確認只處理目前 `conversationId`。
 
 ---
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.10.3 Highlight Layer Edition  
-Last Confirmed Pull Request: PR #14  
+Last Confirmed Version: v1.10.4 Data Cleanup Edition  
 Last Confirmed Date: 2026-06-08

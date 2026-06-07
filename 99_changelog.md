@@ -1,4 +1,14 @@
 2026-06-08
+v1.10.4 Data Cleanup Edition
+- 以 v1.10.3 Highlight Layer Edition 為基礎，維持 Google Apps Script 分檔架構。
+- 新增分層 help 與資料維護流程，讓常用說明、管理說明、資料表說明與清理說明分開。
+- 新增 15_DataCleanup.gs，集中管理目前聊天室範圍內的資料維護邏輯。
+- 新增多資料表清理入口，採二段式確認，並只作用於目前 conversationId。
+- 本版不修改 AI prompt 主邏輯、不修改網址讀取架構、不導入 Node.js / npm。
+
+// ==================================================
+
+2026-06-08
 v1.10.3 Highlight Layer Edition
 - 以乾淨 v1.10.2 Secretary Cleanup Edition baseline 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
 - 將 #記錄 升級為 #畫重點，新增 TopicHighlights 作為人工重點資料表。
