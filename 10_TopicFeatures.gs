@@ -2,14 +2,13 @@
 // 10_TopicFeatures.gs
 // 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
 //
-// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
+// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
 //
 // 設計說明：
-// 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
-// 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
-// 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
-// 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
-// 5. v1.9.2 起，不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
+// 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
+// 2. v1.10.3 起，節目整理相關功能從 ConversationLog 只讀 role=user，避免小浣回覆污染素材。
+// 3. v1.10.3 起，TopicHighlights 是人工畫重點資料，統整、分析、封存時都要優先參考。
+// 4. WeeklySummary 仍是封存結果；封存來源是 user-only ConversationLog + TopicHighlights + WebSummary。
 // ======================================================
 
 // ======================================================
@@ -20,7 +19,12 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt)
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
-    true
+    false
+  );
+
+  const recentHighlightText = getRecentTopicHighlightsText(
+    conversationId,
+    DEFAULT_RECENT_TOPIC_HIGHLIGHT_COUNT
   );
 
   const recentWebSummaryText = getRecentWebSummariesText(
@@ -30,24 +34,33 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt)
 
   const recentWeeklySummaryText = getRecentWeeklySummaryText(conversationId, 8);
 
-  if (!recentConversationText && !recentWebSummaryText && !recentWeeklySummaryText) {
+  if (!recentConversationText && !recentHighlightText && !recentWebSummaryText && !recentWeeklySummaryText) {
     return getBotTextNoTopicContextForAnalysis_();
   }
 
   const prompt = [
     '使用者下了 #節目話題分析，但沒有貼網址。',
     '',
-    '請根據最近聊天內容、WebSummary 網址快讀摘要，以及 WeeklySummary 封存記憶，自行判斷使用者最可能想分析的是：',
+    '請根據最近使用者聊天內容、TopicHighlights 人工畫重點、WebSummary 網址快讀摘要，以及 WeeklySummary 封存記憶，自行判斷使用者最可能想分析的是：',
     '1. 剛剛聊天正在討論的內容',
     '2. 使用者正在寫的內容',
-    '3. 最近貼過且最有節目潛力的網址素材',
-    '4. 或近期群組累積出的共同主題',
+    '3. 使用者手動畫重點的內容',
+    '4. 最近貼過且最有節目潛力的網址素材',
+    '5. 或近期群組累積出的共同主題',
+    '',
+    '重要規則：',
+    '1. ConversationLog 只提供使用者訊息，不包含小浣回覆。',
+    '2. TopicHighlights 是使用者手動畫出的高優先級素材，分析時應優先考慮。',
+    '3. 不可無中生有，沒有資料就明確說需要補查。',
     '',
     '使用者補充需求：',
     userPrompt || '無',
     '',
-    '最近 ConversationLog：',
+    '最近使用者 ConversationLog：',
     recentConversationText || '無',
+    '',
+    '最近 TopicHighlights：',
+    recentHighlightText || '無',
     '',
     '最近 WebSummary：',
     recentWebSummaryText || '無',
@@ -84,7 +97,12 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
-    true
+    false
+  );
+
+  const recentHighlightText = getRecentTopicHighlightsText(
+    conversationId,
+    DEFAULT_RECENT_TOPIC_HIGHLIGHT_COUNT
   );
 
   const recentWebSummaryText = getRecentWebSummariesText(
@@ -94,23 +112,32 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
 
   const recentWeeklySummaryText = getRecentWeeklySummaryText(conversationId, 8);
 
-  if (!recentConversationText && !recentWebSummaryText && !recentWeeklySummaryText) {
+  if (!recentConversationText && !recentHighlightText && !recentWebSummaryText && !recentWeeklySummaryText) {
     return getBotTextNoTopicContextForIntegration_();
   }
 
   const prompt = [
     '使用者下了 #統整話題。',
     '',
-    '你的任務是把最近聊天內容、網址快讀摘要、封存記憶整合成「近期可用節目話題地圖」。',
+    '你的任務是把最近使用者聊天內容、人工畫重點、網址快讀摘要、封存記憶整合成「近期可用節目話題地圖」。',
     '',
     '這不是單篇分析。',
     '這是把一批素材整理成：哪些可以聊、哪些只是背景資料、哪些可以合併成同一段、哪些值得追蹤。',
     '',
+    '重要規則：',
+    '1. ConversationLog 只包含使用者訊息，不包含小浣回覆。',
+    '2. TopicHighlights 是使用者手動畫出的高優先級素材，統整時應優先參考。',
+    '3. WebSummary 是使用者明確要求 #懶人包 或分析網址後留下的素材。',
+    '4. WeeklySummary 是過去封存記憶，可用來判斷是否曾經討論過。',
+    '',
     '使用者補充需求：',
     userPrompt || '無',
     '',
-    '最近 ConversationLog：',
+    '最近使用者 ConversationLog：',
     recentConversationText || '無',
+    '',
+    '最近 TopicHighlights：',
+    recentHighlightText || '無',
     '',
     '最近 WebSummary：',
     recentWebSummaryText || '無',
@@ -120,7 +147,7 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
     '',
     '請輸出：',
     '1. 最近累積出的主要話題',
-    '2. 每個話題對應到哪些網址素材或聊天脈絡',
+    '2. 每個話題對應到哪些網址素材、畫重點或聊天脈絡',
     '3. 哪些只是背景資料',
     '4. 哪些有機會變成節目段落',
     '5. 建議本週優先處理的 1 到 3 個話題',
@@ -146,8 +173,11 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
 function archiveWeeklyTopics(event, conversationId) {
   const recentCount = 200;
   const recentItems = getRecentConversationItems(conversationId, recentCount, false);
+  const recentHighlightItems = getRecentTopicHighlightItems_(conversationId, DEFAULT_RECENT_TOPIC_HIGHLIGHT_COUNT);
+  const recentHighlightText = formatTopicHighlightItems_(recentHighlightItems);
+  const recentWebSummaryText = getRecentWebSummariesText(conversationId, 20);
 
-  if (!recentItems || recentItems.length === 0) {
+  if ((!recentItems || recentItems.length === 0) && (!recentHighlightItems || recentHighlightItems.length === 0) && !recentWebSummaryText) {
     return getBotTextArchiveNoData_();
   }
 
@@ -155,16 +185,18 @@ function archiveWeeklyTopics(event, conversationId) {
     return (index + 1) + '. [' + item.role + '/' + item.mode + '] ' + item.text;
   }).join('\n');
 
-  const recentWebSummaryText = getRecentWebSummariesText(conversationId, 20);
+  const rawMaterialCount = recentItems.length + recentHighlightItems.length;
 
   const prompt = [
-    '請把以下 LINE 群組最近討論整理成「極度精簡版長期記憶」。',
+    '請把以下近期素材整理成「極度精簡版長期記憶」。',
     '',
     '用途：',
     '這份摘要未來會被 AI 助手讀取，用來判斷這個話題以前是否討論過，以及當時有哪些觀點。',
     '',
-    'v1.7 補充：',
-    '如果近期 WebSummary 中有與對話相關的網址快讀摘要，也可以納入封存脈絡。',
+    '資料來源說明：',
+    '1. ConversationLog 僅包含使用者訊息，不包含小浣回覆。',
+    '2. TopicHighlights 是使用者手動畫出的重點，應優先保留。',
+    '3. WebSummary 是網址快讀摘要，可作為補充脈絡。',
     '',
     '請輸出成 JSON，且只輸出 JSON，不要加任何解釋文字。',
     '',
@@ -184,8 +216,11 @@ function archiveWeeklyTopics(event, conversationId) {
     '4. 如果討論很零散，請整理出最有價值的主題即可。',
     '5. 這份內容是給未來 AI 助手參考，所以要精煉、可重用、好檢索。',
     '',
-    '以下是最近對話紀錄：',
-    recentText,
+    '以下是最近使用者對話紀錄：',
+    recentText || '無',
+    '',
+    '以下是最近人工畫重點：',
+    recentHighlightText || '無',
     '',
     '以下是最近網址快讀摘要：',
     recentWebSummaryText || '無'
@@ -209,10 +244,10 @@ function archiveWeeklyTopics(event, conversationId) {
     archiveJson.summary || '',
     Array.isArray(archiveJson.reusableAngles) ? archiveJson.reusableAngles.join('\n') : '',
     Array.isArray(archiveJson.followUpQuestions) ? archiveJson.followUpQuestions.join('\n') : '',
-    recentItems.length
+    rawMaterialCount
   ]);
 
-  return getBotTextArchiveDone_(archiveJson, recentItems.length);
+  return getBotTextArchiveDone_(archiveJson, rawMaterialCount);
 }
 
 function parseArchiveJson(text) {
