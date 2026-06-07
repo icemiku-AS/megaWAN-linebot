@@ -2,14 +2,13 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.10.3 Highlight & Cleanup Edition
+// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
-// 4. v1.10.3 新增 TopicHighlights，讓 #畫重點 成為真正的人工釘選素材池。
-// 5. v1.10.3 新增分層 help 與二段式 Sheet 清理指令，避免 #help 過長，也避免誤刪資料。
+// 4. v1.10.2 聚焦「新聞素材秘書」定位：直接貼網址收進 NewsInbox，明確指令才做懶人包或節目分析。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -19,7 +18,7 @@ const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.10.3 中 Gemini 仍負責：
+// v1.10.2 中 Gemini 仍負責：
 // 1. 快讀摘要：#懶人包 指令使用
 // 2. 正文抽取：#節目話題分析 使用
 // 3. 新聞素材分類：直接貼網址進 NewsInbox 使用
@@ -33,9 +32,6 @@ const GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/m
 
 // 原始對話紀錄 Sheet
 const SHEET_NAME = 'ConversationLog';
-
-// 人工畫重點資料表：#畫重點 會寫入這裡，供統整、分析、封存優先參考。
-const TOPIC_HIGHLIGHTS_SHEET_NAME = 'TopicHighlights';
 
 // 封存後的極簡長期記憶 Sheet
 const WEEKLY_SUMMARY_SHEET_NAME = 'WeeklySummary';
@@ -53,7 +49,7 @@ const NEWS_INBOX_SHEET_NAME = 'NewsInbox';
 const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
 
 // 網址快讀摘要素材池
-// 這張表仍保留給 #懶人包、#統整話題、#節目話題分析與 #封存本週話題 使用。
+// 這張表仍保留給 #懶人包 與 #統整話題 使用
 const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
 
 
@@ -77,16 +73,15 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會自動排入 NewsInbox 新聞素材池。
 // 2. 個人聊天室直接貼網址也走相同 NewsInbox 收件流程，方便在私訊測試群組行為。
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
-// 4. v1.10.3 移除 #記錄，改由 #畫重點 寫入 TopicHighlights。
-// 5. #清空 作為清理指令總前綴，實際支援項目請看 #help 清理。
+// 4. v1.10.2 移除 #摘要 / #摘要最近 / #回顧最近 / #標題 / #讀網址，避免與核心素材秘書流程重疊。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#help',
   '#reset',
   '#版本紀錄',
   '#版本',
-  '#畫重點',
-  '#清空',
+  '#記錄',
+  '#清空紀錄',
   '#封存本週話題',
   '#懶人包',
   '#本週新聞',
@@ -128,8 +123,5 @@ const MAX_EXTRACTED_TEXT_FOR_DEEPSEEK = 12000;
 // #統整話題 預設讀取最近幾筆網址摘要
 const DEFAULT_RECENT_WEB_SUMMARY_COUNT = 20;
 
-// #統整話題 / #節目話題分析 沒貼網址時，預設讀取最近幾則使用者對話
+// #統整話題 / #節目話題分析 沒貼網址時，預設讀取最近幾則對話
 const DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC = 80;
-
-// #統整話題 / #節目話題分析 / #封存本週話題 預設讀取最近幾筆人工畫重點
-const DEFAULT_RECENT_TOPIC_HIGHLIGHT_COUNT = 50;
