@@ -1,8 +1,6 @@
 # CURRENT_VERSION
 
-本文件是 MEGA浣 / 小浣 專案的「現行版本判定文件」。
-
-本文件主要供 AI 助手、維護者、協作者在讀取 GitHub 專案時，快速判斷哪一批檔案代表目前正式架構，避免誤用舊版對話、舊版備份檔案或 `99_changelog.md` 中的歷史內容。
+本文件是 MEGA浣 / 小浣 專案的現行版本判定文件。
 
 ---
 
@@ -22,17 +20,14 @@
 
 Repository: icemiku-AS/megaWAN-linebot  
 Current Version: v1.10.2 Secretary Cleanup Edition  
-Current Working Branch: feature/v1102-cleanup  
-Target Branch: main  
-Source of Truth: GitHub pull request branch before PR merge; after merge, GitHub main branch latest commit
+Current Branch: main  
+Source of Truth: GitHub main branch latest commit
 
-本文件在 PR 尚未合併前，描述的是本次 v1.10.2 工作分支內容。
-
-PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；請改以 `main` branch 最新 commit 作為唯一現行程式碼來源。
+目前 main 已回到 v1.10.2 baseline。
 
 若本文件、README、Changelog、舊對話紀錄或先前上傳檔案之間出現矛盾，請依照下列優先順序判斷：
 
-1. GitHub 目標版本分支 / main branch 最新 commit 中的實際 `.gs` 程式碼
+1. GitHub main branch 最新 commit 中的實際 `.gs` 程式碼
 2. `CURRENT_VERSION.md`
 3. `README.md`
 4. `99_changelog.md` 的最新版本段落
@@ -63,30 +58,13 @@ PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；
 
 ## Documentation Files
 
-以下檔案為輔助文件：
-
 - `README.md`
 - `99_changelog.md`
 - `CURRENT_VERSION.md`
 
-其中：
+`99_changelog.md` 僅作為歷史版本紀錄。舊版段落不代表目前實作。
 
-- `README.md` 用於說明目前架構、檔案責任與維護方式。
-- `99_changelog.md` 用於保存歷史版本紀錄。
-- `CURRENT_VERSION.md` 用於明確宣告目前版本與判定規則。
-
----
-
-## Changelog Reading Rule
-
-`99_changelog.md` 僅作為歷史版本紀錄。
-
-讀取 `99_changelog.md` 時，請注意：
-
-- 舊版段落不代表目前實作。
-- 不可將 v1.6、v1.7、v1.8、v1.9.x 等歷史版本描述直接視為目前程式邏輯。
-- 若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
-- 若需要引用 changelog，請明確標示該內容屬於歷史紀錄或版本變更說明。
+若 changelog 與目前 `.gs` 程式碼不同，請以目前 `.gs` 程式碼為準。
 
 ---
 
@@ -94,14 +72,7 @@ PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；
 
 本專案目前不是 Node.js 專案。
 
-請勿預設本專案需要：
-
-- Node.js
-- npm
-- package.json
-- node_modules
-- npm install
-- npm start
+請勿預設本專案需要 Node.js、npm、package.json、node_modules、npm install 或 npm start。
 
 除非維護者明確表示要導入 `clasp` 或將專案改為本機 / 自架伺服器執行，否則請一律視為 Google Apps Script 專案。
 
@@ -113,7 +84,7 @@ PR 合併後，不要再把 `Current Working Branch` 視為現行執行來源；
 
 真正的敏感值應放在 Google Apps Script 的 Script Properties。
 
-GitHub 中可以保存 Script Properties 的「名稱」與「設定說明」，但不可保存真正的 secret value。
+GitHub 中可以保存 Script Properties 的名稱與設定說明，但不可保存真正的 secret value。
 
 ---
 
@@ -156,4 +127,4 @@ v1.10.2 是 Secretary Cleanup Edition。
 ## Last Confirmed
 
 Last Confirmed Version: v1.10.2 Secretary Cleanup Edition  
-Last Confirmed Date: 2026-06-07
+Last Confirmed Date: 2026-06-08
