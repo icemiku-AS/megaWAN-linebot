@@ -2,14 +2,14 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
+// 小浣 LINE Bot v1.10.4 Data Cleanup Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
 // 3. 群組與個人聊天室「直接貼網址」都維持 NewsInbox 收件分類。
 // 4. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
-// 5. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
+// 5. v1.10.4 將資料清理統一交給 15_DataCleanup.gs，所有清理都需二段確認。
 // ======================================================
 
 function setupLogSheet() {
@@ -34,7 +34,6 @@ function setupLogSheet() {
     webSummarySheet.getName()
   ].join(', ');
 }
-
 
 function installWebTaskQueueTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
@@ -61,7 +60,6 @@ function installWebTaskQueueTrigger() {
   return 'processWebTaskQueue and processNewsUrlQueue triggers installed.';
 }
 
-
 function doPost(e) {
   try {
     if (!e || !e.postData || !e.postData.contents) {
@@ -82,7 +80,6 @@ function doPost(e) {
     return HtmlService.createHtmlOutput('OK');
   }
 }
-
 
 function handleLineEvent(event) {
   if (!event || !event.replyToken) {
@@ -113,12 +110,6 @@ function handleLineEvent(event) {
 
   // ======================================================
   // Pending Reply 優先交付
-  //
-  // 如果使用者這次訊息本身也貼了網址，會先根據目前規則收件：
-  // 1. #懶人包：排入 WebTaskQueue 快讀摘要。
-  // 2. #節目話題分析：排入 WebTaskQueue 深度分析。
-  // 3. 其他直接貼網址：排入 NewsUrlQueue，後續進 NewsInbox。
-  // 接著再交付舊 pending，避免舊結果被新收件中斷。
   // ======================================================
 
   const pendingReply = getAndDeletePendingReply(conversationId);
@@ -134,9 +125,6 @@ function handleLineEvent(event) {
 
   // ======================================================
   // 群組一般訊息：沒有觸發詞但含網址 → NewsInbox 收件分類
-  //
-  // 群組裡沒有觸發詞、也沒有網址時，小浣保持安靜，避免打擾聊天。
-  // 個人聊天室不走這段，因為個人聊天室可以直接聊天；但後面會有共用的直接貼網址判斷。
   // ======================================================
 
   if (isGroupLike && !hasTriggerPrefix(userText)) {
@@ -154,8 +142,8 @@ function handleLineEvent(event) {
     return;
   }
 
-  if (userText === '#help' || userText === '#小浣 help') {
-    const helpText = getHelpText();
+  const helpText = getHelpTextByCommand_(userText);
+  if (helpText) {
     replyToLine(event.replyToken, helpText);
     logAssistantReplyToSheet(event, conversationId, helpText, 'help');
     return;
@@ -183,19 +171,24 @@ function handleLineEvent(event) {
     return;
   }
 
-  if (userText === '#清空紀錄') {
-    const warningText = getBotTextClearWarning_();
-    replyToLine(event.replyToken, warningText);
-    logAssistantReplyToSheet(event, conversationId, warningText, 'clear_warning');
-    return;
-  }
+  const cleanupInfo = getCleanupCommandInfo_(userText);
+  if (cleanupInfo) {
+    if (!cleanupInfo.isConfirm) {
+      const warningText = getBotTextCleanupWarning_(cleanupInfo);
+      replyToLine(event.replyToken, warningText);
+      logAssistantReplyToSheet(event, conversationId, warningText, 'cleanup_warning');
+      return;
+    }
 
-  if (userText === '#清空紀錄 確認') {
-    const deletedCount = deleteConversationLogs(conversationId);
-    clearConversationHistory(conversationId);
-    const doneText = getBotTextClearDone_(deletedCount);
+    const cleanupResult = performDataCleanup_(cleanupInfo.key, conversationId);
+
+    if (cleanupInfo.key === 'conversation_log') {
+      clearConversationHistory(conversationId);
+    }
+
+    const doneText = getBotTextCleanupDone_(cleanupInfo, cleanupResult);
     replyToLine(event.replyToken, doneText);
-    logAssistantReplyToSheet(event, conversationId, doneText, 'clear_done');
+    logAssistantReplyToSheet(event, conversationId, doneText, 'cleanup_done');
     return;
   }
 
@@ -260,8 +253,6 @@ function handleLineEvent(event) {
         : enqueueResult.error || getBotTextNoReadableUrl_();
 
     } else {
-      // 個人聊天室直接貼網址也與群組一致，收進 NewsInbox。
-      // 只有明確使用 #懶人包 時，才會排入 WebTaskQueue 產生快讀摘要。
       if (shouldUseWebReading(commandInfo.userPrompt)) {
         const enqueueResult = enqueueNewsUrlTasks(event, conversationId, commandInfo.userPrompt);
         aiReply = enqueueResult.ok
