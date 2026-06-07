@@ -1,13 +1,13 @@
 // ======================================================
 // 02_LineCommands.gs
-// 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
+// 處理 LINE 指令解析、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
+// 小浣 LINE Bot v1.10.3 Highlight & Cleanup Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. v1.10.2 保留新聞素材秘書核心指令，移除摘要 / 回顧 / 標題 / #讀網址 等低使用率或重疊指令。
+// 3. v1.10.3 將 #help 拆成分層說明，避免清理指令全部塞進主 help 造成使用者壓力。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -15,11 +15,6 @@ function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userTe
     return null;
   }
 
-  // v1.10.2：
-  // 1. #節目話題分析 + 網址：走深度網址分析 queue。
-  // 2. #懶人包：走快讀摘要 queue。
-  // 3. 其他含網址訊息：收進 NewsInbox queue，不再自動產出懶人包。
-  // 4. #讀網址 已移除，避免快讀入口過多造成維護與測試混淆。
   if (userText.startsWith('#節目話題分析')) {
     return enqueueWebTask(event, conversationId, userText, TASK_TYPE_PROGRAM_TOPIC_ANALYSIS);
   }
@@ -51,10 +46,10 @@ function getUserLogMode(text) {
   if (text.startsWith('#新聞補充')) return 'manual_news_supplement_command';
   if (text.startsWith('#封存本週話題')) return 'archive_command';
   if (text.startsWith('#懶人包')) return 'web_read_command';
-  if (text.startsWith('#清空紀錄')) return 'clear_command';
+  if (text.startsWith('#畫重點')) return 'highlight_command';
+  if (text.startsWith('#清空')) return 'cleanup_command';
   if (text.startsWith('#版本紀錄')) return 'version_history_command';
   if (text.startsWith('#版本')) return 'version_command';
-  if (text.startsWith('#記錄')) return 'note';
   if (text.startsWith('#小浣')) return 'assistant_command';
   if (text.startsWith('#reset')) return 'reset_command';
   if (text.startsWith('#help')) return 'help_command';
@@ -98,9 +93,9 @@ function parseCommand(text) {
     if (mode === 'web_read') {
       userPrompt = '請提供要讀取的網址。';
     } else if (mode === 'program_topic_analysis') {
-      userPrompt = '請根據最近聊天內容、網址快讀摘要與封存記憶，判斷目前最值得分析的節目話題。';
+      userPrompt = '請根據最近使用者聊天內容、網址快讀摘要、畫重點與封存記憶，判斷目前最值得分析的節目話題。';
     } else if (mode === 'integrate_topics') {
-      userPrompt = '請統整最近聊天內容、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
+      userPrompt = '請統整最近使用者聊天內容、網址快讀摘要、畫重點與封存記憶，整理出近期可用節目話題。';
     } else if (mode === 'weekly_news') {
       userPrompt = '請整理最近 7 天 NewsInbox 中的新聞素材。';
     } else if (mode === 'manual_news_supplement') {
@@ -170,61 +165,164 @@ function replyToLine(replyToken, text) {
 }
 
 
+// ======================================================
+// 分層 Help
+// ======================================================
+
+function normalizeHelpCommandText_(text) {
+  const raw = String(text || '').trim();
+
+  if (raw.startsWith('#小浣')) {
+    return raw.replace('#小浣', '').trim();
+  }
+
+  return raw;
+}
+
+function getHelpTextByCommand_(text) {
+  const normalized = normalizeHelpCommandText_(text);
+
+  if (normalized === '#help') return getHelpText();
+  if (normalized === '#help 清理') return getHelpCleanupText_();
+  if (normalized === '#help 管理') return getHelpAdminText_();
+  if (normalized === '#help 資料') return getHelpDataText_();
+  if (normalized === '#help 全部') return getHelpAllText_();
+
+  return null;
+}
+
 function getHelpText() {
   return [
-    '小浣可以幫你把群組裡的雜訊、網址和討論，整理成節目素材。',
-    '目前可用指令如下：',
+    '小浣是你的節目素材秘書。',
+    '',
+    '常用功能：',
     '',
     '直接貼網址',
-    '我會先收進 NewsInbox 新聞素材池，背景慢慢抓內容、分類、標記節目潛力。需要整理時輸入 #本週新聞。',
-    '這個行為在群組與個人聊天室都一樣；差別只是群組聊天要用 #小浣 叫我，私訊可以直接問。',
+    '收進 NewsInbox，之後可用 #本週新聞 整理。',
     '',
     '#本週新聞',
-    '整理最近 7 天 NewsInbox 中的新聞素材，只列分類、標題、網址與節目潛力，不主動分析。',
+    '查看最近 7 天新聞素材。',
     '',
     '#新聞補充 文字 + 網址',
-    '如果網址讀不到，或你想人工補充素材，可以用自然語言告訴我。我會交給 DeepSeek 判斷分類後寫入 NewsInbox。',
+    '手動補充新聞素材。',
     '',
     '#懶人包 網址',
-    '明確指定我要做網址快讀摘要。這會走 WebSummary 與 PendingReplies。',
-    '',
-    '#節目話題分析 網址',
-    '針對該網址做深度節目話題分析，包含事件重點、爭議焦點、主持切角、段落拆法與待查證點。',
+    '產生網址快讀摘要。',
     '',
     '#節目話題分析',
-    '沒有貼網址時，我會根據最近聊天、WebSummary 與 WeeklySummary，自行判斷目前最值得分析的節目話題。',
+    '根據近期內容、快讀摘要、畫重點與封存記憶分析可聊主題。',
     '',
     '#統整話題',
-    '整合最近聊天、網址快讀摘要與封存記憶，整理近期可用節目話題地圖。',
+    '整理近期可用節目話題地圖。',
+    '',
+    '#畫重點 內容',
+    '把重要想法釘選到 TopicHighlights。',
     '',
     '#封存本週話題',
-    '把最近最多 200 則對話整理成極簡長期記憶，寫入 WeeklySummary。',
+    '把近期素材壓縮成 WeeklySummary。',
     '',
-    '#小浣 你的問題',
-    '例：#小浣 幫我整理這週可以聊的 AI 話題',
+    '其他說明：',
+    '#help 清理',
+    '#help 管理',
+    '#help 資料',
+    '#help 全部',
+    '#版本'
+  ].join('\n');
+}
+
+function getHelpCleanupText_() {
+  return [
+    '小浣資料清理指令',
     '',
-    '#記錄 重要內容',
-    '把某段重點標記寫入 ConversationLog。',
-    '',
-    '#版本',
-    '查看小浣目前版本與本次新增功能。',
-    '',
-    '#版本紀錄',
-    '查看小浣主要版本更新摘要。',
-    '',
-    '#reset',
-    '清除目前這個聊天室的短期對話記憶，不會刪除 Google Sheet 紀錄。',
+    '所有清理只會處理「目前聊天室」的資料，不會影響其他群組或私訊。',
+    '所有清理都需要二段確認。',
     '',
     '#清空紀錄',
-    '查看清空目前聊天室 ConversationLog 紀錄的確認提示。',
+    '清理 ConversationLog，並清除短期記憶。',
     '',
-    '#清空紀錄 確認',
-    '刪除目前聊天室的 ConversationLog 長期紀錄，並清除短期記憶；不刪 WeeklySummary、WebSummary、NewsInbox。',
+    '#清空重點',
+    '清理 TopicHighlights。',
     '',
-    '#help',
-    '查看指令說明。',
+    '#清空快讀',
+    '清理 WebSummary 與 WebTaskQueue。',
     '',
-    'v1.10.2 起，#摘要、#摘要最近、#回顧最近、#標題、#讀網址 已移除。',
-    '需要快讀網址請用 #懶人包；需要整理節目素材請用 #統整話題 或 #節目話題分析。'
+    '#清空封存',
+    '清理 WeeklySummary。',
+    '',
+    '#清空新聞',
+    '清理 NewsInbox 與 NewsUrlQueue。',
+    '',
+    '#清空待回覆',
+    '清理 PendingReplies。',
+    '',
+    '使用方式：',
+    '先輸入清理指令看影響範圍，例如 #清空重點。',
+    '確認後再輸入同一指令加上「確認」。'
+  ].join('\n');
+}
+
+function getHelpAdminText_() {
+  return [
+    '小浣管理指令',
+    '',
+    '#版本',
+    '查看目前版本。',
+    '',
+    '#版本紀錄',
+    '查看主要版本更新。',
+    '',
+    '#reset',
+    '清除短期對話記憶，不會動 Google Sheet。',
+    '',
+    '#help 清理',
+    '查看各 Sheet 資料清理指令。',
+    '',
+    '#help 資料',
+    '查看目前各資料表用途。'
+  ].join('\n');
+}
+
+function getHelpDataText_() {
+  return [
+    '小浣目前主要資料表：',
+    '',
+    'ConversationLog',
+    '保存使用者與小浣的原始對話紀錄。',
+    '',
+    'TopicHighlights',
+    '保存 #畫重點 的人工釘選素材。',
+    '',
+    'NewsInbox',
+    '直接貼網址後整理出的新聞素材池。',
+    '',
+    'NewsUrlQueue',
+    '直接貼網址後等待背景處理的網址任務。',
+    '',
+    'WebSummary',
+    '#懶人包 產生的快讀摘要。',
+    '',
+    'WebTaskQueue',
+    '#懶人包 與 #節目話題分析網址 的背景任務。',
+    '',
+    'WeeklySummary',
+    '#封存本週話題 產生的長期記憶。',
+    '',
+    'PendingReplies',
+    '背景任務完成後，等待下次訊息交付的回覆。'
+  ].join('\n');
+}
+
+function getHelpAllText_() {
+  return [
+    getHelpText(),
+    '',
+    '--- 清理 ---',
+    getHelpCleanupText_(),
+    '',
+    '--- 管理 ---',
+    getHelpAdminText_(),
+    '',
+    '--- 資料表 ---',
+    getHelpDataText_()
   ].join('\n');
 }
