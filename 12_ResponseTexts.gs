@@ -2,18 +2,30 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
+// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.2 更新小浣定位：直接貼網址收素材，#懶人包 才做快讀摘要。
+// 3. v1.10.3 新增 TopicHighlights 與 #畫重點，但不做多資料表清理。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.2 Secretary Cleanup Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-06-07';
+const BOT_CURRENT_VERSION = 'v1.10.3 Highlight Layer Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-06-08';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.3 Highlight Layer Edition',
+    date: '2026-06-08',
+    summary: '新增 #畫重點 與 TopicHighlights，讓人工標記的重要內容成為獨立資料層。',
+    changes: [
+      '將 #記錄 升級為 #畫重點，重要內容會寫入 TopicHighlights，而不是只留在 ConversationLog。',
+      '#統整話題、無網址版 #節目話題分析、#封存本週話題 會納入 TopicHighlights。',
+      '節目整理相關功能從 ConversationLog 讀資料時只讀使用者訊息，避免小浣回覆污染素材。',
+      '新增 14_TopicHighlights.gs，集中管理人工重點資料表。',
+      '本版不實作多資料表清理；清理功能留待後續版本。'
+    ]
+  },
   {
     version: 'v1.10.2 Secretary Cleanup Edition',
     date: '2026-06-07',
@@ -70,16 +82,6 @@ const BOT_VERSION_HISTORY = [
       '新增 #版本 與 #版本紀錄。',
       '調整任務接收、pending reply、reset、清空紀錄、記錄、錯誤提示等固定回覆語氣。'
     ]
-  },
-  {
-    version: 'v1.9.0 Service Split Edition',
-    date: '2026-06-05',
-    summary: '拆分原本過於肥大的 AI 邏輯檔，建立目前的 Google Apps Script 分檔架構。',
-    changes: [
-      '新增 03_Utils.gs、04_Storage.gs、05_Memory.gs、06_WebReader.gs、07_WebTaskQueue.gs、08_GeminiService.gs、09_DeepSeekService.gs、10_TopicFeatures.gs。',
-      '將 prompt 管理調整為 11_Prompts.gs。',
-      '維持原功能邏輯，主要改善可維護性。'
-    ]
   }
 ];
 
@@ -91,7 +93,7 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我把功能收斂成新聞素材秘書：直接貼網址負責收素材，#懶人包 才做快讀，節目整理交給 #統整話題 和 #節目話題分析。',
+    '這版我多了一層重點資料袋：#畫重點 會寫入 TopicHighlights，之後統整、分析、封存都會優先參考。',
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),
@@ -161,50 +163,33 @@ function getBotTextWeeklyNewsNoData_() {
 // 一般系統提示
 // ======================================================
 
-function getBotTextUnsupportedMessage_() {
-  return '目前我先支援文字訊息。圖片、貼圖、語音這些我還不能穩穩處理，之後可以再幫我加功能。';
-}
-
-function getBotTextEmptyReply_() {
-  return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。';
-}
-
-function getBotTextNoReadableUrl_() {
-  return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。';
-}
-
-function getBotTextResetDone_() {
-  return ['好，這個聊天室的短期記憶我先清掉了。', '剛剛腦袋裡暫存的小紙條會消失，但 Google Sheet 裡的長期紀錄還在，不會被我亂丟。'].join('\n');
-}
+function getBotTextUnsupportedMessage_() { return '目前我先支援文字訊息。圖片、貼圖、語音這些我還不能穩穩處理，之後可以再幫我加功能。'; }
+function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
+function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }
+function getBotTextResetDone_() { return ['好，這個聊天室的短期記憶我先清掉了。', '剛剛腦袋裡暫存的小紙條會消失，但 Google Sheet 裡的長期紀錄還在，不會被我亂丟。'].join('\n'); }
 
 function getBotTextClearWarning_() {
-  return ['先等一下，這個動作比較大包。', '你準備清空的是這個聊天室在 ConversationLog 裡的長期紀錄。', '', '不會影響：', '・其他私訊', '・其他群組', '・WeeklySummary 封存摘要', '・WebSummary 網址快讀素材池', '・NewsInbox 新聞素材池', '', '如果你真的確定要丟掉這包紀錄，請輸入：', '#清空紀錄 確認'].join('\n');
+  return ['先等一下，這個動作比較大包。', '你準備清空的是這個聊天室在 ConversationLog 裡的長期紀錄。', '', '不會影響：', '・其他私訊', '・其他群組', '・WeeklySummary 封存摘要', '・WebSummary 網址快讀素材池', '・NewsInbox 新聞素材池', '・TopicHighlights 人工重點', '', '如果你真的確定要丟掉這包紀錄，請輸入：', '#清空紀錄 確認'].join('\n');
 }
 
 function getBotTextClearDone_(deletedCount) {
-  return ['我已經把這個聊天室的 ConversationLog 長期紀錄清掉了。', '短期對話記憶也一起清空。', '', '這次刪除筆數：' + deletedCount, '', 'WeeklySummary、WebSummary 和 NewsInbox 沒有被刪掉，這幾包素材我會繼續留著。'].join('\n');
+  return ['我已經把這個聊天室的 ConversationLog 長期紀錄清掉了。', '短期對話記憶也一起清空。', '', '這次刪除筆數：' + deletedCount, '', 'WeeklySummary、WebSummary、NewsInbox 和 TopicHighlights 沒有被刪掉，這幾包素材我會繼續留著。'].join('\n');
 }
 
-function getBotTextNoteSaved_() { return '記好了，這段我先收進紀錄袋。'; }
+function getBotTextHighlightSaved_() { return '我幫你畫起來了。這段已寫入 TopicHighlights，之後統整、分析、封存都會優先參考。'; }
 
-function getBotTextNoteEmpty_() {
-  return ['你可以這樣叫我記東西：', '#記錄 這段內容很重要', '', '我會把它收進 ConversationLog，之後整理話題時就比較不容易漏掉。'].join('\n');
+function getBotTextHighlightEmpty_() {
+  return ['你要我畫哪一段重點？', '#畫重點 這段內容之後節目可以從平台風險和創作者依賴切入'].join('\n');
 }
 
-function getBotTextArchiveError_() {
-  return '我剛剛封存本週話題時卡住了。可能是紀錄太長、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。';
-}
-
-function getBotTextAiError_() {
-  return '我剛剛連接 AI、讀取網頁或翻紀錄時卡住了。你可以稍後再叫我一次，或把任務拆小一點給我處理。';
-}
-
-function getBotTextArchiveNoData_() { return '目前還沒有足夠的對話紀錄可以封存。等群組多累積一點討論，我再幫你把重點收進 WeeklySummary。'; }
-function getBotTextNoTopicContextForAnalysis_() { return '目前我還翻不到足夠的對話紀錄、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或多補一點想討論的脈絡。'; }
-function getBotTextNoTopicContextForIntegration_() { return '目前我還翻不到足夠的聊天紀錄、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。'; }
+function getBotTextArchiveError_() { return '我剛剛封存本週話題時卡住了。可能是紀錄太長、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
+function getBotTextAiError_() { return '我剛剛連接 AI、讀取網頁或翻紀錄時卡住了。你可以稍後再叫我一次，或把任務拆小一點給我處理。'; }
+function getBotTextArchiveNoData_() { return '目前還沒有足夠的使用者對話、畫重點或網址快讀摘要可以封存。等素材多一點，我再幫你收進 WeeklySummary。'; }
+function getBotTextNoTopicContextForAnalysis_() { return '目前我還翻不到足夠的使用者對話、畫重點、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或用 #畫重點 補一段想討論的脈絡。'; }
+function getBotTextNoTopicContextForIntegration_() { return '目前我還翻不到足夠的使用者聊天、畫重點、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。'; }
 
 function getBotTextArchiveDone_(archiveJson, recentCount) {
-  return ['本週話題我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名主題'), '', '摘要：', archiveJson.summary || '已建立摘要，但內容比較短。', '', '這次封存了 ' + recentCount + ' 則訊息。', '之後你們再聊到相關主題時，我就能把這份極簡記憶翻出來接著用。'].join('\n');
+  return ['本週話題我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名主題'), '', '摘要：', archiveJson.summary || '已建立摘要，但內容比較短。', '', '這次封存參考了 ' + recentCount + ' 則使用者訊息 / 畫重點。', '之後你們再聊到相關主題時，我就能把這份極簡記憶翻出來接著用。'].join('\n');
 }
 
 // ======================================================
