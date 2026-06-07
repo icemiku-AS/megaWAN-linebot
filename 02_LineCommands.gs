@@ -2,12 +2,12 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
+// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. v1.10.2 保留新聞素材秘書核心指令，移除摘要 / 回顧 / 標題 / #讀網址 等低使用率或重疊指令。
+// 3. v1.10.3 將 #記錄 升級為 #畫重點，並新增 TopicHighlights 資料層。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -15,11 +15,9 @@ function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userTe
     return null;
   }
 
-  // v1.10.2：
   // 1. #節目話題分析 + 網址：走深度網址分析 queue。
   // 2. #懶人包：走快讀摘要 queue。
   // 3. 其他含網址訊息：收進 NewsInbox queue，不再自動產出懶人包。
-  // 4. #讀網址 已移除，避免快讀入口過多造成維護與測試混淆。
   if (userText.startsWith('#節目話題分析')) {
     return enqueueWebTask(event, conversationId, userText, TASK_TYPE_PROGRAM_TOPIC_ANALYSIS);
   }
@@ -54,7 +52,7 @@ function getUserLogMode(text) {
   if (text.startsWith('#清空紀錄')) return 'clear_command';
   if (text.startsWith('#版本紀錄')) return 'version_history_command';
   if (text.startsWith('#版本')) return 'version_command';
-  if (text.startsWith('#記錄')) return 'note';
+  if (text.startsWith('#畫重點')) return 'highlight_command';
   if (text.startsWith('#小浣')) return 'assistant_command';
   if (text.startsWith('#reset')) return 'reset_command';
   if (text.startsWith('#help')) return 'help_command';
@@ -98,9 +96,9 @@ function parseCommand(text) {
     if (mode === 'web_read') {
       userPrompt = '請提供要讀取的網址。';
     } else if (mode === 'program_topic_analysis') {
-      userPrompt = '請根據最近聊天內容、網址快讀摘要與封存記憶，判斷目前最值得分析的節目話題。';
+      userPrompt = '請根據最近使用者聊天內容、人工畫重點、網址快讀摘要與封存記憶，判斷目前最值得分析的節目話題。';
     } else if (mode === 'integrate_topics') {
-      userPrompt = '請統整最近聊天內容、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
+      userPrompt = '請統整最近使用者聊天內容、人工畫重點、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
     } else if (mode === 'weekly_news') {
       userPrompt = '請整理最近 7 天 NewsInbox 中的新聞素材。';
     } else if (mode === 'manual_news_supplement') {
@@ -192,19 +190,19 @@ function getHelpText() {
     '針對該網址做深度節目話題分析，包含事件重點、爭議焦點、主持切角、段落拆法與待查證點。',
     '',
     '#節目話題分析',
-    '沒有貼網址時，我會根據最近聊天、WebSummary 與 WeeklySummary，自行判斷目前最值得分析的節目話題。',
+    '沒有貼網址時，我會根據最近使用者聊天、TopicHighlights、WebSummary 與 WeeklySummary，自行判斷目前最值得分析的節目話題。',
     '',
     '#統整話題',
-    '整合最近聊天、網址快讀摘要與封存記憶，整理近期可用節目話題地圖。',
+    '整合最近使用者聊天、人工畫重點、網址快讀摘要與封存記憶，整理近期可用節目話題地圖。',
     '',
     '#封存本週話題',
-    '把最近最多 200 則對話整理成極簡長期記憶，寫入 WeeklySummary。',
+    '把最近使用者聊天、人工畫重點與網址摘要整理成極簡長期記憶，寫入 WeeklySummary。',
     '',
     '#小浣 你的問題',
     '例：#小浣 幫我整理這週可以聊的 AI 話題',
     '',
-    '#記錄 重要內容',
-    '把某段重點標記寫入 ConversationLog。',
+    '#畫重點 重要內容',
+    '把某段重點寫入 TopicHighlights。後續 #統整話題、#節目話題分析、#封存本週話題 都會優先參考。',
     '',
     '#版本',
     '查看小浣目前版本與本次新增功能。',
@@ -219,12 +217,11 @@ function getHelpText() {
     '查看清空目前聊天室 ConversationLog 紀錄的確認提示。',
     '',
     '#清空紀錄 確認',
-    '刪除目前聊天室的 ConversationLog 長期紀錄，並清除短期記憶；不刪 WeeklySummary、WebSummary、NewsInbox。',
+    '刪除目前聊天室的 ConversationLog 長期紀錄，並清除短期記憶；不刪 WeeklySummary、WebSummary、NewsInbox、TopicHighlights。',
     '',
     '#help',
     '查看指令說明。',
     '',
-    'v1.10.2 起，#摘要、#摘要最近、#回顧最近、#標題、#讀網址 已移除。',
-    '需要快讀網址請用 #懶人包；需要整理節目素材請用 #統整話題 或 #節目話題分析。'
+    'v1.10.3 起，#記錄 已升級為 #畫重點；多資料表清理尚未在本版實作。'
   ].join('\n');
 }
