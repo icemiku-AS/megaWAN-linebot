@@ -1,8 +1,8 @@
 // ======================================================
 // 16_ReaderLayer.gs
-// v1.10.5 Reader Layer Edition：統一網頁讀取供應層。
+// v1.10.6 PTT Over18 Detection Hotfix：統一網頁讀取供應層。
 //
-// 本檔是 v1.10.5 的主要新增檔案，目標是把「讀網頁」從原本
+// 本檔是 Reader Layer 的核心檔案，目標是把「讀網頁」從原本
 // UrlFetchApp 抓 raw HTML → GAS 清 HTML → Gemini 抽正文，調整為：
 //
 // 1. 一般網站：優先使用 Jina Reader 轉成 LLM 友善文字。
@@ -10,11 +10,18 @@
 // 3. X / FB / Threads：本版只偵測並回報尚未支援，未導入 Apify。
 // 4. 舊 raw HTML + Gemini extractor 流程保留為 legacy fallback，不在本版刪除。
 //
+// v1.10.6 hotfix：
+// 1. 原本 v1.10.5 的 PTT over18 detector 只要看到 ask/over18 字樣就判定為成人確認頁。
+// 2. 實測發現正常 PTT 文章頁也可能包含 ask/over18 相關模板、連結或 script。
+// 3. 因此本版將 PTT gate 判斷收斂為：若已出現 main-content / article-meta 結構，優先視為正常文章頁。
+// 4. 只有真的出現同意按鈕，或同時出現未滿十八歲提示與 over18 form，才判定為 gate。
+//
 // 維護原則：
-// 1. 對外仍維持 fetchAndExtractWebPage(url) 的資料契約：回傳 mainText、title、siteName 等欄位。
+// 1. 對下游維持 webResult 資料契約：回傳 mainText、title、siteName、author、publishedAt、warnings 等欄位。
 // 2. 下游 NewsInbox、WebSummary、DeepSeek prompt 盡量不用知道上游 reader 是誰。
 // 3. 新 reader 若失敗，錯誤要帶上 readerRoute，方便日後從 Sheet / log 排查。
 // 4. 本版不處理登入型社群平台，不導入 ByCrawl，不新增 Node.js / npm 架構。
+// 5. legacy fallback 目前透過 06_WebReader.gs 既有 fetchAndExtractWebPage(url) 復用舊流程。
 // ======================================================
 
 // ======================================================
@@ -55,7 +62,7 @@ function fetchAndExtractWebPageByReaderLayer_(url) {
       safeUrl,
       route,
       'unsupported_social_platform',
-      '這個網址屬於 X / Facebook / Threads 這類登入或動態載入平台。v1.10.5 尚未導入 Apify，請先用 #新聞補充 加上簡短說明手動入庫。'
+      '這個網址屬於 X / Facebook / Threads 這類登入或動態載入平台。v1.10.6 尚未導入 Apify，請先用 #新聞補充 加上簡短說明手動入庫。'
     );
   }
 
@@ -70,7 +77,7 @@ function fetchAndExtractWebPageByReaderLayer_(url) {
   }
 
   // Jina Reader 失敗時，保留舊流程作為 fallback。
-  // 這是 v1.10.5 的安全閥：先把主路徑切到 Jina，但不因單一 reader 失敗而讓所有舊網站直接不能讀。
+  // 這是 Reader Layer 的安全閥：先把主路徑切到 Jina，但不因單一 reader 失敗而讓所有舊網站直接不能讀。
   const legacyResult = fetchAndExtractWebPageLegacy_(safeUrl);
 
   if (legacyResult && legacyResult.ok) {
@@ -137,6 +144,19 @@ function isUnsupportedSocialHostname_(hostname) {
 }
 
 // ======================================================
+// Legacy fallback：復用 06_WebReader.gs 舊流程
+// ======================================================
+
+function fetchAndExtractWebPageLegacy_(url) {
+  // v1.10.6 整合說明：
+  // 1. v1.10.5 曾以 17_ReaderLayerCompat.gs 提供這個 wrapper。
+  // 2. 為了避免檔案過度分散，本版將 wrapper 收回 Reader Layer 主檔。
+  // 3. 目前 06_WebReader.gs 的 fetchAndExtractWebPage(url) 仍代表舊 raw HTML + Gemini extractor 流程。
+  // 4. 若未來把 fetchAndExtractWebPage(url) 改成也走 Reader Layer，這裡必須同步重構，避免遞迴。
+  return fetchAndExtractWebPage(url);
+}
+
+// ======================================================
 // Jina Reader provider
 // ======================================================
 
@@ -150,7 +170,7 @@ function fetchReadablePageWithJina_(url) {
     headers: {
       // 明確要求文字輸出；Jina Reader 通常會回 Markdown / text。
       'Accept': 'text/plain',
-      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.5; Jina Reader Layer)'
+      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.6; Jina Reader Layer)'
     }
   };
 
@@ -293,7 +313,7 @@ function fetchPttPageWithOver18Cookie_(url) {
       // PTT 成人看板會用 over18 cookie 判斷使用者是否已確認年滿 18 歲。
       // 這不是登入 token，只是 PTT over18 gate 的確認狀態。
       'Cookie': 'over18=1',
-      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.5; PTT Reader)'
+      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.6; PTT Reader)'
     }
   };
 
@@ -360,9 +380,39 @@ function fetchPttPageWithOver18Cookie_(url) {
 
 function looksLikePttOver18Gate_(html) {
   const text = String(html || '');
-  return text.indexOf('我同意，我已年滿十八歲') >= 0 ||
-    text.indexOf('ask/over18') >= 0 ||
-    text.indexOf('未滿十八歲') >= 0;
+
+  // PTT 正常文章頁會包含 main-content 與 article-meta 結構。
+  // 實測 C_Chat 成人看板文章可正常讀回 200，但頁面內仍可能殘留 ask/over18 字樣；
+  // 因此只要已經看到文章結構，就應優先視為正式文章頁，而不是 over18 確認頁。
+  const hasArticleStructure =
+    text.indexOf('id="main-content"') >= 0 ||
+    text.indexOf('class="article-meta-tag"') >= 0 ||
+    text.indexOf('class="article-meta-value"') >= 0;
+
+  if (hasArticleStructure) {
+    return false;
+  }
+
+  // 真正的 PTT over18 gate 會出現明確的同意按鈕文字。
+  // 這個訊號足夠強，可以直接判定為成人確認頁。
+  const hasAgreeButton = text.indexOf('我同意，我已年滿十八歲') >= 0;
+
+  if (hasAgreeButton) {
+    return true;
+  }
+
+  // ask/over18 不能單獨使用，因為正常文章頁可能也包含這個字串。
+  // 只有同時看見「未滿十八歲」提示與 over18 form / action，才視為 gate。
+  const hasUnderAgeWarning = text.indexOf('未滿十八歲') >= 0;
+  const hasOver18Form =
+    text.indexOf('/ask/over18') >= 0 &&
+    (
+      text.indexOf('name="yes"') >= 0 ||
+      text.indexOf('value="yes"') >= 0 ||
+      text.indexOf('method="post"') >= 0
+    );
+
+  return hasUnderAgeWarning && hasOver18Form;
 }
 
 function extractPttTitle_(html) {

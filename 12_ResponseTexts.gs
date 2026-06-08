@@ -2,18 +2,30 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.5 Reader Layer Edition
+// 小浣 LINE Bot v1.10.6 PTT Over18 Detection Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.5 新增 Reader Layer 版本文字；實際網頁讀取邏輯集中於 16_ReaderLayer.gs。
+// 3. v1.10.6 是 PTT reader 的小型 hotfix；實際修正已整合於 16_ReaderLayer.gs。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.5 Reader Layer Edition';
+const BOT_CURRENT_VERSION = 'v1.10.6 PTT Over18 Detection Hotfix';
 const BOT_CURRENT_VERSION_DATE = '2026-06-08';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.6 PTT Over18 Detection Hotfix',
+    date: '2026-06-08',
+    summary: '修正 PTT 正常文章頁被誤判成滿 18 歲確認頁的問題。',
+    changes: [
+      '在 16_ReaderLayer.gs 內修正 PTT over18 gate 偵測邏輯。',
+      '正常 PTT 文章頁若已出現 main-content 或 article-meta 結構，就不再判定為 over18 gate。',
+      '不再把 ask/over18 字樣單獨視為滿 18 歲確認頁，避免正常文章頁被誤殺。',
+      '整合 legacy fallback wrapper 與 PTT detector hotfix，刪除過渡用的 17 / 18 檔案。',
+      '本版不修改 Jina Reader、NewsInbox schema、DeepSeek / Gemini 主流程，也不導入 Apify / ByCrawl。'
+    ]
+  },
   {
     version: 'v1.10.5 Reader Layer Edition',
     date: '2026-06-08',
@@ -96,7 +108,7 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我換了讀網頁的前置引擎：一般網頁先用 Reader Layer，PTT 另外處理滿 18 歲確認頁。',
+    '這版我修正了 PTT 判斷：正常文章頁不會再只因為含有 ask/over18 字樣，就被誤判成滿 18 歲確認頁。',
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),
