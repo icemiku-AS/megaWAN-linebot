@@ -2,18 +2,29 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.7 NewsInbox Queue Hotfix
+// 小浣 LINE Bot v1.10.8 Manual News Supplement Parse Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.7 修正 NewsInbox Queue 對 unsupported social URL 的處理與 failed pending reply 建立。
+// 3. v1.10.8 修正 #新聞補充 的 JSON parser 命名錯誤，讓 DeepSeek 解析結果真正生效。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.7 NewsInbox Queue Hotfix';
+const BOT_CURRENT_VERSION = 'v1.10.8 Manual News Supplement Parse Hotfix';
 const BOT_CURRENT_VERSION_DATE = '2026-06-08';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.8 Manual News Supplement Parse Hotfix',
+    date: '2026-06-08',
+    summary: '修正 #新聞補充 的 JSON parser 命名錯誤，避免人工補充每次靜默掉進 fallback。',
+    changes: [
+      '將 13_NewsInbox.gs 的 parseManualNewsSupplement_() 從不存在的 parseLooseJson() 改回 parseJsonObjectLoose()。',
+      '#新聞補充 現在會真正使用 DeepSeek 解析出的分類、簡介、切角與節目潛力。',
+      '保留 fallback 防守：若 DeepSeek 回傳非 JSON 或 API 失敗，仍會用使用者原文建立人工補充素材。',
+      '本版不修改 NewsUrlQueue、Reader Layer、Gemini 自動分類、DeepSeek 主聊天流程，也不導入 Apify / ByCrawl。'
+    ]
+  },
   {
     version: 'v1.10.7 NewsInbox Queue Hotfix',
     date: '2026-06-08',
@@ -120,7 +131,7 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我修正了 NewsInbox 佇列流程：X / Facebook / Threads 會在入隊前先攔截，背景任務 failed 後也會正確留下待回覆訊息。',
+    '這版我修正了 #新聞補充 的解析流程：人工補充現在會真正使用 DeepSeek 解析出的分類、簡介、切角與節目潛力。',
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),
@@ -172,7 +183,7 @@ function getBotTextUnsupportedSocialUrl_(urls) {
   const count = urls && urls.length ? urls.length : 1;
   return [
     '這 ' + count + ' 個網址屬於 X / Facebook / Threads 這類登入或動態載入平台。',
-    'v1.10.7 目前還沒有導入 Apify / ByCrawl，所以我不會把它丟進 NewsUrlQueue 反覆重試。',
+    'v1.10.8 目前還沒有導入 Apify / ByCrawl，所以我不會把它丟進 NewsUrlQueue 反覆重試。',
     '',
     '你可以改用：',
     '#新聞補充 這篇大概在講某某事件，偏社群輿論，節目潛力高，後面附上原文網址'
