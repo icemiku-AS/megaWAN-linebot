@@ -2,14 +2,14 @@
 // 09_DeepSeekService.gs
 // DeepSeek API 服務層。負責主模型呼叫、短期記憶組裝、長期封存記憶注入與模型參數控制。
 //
-// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
+// 小浣 LINE Bot v1.10.5 Reader Layer Edition
 //
 // 設計說明：
 // 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持清楚分層。
 // 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
 // 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
 // 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
-// 5. v1.10.2 移除 summary / review / title 專用模式，讓 DeepSeek 參數只保留目前實際會被呼叫的核心工作流。
+// 5. v1.10.5 的網址分析改由 16_ReaderLayer.gs 先讀取正文，再交給 DeepSeek 做節目話題分析。
 // ======================================================
 
 // ======================================================
@@ -24,7 +24,7 @@ function callDeepSeekWithWebReading(conversationId, userText, mode) {
   }
 
   const webResults = urls.map(function(url) {
-    return fetchAndExtractWebPage(url);
+    return fetchAndExtractWebPageByReaderLayer_(url);
   });
 
   const deepSeekPrompt = buildWebReadingPrompt(userText, webResults, mode);
