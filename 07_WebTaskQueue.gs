@@ -2,14 +2,14 @@
 // 07_WebTaskQueue.gs
 // WebTaskQueue 與 PendingReplies 任務層。負責網址任務排程、背景處理、結果暫存與下次訊息交付。
 //
-// 小浣 LINE Bot v1.9.2 Humanized System Reply Edition
+// 小浣 LINE Bot v1.10.5 Reader Layer Edition
 //
 // 設計說明：
 // 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
 // 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
 // 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
 // 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
-// 5. v1.9.2 起，不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
+// 5. v1.10.5 起，#懶人包 先透過 16_ReaderLayer.gs 取得可用正文，再交給 Gemini 做快讀摘要。
 // ======================================================
 
 // ======================================================
@@ -229,14 +229,14 @@ function processWebLazySummaryTask_(task) {
 
 function createLazySummaryForUrl_(task, url) {
   try {
-    const rawPage = fetchRawWebPage(url);
+    const webResult = fetchAndExtractWebPageByReaderLayer_(url);
 
-    if (!rawPage.ok) {
+    if (!webResult.ok) {
       return {
         ok: false,
         url: url,
-        title: '',
-        siteName: '',
+        title: webResult.title || '',
+        siteName: webResult.siteName || '',
         author: '',
         publishedAt: '',
         summary: '',
@@ -244,31 +244,32 @@ function createLazySummaryForUrl_(task, url) {
         contentTypeLabel: '',
         topicPotential: '',
         extractionConfidence: 0,
-        warnings: [],
-        error: rawPage.error || '讀取網址失敗'
+        warnings: webResult.warnings || [],
+        error: webResult.error || '讀取網址失敗'
       };
     }
 
-    const summary = callGeminiWebLazySummary(
+    const summary = callGeminiReadableTextLazySummary_(
       url,
-      rawPage.rawHtml,
-      rawPage.contentType,
-      task.userPrompt
+      webResult.mainText,
+      webResult.contentType,
+      task.userPrompt,
+      webResult
     );
 
     return {
       ok: true,
       url: url,
-      title: summary.title || '',
-      siteName: summary.siteName || '',
-      author: summary.author || '',
-      publishedAt: summary.publishedAt || '',
+      title: summary.title || webResult.title || '',
+      siteName: summary.siteName || webResult.siteName || '',
+      author: summary.author || webResult.author || '',
+      publishedAt: summary.publishedAt || webResult.publishedAt || '',
       summary: summary.summary || '',
       keyPoints: summary.keyPoints || [],
       contentTypeLabel: summary.contentTypeLabel || '',
       topicPotential: summary.topicPotential || '',
-      extractionConfidence: summary.extractionConfidence || 0,
-      warnings: summary.warnings || [],
+      extractionConfidence: summary.extractionConfidence || webResult.extractionConfidence || 0,
+      warnings: summary.warnings || webResult.warnings || [],
       error: ''
     };
 

@@ -100,7 +100,7 @@ function processSingleNewsUrlTask_(task) {
   const now = new Date();
 
   try {
-    const webResult = fetchAndExtractWebPage(task.url);
+    const webResult = fetchAndExtractWebPageByReaderLayer_(task.url);
     if (!webResult.ok) {
       throw new Error(webResult.error || 'fetch failed');
     }
@@ -182,7 +182,7 @@ function buildNewsClassificationPrompt_(url, webResult) {
     'URL：' + url,
     '網頁標題：' + (webResult.title || ''),
     '網頁內容：',
-    String(webResult.text || '').slice(0, 12000)
+    String(webResult.mainText || '').slice(0, 12000)
   ].join('\n');
 }
 

@@ -2,18 +2,30 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.4 Data Cleanup Edition
+// 小浣 LINE Bot v1.10.5 Reader Layer Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.4 新增多資料表清理文字，實際資料清理由 15_DataCleanup.gs 執行。
+// 3. v1.10.5 新增 Reader Layer 版本文字；實際網頁讀取邏輯集中於 16_ReaderLayer.gs。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.4 Data Cleanup Edition';
+const BOT_CURRENT_VERSION = 'v1.10.5 Reader Layer Edition';
 const BOT_CURRENT_VERSION_DATE = '2026-06-08';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.5 Reader Layer Edition',
+    date: '2026-06-08',
+    summary: '新增 Reader Layer，讓一般網頁優先使用 Jina Reader，PTT 走 over18 cookie 特例。',
+    changes: [
+      '新增 16_ReaderLayer.gs，集中管理 Jina Reader、PTT over18 與社群平台未支援偵測。',
+      '#懶人包 與 #節目話題分析 的網址讀取改先走 Reader Layer，再交給 Gemini / DeepSeek。',
+      'NewsInbox 自動網址分類改用 Reader Layer 取得的 mainText，避免分類 prompt 吃不到正文。',
+      '保留 legacy raw HTML + Gemini extractor 作為 fallback，不刪舊流程。',
+      '本版不導入 Apify、ByCrawl，也不支援 X / Facebook / Threads 自動擷取。'
+    ]
+  },
   {
     version: 'v1.10.4 Data Cleanup Edition',
     date: '2026-06-08',
@@ -84,7 +96,7 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我多了資料整理抽屜：清理指令會先確認，再只處理目前聊天室的資料。',
+    '這版我換了讀網頁的前置引擎：一般網頁先用 Reader Layer，PTT 另外處理滿 18 歲確認頁。',
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),

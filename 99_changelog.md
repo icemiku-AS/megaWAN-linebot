@@ -1,4 +1,14 @@
 2026-06-08
+v1.10.5 Reader Layer Edition
+- 以 v1.10.4 Data Cleanup Edition 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 新增 16_ReaderLayer.gs，集中管理一般網站 Jina Reader、PTT over18 cookie 特例與社群平台未支援偵測。
+- #懶人包、#節目話題分析 + 網址、NewsInbox 自動分類改走 Reader Layer 取得 mainText。
+- 保留 legacy raw HTML + Gemini extractor 作為 fallback，不在本版刪除舊流程。
+- 本版不導入 Apify / ByCrawl，不支援 X / Facebook / Threads 自動擷取，不修改資料清理層。
+
+// ==================================================
+
+2026-06-08
 v1.10.4 Data Cleanup Edition
 - 以 v1.10.3 Highlight Layer Edition 為基礎，維持 Google Apps Script 分檔架構。
 - 新增分層 help 與資料維護流程，讓常用說明、管理說明、資料表說明與清理說明分開。
