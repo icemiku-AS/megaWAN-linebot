@@ -1,4 +1,15 @@
 2026-06-08
+v1.10.7 NewsInbox Queue Hotfix
+- 以 v1.10.6 PTT Over18 Detection Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 修正 X / Facebook / Threads 直接貼網址時被寫入 NewsUrlQueue 並重試三次的問題。
+- NewsInbox 入隊前會先攔截 unsupported_social_platform；混合網址時只讓可支援網址入隊。
+- NewsUrlQueue 遇到 unsupported_social_platform / unsafe_url 這類永久性錯誤時會直接 failed，不再重試三次。
+- 修正 NewsInbox failed 後誤呼叫不存在的 createPendingReply()，改用 createPendingReplyFromTask() 建立 PendingReplies。
+- 本版不導入 Apify / ByCrawl，不支援 X / Facebook / Threads 自動擷取。
+
+// ==================================================
+
+2026-06-08
 v1.10.6 PTT Over18 Detection Hotfix
 - 以 v1.10.5 Reader Layer Edition 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
 - 修正 PTT 正常文章頁被 looksLikePttOver18Gate_() 誤判為滿 18 歲確認頁的問題。
