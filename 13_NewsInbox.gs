@@ -1,6 +1,6 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.10.7 NewsInbox Queue Hotfix：新聞素材池、新聞網址佇列、#本週新聞、#新聞補充。
+// v1.10.8 Manual News Supplement Parse Hotfix：新聞素材池、新聞網址佇列、#本週新聞、#新聞補充。
 //
 // 維護重點：
 // 1. 直接貼網址只收件分類，不產生懶人包。
@@ -9,8 +9,9 @@
 // 4. v1.10.7 起，X / Facebook / Threads 這類已知未支援平台會在入隊前直接攔截，不再進 NewsUrlQueue 重試。
 // 5. v1.10.7 起，背景處理若遇到永久性錯誤，會直接 failed 並建立 PendingReplies，不再無效重試三次。
 // 6. DeepSeek 負責 #新聞補充 解析。
-// 7. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
-// 8. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
+// 7. v1.10.8 修正 #新聞補充 的 JSON parser 名稱錯誤，讓 DeepSeek 解析結果真的能被使用，而不是每次靜默 fallback。
+// 8. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
+// 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
 // ======================================================
 
 const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '馬斯克', '川普', '待分類'];
@@ -446,7 +447,15 @@ function handleManualNewsSupplement_(event, conversationId, userText) {
 function parseManualNewsSupplement_(userText) {
   const prompt = buildManualNewsSupplementPrompt_(userText);
   try {
-    const result = parseLooseJson(callDeepSeekDirect(prompt, 'integrate_topics'));
+    const responseText = callDeepSeekDirect(prompt, 'integrate_topics');
+
+    // v1.10.8 修正：
+    // 1. v1.10.2 cleanup 後這裡誤呼叫 parseLooseJson()，但專案實際存在的共用函式是 parseJsonObjectLoose()。
+    // 2. 因為外層有 try/catch，錯誤不會讓 #新聞補充整個失敗，而是每次靜默掉進 fallback。
+    // 3. 這會讓使用者表面上看到「補充成功」，但實際上 DeepSeek 解析出的分類、簡介與節目潛力沒有被使用。
+    // 4. 因此這裡改回 parseJsonObjectLoose()，並用 || {} 防守模型偶發回傳非 JSON 的狀況。
+    const result = parseJsonObjectLoose(responseText) || {};
+
     return {
       title: String(result.title || '').trim(),
       category: normalizeNewsCategory_(result.category),

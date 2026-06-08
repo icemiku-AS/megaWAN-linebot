@@ -1,4 +1,14 @@
 2026-06-08
+v1.10.8 Manual News Supplement Parse Hotfix
+- 以 v1.10.7 NewsInbox Queue Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 修正 #新聞補充 的 JSON parser 命名錯誤：parseLooseJson() 並不存在，應使用 parseJsonObjectLoose()。
+- 避免人工補充表面成功、實際每次靜默掉進 fallback，導致 DeepSeek 解析結果沒有被使用。
+- 保留 fallback 防守；若 DeepSeek API 失敗或回傳非 JSON，仍可用使用者原文建立人工補充素材。
+- 本版不修改 NewsUrlQueue、Reader Layer、Gemini 自動分類、DeepSeek 主聊天流程，不導入 Apify / ByCrawl。
+
+// ==================================================
+
+2026-06-08
 v1.10.7 NewsInbox Queue Hotfix
 - 以 v1.10.6 PTT Over18 Detection Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
 - 修正 X / Facebook / Threads 直接貼網址時被寫入 NewsUrlQueue 並重試三次的問題。

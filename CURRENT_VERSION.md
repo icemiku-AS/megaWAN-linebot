@@ -21,15 +21,15 @@
 ## Current Version
 
 Repository: icemiku-AS/megaWAN-linebot  
-Current Version: v1.10.7 NewsInbox Queue Hotfix  
-Current Working Branch: hotfix/v1107-newsinbox-queue  
+Current Version: v1.10.8 Manual News Supplement Parse Hotfix  
+Current Working Branch: hotfix/v1108-manual-news-parse  
 Target Branch: main  
-Source of Truth before merge: GitHub PR branch `hotfix/v1107-newsinbox-queue`  
+Source of Truth before merge: GitHub PR branch `hotfix/v1108-manual-news-parse`  
 Source of Truth after merge: GitHub `main` branch latest commit
 
-PR 合併前，若要檢查 v1.10.7，請讀 `hotfix/v1107-newsinbox-queue`。
+PR 合併前，若要檢查 v1.10.8，請讀 `hotfix/v1108-manual-news-parse`。
 
-PR 合併後，不要再把 `hotfix/v1107-newsinbox-queue` 視為現行執行來源；請改以 `main` branch 最新 commit 作為唯一現行程式碼來源。
+PR 合併後，不要再把 `hotfix/v1108-manual-news-parse` 視為現行執行來源；請改以 `main` branch 最新 commit 作為唯一現行程式碼來源。
 
 若本文件、README、Changelog、舊對話紀錄、先前上傳檔案或其他分支之間出現矛盾，請依照下列優先順序判斷：
 
@@ -56,7 +56,7 @@ PR 合併後，不要再把 `hotfix/v1107-newsinbox-queue` 視為現行執行來
 
 ## Active Source Files
 
-以下檔案代表 v1.10.7 NewsInbox Queue Hotfix 的正式程式結構：
+以下檔案代表 v1.10.8 Manual News Supplement Parse Hotfix 的正式程式結構：
 
 - `00_Config.gs`
 - `01_Main.gs`
@@ -78,32 +78,31 @@ PR 合併後，不要再把 `hotfix/v1107-newsinbox-queue` 視為現行執行來
 
 ---
 
-## v1.10.7 Key Difference
+## v1.10.8 Key Difference
 
-v1.10.7 是 NewsInbox Queue Hotfix。
+v1.10.8 是 Manual News Supplement Parse Hotfix。
 
-本版修正 NewsInbox 直接貼網址流程中的 queue 行為問題，不導入新 reader provider，不修改資料清理層。
+本版只修正 `#新聞補充` 的人工補充解析問題，不導入新 reader provider，不修改 NewsUrlQueue、不修改資料清理層。
 
 問題背景：
 
-1. v1.10.5 / v1.10.6 的 Reader Layer 已能偵測 X / Facebook / Threads 為 `unsupported_social_platform`。
-2. 但直接貼網址時，`enqueueNewsUrlTasks()` 仍會先把這些網址寫進 NewsUrlQueue。
-3. 背景處理時才發現 unsupported，並被當成一般暫時性錯誤重試三次。
-4. 重試失敗後，NewsInbox failed 流程誤呼叫不存在的 `createPendingReply()`，導致 PendingReplies 沒有建立，使用者下一次傳訊息也收不到錯誤通知。
+1. v1.10.0 的人工新聞補充曾使用 `parseJsonObjectLoose()` 解析 DeepSeek 回傳 JSON。
+2. v1.10.2 cleanup 後，`parseManualNewsSupplement_()` 誤改成呼叫不存在的 `parseLooseJson()`。
+3. 因為這段外層有 try/catch，錯誤不會讓 `#新聞補充` 直接失敗，而是每次靜默掉進 fallback。
+4. 使用者表面上會看到「補充成功」，但 DeepSeek 解析出的分類、簡介、切角與節目潛力其實沒有被使用。
 
 主要調整：
 
-1. `13_NewsInbox.gs` 在入隊前先分流網址，X / Facebook / Threads 會直接回覆目前未支援，不再進 NewsUrlQueue。
-2. 混合貼多個網址時，可支援的網址仍會入隊，不支援的社群網址會在回覆中提醒。
-3. NewsUrlQueue 背景處理遇到 `unsupported_social_platform` / `unsafe_url` 這類永久性錯誤時，會直接 failed，不再重試三次。
-4. failed 後改用 `createPendingReplyFromTask()` 建立 PendingReplies，讓下一次同 conversationId 有訊息進來時可以交付錯誤通知。
-5. `01_Main.gs` 會把 `skippedUnsupportedUrls` 傳給固定回覆文字，避免混合網址時靜默略過不支援連結。
+1. `13_NewsInbox.gs` 的 `parseManualNewsSupplement_()` 改回使用 `parseJsonObjectLoose()`。
+2. 使用 `parseJsonObjectLoose(responseText) || {}` 防守 DeepSeek 偶發非 JSON 回覆。
+3. 保留 fallback：若 DeepSeek API 失敗或解析發生例外，仍會用使用者原文建立人工補充素材。
+4. 補上詳細註解，說明這是 v1.10.2 cleanup 留下的靜默降級型 bug。
 
 ---
 
 ## Reader Layer Scope
 
-v1.10.7 延續 v1.10.6 的 reader 分流：
+v1.10.8 延續 v1.10.7 的 reader 分流：
 
 - 一般網站：Jina Reader。
 - PTT：GAS 原生 `UrlFetchApp` + `over18=1` cookie，並在 `16_ReaderLayer.gs` 內套用 v1.10.6 的 over18 gate 誤判修正。
@@ -114,7 +113,7 @@ v1.10.7 延續 v1.10.6 的 reader 分流：
 
 ## Existing Cleanup Command Scope
 
-v1.10.7 沒有修改 v1.10.4 的清理功能。
+v1.10.8 沒有修改 v1.10.4 的清理功能。
 
 清理指令與資料表對應仍如下：
 
@@ -129,7 +128,7 @@ v1.10.7 沒有修改 v1.10.4 的清理功能。
 
 ---
 
-## Explicitly Not Included in v1.10.7
+## Explicitly Not Included in v1.10.8
 
 以下功能不是本版內容，不要在讀取本版時誤判為已實作：
 
@@ -142,7 +141,9 @@ v1.10.7 沒有修改 v1.10.4 的清理功能。
 - 自動排程清理
 - 清理前自動備份 Sheet
 - Node.js / npm / 自架伺服器架構
-- 大規模重構 Gemini / DeepSeek prompt 主邏輯
+- NewsUrlQueue 重構
+- Reader Layer 重構
+- Gemini / DeepSeek prompt 主架構重構
 - 大規模重寫 NewsInbox 分類架構
 
 上述功能若要實作，應另開後續 feature branch。
@@ -168,13 +169,10 @@ PR 合併後，建議先在 Apps Script 執行：
 接著在 LINE 測試：
 
 - `#版本`
-- 直接貼 X / Facebook / Threads 網址，確認會立即回覆未支援，且不新增 NewsUrlQueue pending task。
-- 混合貼一般新聞網址 + X 網址，確認一般新聞入隊，不支援網址會在回覆中提醒。
-- 將一筆舊的 unsupported_social_platform pending task 交給 `processNewsUrlQueue()`，確認會直接 failed，不再重試三次，並寫入 PendingReplies。
-- 直接貼可正常讀取的一般新聞網址，確認進 NewsUrlQueue 並可寫入 NewsInbox。
-- `#懶人包 一般新聞網址`
-- `#節目話題分析 一般新聞網址`
-- PTT 成人看板文章網址，例如 C_Chat 文章，確認不再誤判為滿 18 歲確認頁。
+- `#新聞補充 這篇大概在講 X 平台政策變動，偏社群輿論，節目潛力高，https://x.com/example/status/123`
+- 確認 NewsInbox 新增資料的分類、簡介、切角與節目潛力不再每次都只落入 fallback 預設值。
+- 直接貼一般新聞網址，確認 NewsUrlQueue / NewsInbox 自動分類仍正常。
+- 直接貼 X / Facebook / Threads 網址，確認仍會立即回覆未支援，且不新增 NewsUrlQueue pending task。
 - `#本週新聞`
 - `#help`
 - `#help 資料`
@@ -183,5 +181,5 @@ PR 合併後，建議先在 Apps Script 執行：
 
 ## Last Confirmed
 
-Last Confirmed Version: v1.10.7 NewsInbox Queue Hotfix  
+Last Confirmed Version: v1.10.8 Manual News Supplement Parse Hotfix  
 Last Confirmed Date: 2026-06-08
