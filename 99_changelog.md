@@ -2,7 +2,7 @@
 v1.10.6 PTT Over18 Detection Hotfix
 - 以 v1.10.5 Reader Layer Edition 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
 - 修正 PTT 正常文章頁被 looksLikePttOver18Gate_() 誤判為滿 18 歲確認頁的問題。
-- 新增 18_PttOver18DetectionHotfix.gs，以同名函式覆寫過寬的 over18 gate 判斷。
+- 將 PTT over18 gate 修正與 legacy fallback wrapper 整合回 16_ReaderLayer.gs，避免 Reader Layer 檔案過度分散。
 - 正常文章頁若已出現 main-content 或 article-meta 結構，就不再判定為 over18 gate。
 - 本版不修改 Jina Reader、NewsInbox schema、DeepSeek / Gemini 主流程，不導入 Apify / ByCrawl。
 
