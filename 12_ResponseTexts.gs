@@ -2,18 +2,30 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.6 PTT Over18 Detection Hotfix
+// 小浣 LINE Bot v1.10.7 NewsInbox Queue Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.6 是 PTT reader 的小型 hotfix；實際修正已整合於 16_ReaderLayer.gs。
+// 3. v1.10.7 修正 NewsInbox Queue 對 unsupported social URL 的處理與 failed pending reply 建立。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.6 PTT Over18 Detection Hotfix';
+const BOT_CURRENT_VERSION = 'v1.10.7 NewsInbox Queue Hotfix';
 const BOT_CURRENT_VERSION_DATE = '2026-06-08';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.7 NewsInbox Queue Hotfix',
+    date: '2026-06-08',
+    summary: '修正 X / Facebook / Threads 直接貼網址時被放進 NewsUrlQueue 重試，以及 failed 後沒有 pending reply 的問題。',
+    changes: [
+      'X / Facebook / Threads 這類目前未支援平台會在 NewsInbox 入隊前直接攔截，不再進 NewsUrlQueue。',
+      'NewsUrlQueue 背景處理遇到 unsupported_social_platform / unsafe_url 這類永久錯誤時，不再重試三次。',
+      '修正 NewsInbox failed 後誤呼叫不存在的 createPendingReply()，改用 createPendingReplyFromTask() 建立 PendingReplies。',
+      '混合貼多個網址時，可支援的網址仍會入隊，不支援的社群網址會在回覆中提醒。',
+      '本版不導入 Apify / ByCrawl，也不支援 X / Facebook / Threads 自動擷取。'
+    ]
+  },
   {
     version: 'v1.10.6 PTT Over18 Detection Hotfix',
     date: '2026-06-08',
@@ -108,7 +120,7 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我修正了 PTT 判斷：正常文章頁不會再只因為含有 ask/over18 字樣，就被誤判成滿 18 歲確認頁。',
+    '這版我修正了 NewsInbox 佇列流程：X / Facebook / Threads 會在入隊前先攔截，背景任務 failed 後也會正確留下待回覆訊息。',
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),
@@ -145,9 +157,26 @@ function getBotTextWebTaskAccepted_(taskType, urlCount) {
   return ['收到，' + countText + '我會做成懶人包。', '整理好後，下一次群組有人說話時，我會把快讀摘要送上來。'].join('\n');
 }
 
-function getBotTextNewsInboxAccepted_(urlCount) {
+function getBotTextNewsInboxAccepted_(urlCount, skippedUnsupportedUrls) {
   const countText = urlCount > 1 ? '這 ' + urlCount + ' 個網址' : '這篇';
-  return ['收到，' + countText + '我先收進本週新聞素材池。', '我會在背景慢慢分類整理；之後用 #本週新聞，就可以看到這週的剪報。'].join('\n');
+  const lines = ['收到，' + countText + '我先收進本週新聞素材池。', '我會在背景慢慢分類整理；之後用 #本週新聞，就可以看到這週的剪報。'];
+
+  if (skippedUnsupportedUrls && skippedUnsupportedUrls.length) {
+    lines.push('', '另外，有 ' + skippedUnsupportedUrls.length + ' 個網址目前還不能自動讀取，這類 X / Facebook / Threads 連結要等未來接 Apify 或其他工具。', '你可以先用 #新聞補充 加上簡短說明，我會用人工補充方式收進 NewsInbox。');
+  }
+
+  return lines.join('\n');
+}
+
+function getBotTextUnsupportedSocialUrl_(urls) {
+  const count = urls && urls.length ? urls.length : 1;
+  return [
+    '這 ' + count + ' 個網址屬於 X / Facebook / Threads 這類登入或動態載入平台。',
+    'v1.10.7 目前還沒有導入 Apify / ByCrawl，所以我不會把它丟進 NewsUrlQueue 反覆重試。',
+    '',
+    '你可以改用：',
+    '#新聞補充 這篇大概在講某某事件，偏社群輿論，節目潛力高，後面附上原文網址'
+  ].join('\n');
 }
 
 function getBotTextPendingDelivery_(pendingText, alsoAcceptedNewUrl) {

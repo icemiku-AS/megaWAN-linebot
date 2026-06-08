@@ -2,7 +2,7 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.10.4 Data Cleanup Edition
+// 小浣 LINE Bot v1.10.7 NewsInbox Queue Hotfix
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
@@ -10,6 +10,7 @@
 // 3. 群組與個人聊天室「直接貼網址」都維持 NewsInbox 收件分類。
 // 4. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
 // 5. v1.10.4 將資料清理統一交給 15_DataCleanup.gs，所有清理都需二段確認。
+// 6. v1.10.7 起，直接貼網址若混入 X / Facebook / Threads，回覆會提示不支援的部分沒有入隊。
 // ======================================================
 
 function setupLogSheet() {
@@ -131,7 +132,7 @@ function handleLineEvent(event) {
     if (shouldUseWebReading(userText)) {
       const enqueueResult = enqueueNewsUrlTasks(event, conversationId, userText);
       const replyText = enqueueResult.ok
-        ? getBotTextNewsInboxAccepted_(enqueueResult.urls.length)
+        ? getBotTextNewsInboxAccepted_(enqueueResult.urls.length, enqueueResult.skippedUnsupportedUrls)
         : enqueueResult.error || getBotTextNoReadableUrl_();
 
       replyToLine(event.replyToken, replyText);
@@ -256,7 +257,7 @@ function handleLineEvent(event) {
       if (shouldUseWebReading(commandInfo.userPrompt)) {
         const enqueueResult = enqueueNewsUrlTasks(event, conversationId, commandInfo.userPrompt);
         aiReply = enqueueResult.ok
-          ? getBotTextNewsInboxAccepted_(enqueueResult.urls.length)
+          ? getBotTextNewsInboxAccepted_(enqueueResult.urls.length, enqueueResult.skippedUnsupportedUrls)
           : enqueueResult.error || getBotTextNoReadableUrl_();
       } else {
         aiReply = callDeepSeekWithMemory(conversationId, commandInfo.userPrompt, commandInfo.mode);

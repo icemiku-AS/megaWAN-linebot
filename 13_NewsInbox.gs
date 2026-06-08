@@ -1,14 +1,16 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.10.5 Reader Layer Edition：新聞素材池、新聞網址佇列、#本週新聞、#新聞補充。
+// v1.10.7 NewsInbox Queue Hotfix：新聞素材池、新聞網址佇列、#本週新聞、#新聞補充。
 //
 // 維護重點：
 // 1. 直接貼網址只收件分類，不產生懶人包。
 // 2. NewsUrlQueue 用 time-driven trigger 慢慢處理，每次最多 2 筆。
 // 3. v1.10.5 起，自動網址入庫會先透過 16_ReaderLayer.gs 取得 mainText，再交給 Gemini 分類。
-// 4. DeepSeek 負責 #新聞補充 解析。
-// 5. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
-// 6. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
+// 4. v1.10.7 起，X / Facebook / Threads 這類已知未支援平台會在入隊前直接攔截，不再進 NewsUrlQueue 重試。
+// 5. v1.10.7 起，背景處理若遇到永久性錯誤，會直接 failed 並建立 PendingReplies，不再無效重試三次。
+// 6. DeepSeek 負責 #新聞補充 解析。
+// 7. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
+// 8. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
 // ======================================================
 
 const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '馬斯克', '川普', '待分類'];
@@ -17,6 +19,14 @@ const MAX_NEWS_QUEUE_TASKS_PER_RUN = 2;
 const MAX_NEWS_URLS_PER_MESSAGE = 10;
 const MAX_NEWS_QUEUE_RETRY_COUNT = 3;
 const DEFAULT_WEEKLY_NEWS_DAYS = 7;
+
+// NewsUrlQueue 永久性錯誤清單。
+//
+// 維護說明：
+// 1. 這些錯誤不是暫時性網路錯誤，重試通常不會成功。
+// 2. 例如 unsupported_social_platform 代表平台目前尚未導入 Apify / ByCrawl / 官方 API。
+// 3. 這類錯誤應立即 failed 並通知使用者，不應浪費 3 次 trigger 重試。
+const NEWS_URL_PERMANENT_ERROR_TYPES = ['unsupported_social_platform', 'unsafe_url'];
 
 function ensureNewsUrlQueueSheet_() {
   const headers = ['TaskId', 'CreatedAt', 'UpdatedAt', 'ConversationId', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'UserPrompt', 'Url', 'Status', 'RetryCount', 'NextRunAt', 'LastErrorType', 'LastErrorText', 'StartedAt', 'FinishedAt'];
@@ -32,15 +42,59 @@ function enqueueNewsUrlTasks(event, conversationId, userText) {
   const urls = extractUrls(userText).slice(0, MAX_NEWS_URLS_PER_MESSAGE);
   if (!urls.length) return { ok: false, error: getBotTextNoReadableUrl_() };
 
+  const partitionedUrls = partitionNewsUrlsForQueue_(urls);
+
+  // X / Facebook / Threads 目前明確不支援自動擷取。
+  // v1.10.5 的 Reader Layer 已能偵測 unsupported_social_platform，但若等到背景 trigger 才判斷，
+  // 使用者會先收到「已收進素材池」，接著 queue 又無效重試三次，體驗與維護都很差。
+  // 因此 v1.10.7 將「已知未支援平台」提前到入隊前攔截。
+  if (!partitionedUrls.supportedUrls.length) {
+    return {
+      ok: false,
+      error: getBotTextUnsupportedSocialUrl_(partitionedUrls.unsupportedSocialUrls),
+      urls: [],
+      skippedUnsupportedUrls: partitionedUrls.unsupportedSocialUrls
+    };
+  }
+
   const source = event.source || {};
   const sheet = ensureNewsUrlQueueSheet_();
   const now = new Date();
 
-  urls.forEach(function(url) {
+  partitionedUrls.supportedUrls.forEach(function(url) {
     sheet.appendRow([createSimpleId('newsq'), now, now, conversationId, source.type || '', source.userId || '', source.groupId || '', source.roomId || '', truncateForSheet(userText || ''), url, 'pending', 0, now, '', '', '', '']);
   });
 
-  return { ok: true, urls: urls };
+  return {
+    ok: true,
+    urls: partitionedUrls.supportedUrls,
+    skippedUnsupportedUrls: partitionedUrls.unsupportedSocialUrls
+  };
+}
+
+function partitionNewsUrlsForQueue_(urls) {
+  const supportedUrls = [];
+  const unsupportedSocialUrls = [];
+
+  urls.forEach(function(url) {
+    const safeUrl = String(url || '').trim();
+    if (!safeUrl) return;
+
+    // 直接復用 Reader Layer 的 route detector，避免 NewsInbox 另維護一份平台清單。
+    // 這裡只攔截「明確已知目前不支援」的平台；一般網站與 PTT 仍交給 queue 背景處理。
+    const route = detectWebReaderRoute_(safeUrl);
+    if (route === WEB_READER_ROUTE_UNSUPPORTED_SOCIAL) {
+      unsupportedSocialUrls.push(safeUrl);
+      return;
+    }
+
+    supportedUrls.push(safeUrl);
+  });
+
+  return {
+    supportedUrls: supportedUrls,
+    unsupportedSocialUrls: unsupportedSocialUrls
+  };
 }
 
 function processNewsUrlQueue() {
@@ -103,13 +157,18 @@ function processSingleNewsUrlTask_(task) {
   try {
     const webResult = fetchAndExtractWebPageByReaderLayer_(task.url);
     if (!webResult.ok) {
-      throw new Error(webResult.error || 'fetch failed');
+      const readerError = new Error(webResult.error || 'fetch failed');
+      readerError.errorType = webResult.errorType || 'reader_error';
+      readerError.readerRoute = webResult.readerRoute || '';
+      throw readerError;
     }
 
     const classification = classifyNewsUrlWithGemini_(task.url, webResult);
 
     if (isWeakAutoNewsClassification_(classification, task.url)) {
-      throw new Error('weak_auto_classification: Gemini classification is insufficient for NewsInbox');
+      const weakError = new Error('weak_auto_classification: Gemini classification is insufficient for NewsInbox');
+      weakError.errorType = 'weak_classification';
+      throw weakError;
     }
 
     appendNewsInboxRow_({
@@ -137,14 +196,17 @@ function processSingleNewsUrlTask_(task) {
 
   } catch (error) {
     const errorText = error && error.message ? error.message : String(error);
+    const errorType = error && error.errorType ? error.errorType : classifyNewsUrlError_(errorText);
     const retryCount = Number(task.retryCount || 0) + 1;
+    const shouldRetry = shouldRetryNewsUrlError_(errorType, errorText);
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'RetryCount', retryCount);
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorType', classifyNewsUrlError_(errorText));
+    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorType', errorType);
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorText', truncateForSheet(errorText));
 
-    if (retryCount < MAX_NEWS_QUEUE_RETRY_COUNT) {
+    // 暫時性錯誤才重試；已知永久性錯誤，例如 unsupported_social_platform，不應排回 pending。
+    if (shouldRetry && retryCount < MAX_NEWS_QUEUE_RETRY_COUNT) {
       setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'pending');
       setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'NextRunAt', new Date(now.getTime() + retryCount * 2 * 60 * 1000));
       return;
@@ -153,8 +215,33 @@ function processSingleNewsUrlTask_(task) {
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'failed');
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'FinishedAt', now);
 
-    createPendingReply(task.conversationId, getBotTextNewsUrlFailed_(task.url, errorText), 'news_url_failed');
+    // v1.10.7 修正：
+    // 舊版誤呼叫不存在的 createPendingReply()，導致 queue 已 failed 但 PendingReplies 沒有建立。
+    // 這裡改用 07_WebTaskQueue.gs 既有的 createPendingReplyFromTask()，
+    // 讓下一次同 conversationId 有訊息進來時，01_Main.gs 可透過 getAndDeletePendingReply() 交付錯誤通知。
+    createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, errorText), 'news_url_failed');
   }
+}
+
+function shouldRetryNewsUrlError_(errorType, errorText) {
+  if (isPermanentNewsUrlError_(errorType, errorText)) {
+    return false;
+  }
+
+  return true;
+}
+
+function isPermanentNewsUrlError_(errorType, errorText) {
+  const type = String(errorType || '').trim();
+
+  if (NEWS_URL_PERMANENT_ERROR_TYPES.indexOf(type) >= 0) {
+    return true;
+  }
+
+  // 後備防守：若舊資料或未帶 errorType 的錯誤訊息中仍包含明確永久錯誤訊號，也不要重試。
+  const text = String(errorText || '').toLowerCase();
+  return text.indexOf('unsupported_social_platform') >= 0 ||
+    text.indexOf('網址安全檢查未通過') >= 0;
 }
 
 function classifyNewsUrlWithGemini_(url, webResult) {
@@ -258,6 +345,8 @@ function appendNewsInboxRow_(item) {
 
 function classifyNewsUrlError_(errorText) {
   const text = String(errorText || '').toLowerCase();
+  if (text.indexOf('unsupported_social_platform') >= 0) return 'unsupported_social_platform';
+  if (text.indexOf('網址安全檢查未通過') >= 0) return 'unsafe_url';
   if (text.indexOf('fetch') >= 0 || text.indexOf('urlfetch') >= 0) return 'fetch_error';
   if (text.indexOf('gemini') >= 0 || text.indexOf('json') >= 0) return 'classification_error';
   if (text.indexOf('weak_auto_classification') >= 0) return 'weak_classification';
