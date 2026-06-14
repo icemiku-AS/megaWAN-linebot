@@ -1,27 +1,23 @@
 // ======================================================
 // 16_ReaderLayer.gs
-// v1.10.6 PTT Over18 Detection Hotfix：統一網頁讀取供應層。
+// v1.10.9 Social Reader Edition：統一網頁讀取供應層。
 //
-// 本檔是 Reader Layer 的核心檔案，目標是把「讀網頁」從原本
-// UrlFetchApp 抓 raw HTML → GAS 清 HTML → Gemini 抽正文，調整為：
+// 本檔是 Reader Layer 的核心檔案，目標是把「讀網頁」與後續 LLM 整理拆開。
+// 下游 NewsInbox、WebSummary、DeepSeek prompt 只需要吃穩定的 webResult：
+// mainText、title、siteName、author、publishedAt、warnings、readerRoute。
 //
-// 1. 一般網站：優先使用 Jina Reader 轉成 LLM 友善文字。
-// 2. PTT：使用 GAS 原生 UrlFetchApp，帶 Cookie: over18=1 處理滿 18 歲確認頁。
-// 3. X / FB / Threads：本版只偵測並回報尚未支援，未導入 Apify。
-// 4. 舊 raw HTML + Gemini extractor 流程保留為 legacy fallback，不在本版刪除。
-//
-// v1.10.6 hotfix：
-// 1. 原本 v1.10.5 的 PTT over18 detector 只要看到 ask/over18 字樣就判定為成人確認頁。
-// 2. 實測發現正常 PTT 文章頁也可能包含 ask/over18 相關模板、連結或 script。
-// 3. 因此本版將 PTT gate 判斷收斂為：若已出現 main-content / article-meta 結構，優先視為正常文章頁。
-// 4. 只有真的出現同意按鈕，或同時出現未滿十八歲提示與 over18 form，才判定為 gate。
+// v1.10.9 分流：
+// 1. X / Twitter 單篇 status：使用 FxTwitter API 讀取，再轉成 Reader Layer 文字格式。
+// 2. Facebook / fb.watch / Threads.com / Threads.net：不再提前攔截，回到一般網址流程，先走 Jina Reader。
+// 3. PTT：使用 GAS 原生 UrlFetchApp，帶 Cookie: over18=1 處理滿 18 歲確認頁。
+// 4. 一般網站：優先使用 Jina Reader 轉成 LLM 友善文字。
+// 5. Jina Reader 失敗時，保留舊 raw HTML + Gemini extractor 作為 legacy fallback。
 //
 // 維護原則：
-// 1. 對下游維持 webResult 資料契約：回傳 mainText、title、siteName、author、publishedAt、warnings 等欄位。
-// 2. 下游 NewsInbox、WebSummary、DeepSeek prompt 盡量不用知道上游 reader 是誰。
-// 3. 新 reader 若失敗，錯誤要帶上 readerRoute，方便日後從 Sheet / log 排查。
-// 4. 本版不處理登入型社群平台，不導入 ByCrawl，不新增 Node.js / npm 架構。
-// 5. legacy fallback 目前透過 06_WebReader.gs 既有 fetchAndExtractWebPage(url) 復用舊流程。
+// 1. 本檔維持 Google Apps Script 架構，不導入 Node.js / npm / 自架伺服器。
+// 2. 本版不導入 Apify / ByCrawl。
+// 3. X / Twitter 只支援可抽出 /status/{id} 的公開單篇貼文；個人頁、搜尋頁、列表頁不自動擷取。
+// 4. Facebook / Threads 是否能讀到正文取決於 Jina Reader 與公開可讀性，不保證登入牆或私人內容。
 // ======================================================
 
 // ======================================================
@@ -30,7 +26,6 @@
 
 // Jina Reader 的 URL 前綴。
 // 使用方式：JINA_READER_ENDPOINT_PREFIX + 原始網址
-// 例：https://r.jina.ai/https://example.com/article
 const JINA_READER_ENDPOINT_PREFIX = 'https://r.jina.ai/';
 
 // Reader route 名稱固定化，避免未來 Sheet 或 log 裡出現多種拼法。
@@ -38,6 +33,7 @@ const WEB_READER_ROUTE_JINA = 'jina_reader';
 const WEB_READER_ROUTE_PTT_OVER18 = 'ptt_over18_cookie';
 const WEB_READER_ROUTE_UNSUPPORTED_SOCIAL = 'unsupported_social_platform';
 const WEB_READER_ROUTE_LEGACY = 'legacy_raw_html_gemini';
+const WEB_READER_ROUTE_FXTWITTER_API = 'fxtwitter_api';
 
 // Reader 可用性門檻。
 // 一般文章太短通常代表只讀到導覽列、錯誤頁或空殼頁；PTT 短文較常見，所以門檻略低。
@@ -57,12 +53,16 @@ function fetchAndExtractWebPageByReaderLayer_(url) {
 
   const route = detectWebReaderRoute_(safeUrl);
 
+  if (route === WEB_READER_ROUTE_FXTWITTER_API) {
+    return fetchTwitterStatusWithFxTwitter_(safeUrl);
+  }
+
   if (route === WEB_READER_ROUTE_UNSUPPORTED_SOCIAL) {
     return buildReaderLayerErrorResult_(
       safeUrl,
       route,
-      'unsupported_social_platform',
-      '這個網址屬於 X / Facebook / Threads 這類登入或動態載入平台。v1.10.6 尚未導入 Apify，請先用 #新聞補充 加上簡短說明手動入庫。'
+      'x_twitter_url_without_status_id',
+      '這個 X / Twitter 網址不是單篇 status 貼文，v1.10.9 只支援 /status/{id} 類型的公開貼文網址。'
     );
   }
 
@@ -111,10 +111,12 @@ function detectWebReaderRoute_(url) {
     return WEB_READER_ROUTE_PTT_OVER18;
   }
 
-  if (isUnsupportedSocialHostname_(hostname)) {
-    return WEB_READER_ROUTE_UNSUPPORTED_SOCIAL;
+  if (isTwitterLikeHostname_(hostname)) {
+    return extractTwitterStatusIdFromUrl_(url) ? WEB_READER_ROUTE_FXTWITTER_API : WEB_READER_ROUTE_UNSUPPORTED_SOCIAL;
   }
 
+  // Facebook / fb.watch / Threads.com / Threads.net 在 v1.10.9 起不再特判為 unsupported。
+  // 它們會自然走 Jina Reader；讀不到再由既有 fallback 與錯誤流程處理。
   return WEB_READER_ROUTE_JINA;
 }
 
@@ -128,19 +130,42 @@ function isPttHostname_(hostname) {
   return host === 'ptt.cc' || host.endsWith('.ptt.cc');
 }
 
+// 舊函式名稱保留給相容與排查用。
+// v1.10.9 起，Facebook / Threads 不再由此函式視為 unsupported。
 function isUnsupportedSocialHostname_(hostname) {
+  return isTwitterLikeHostname_(hostname);
+}
+
+function isTwitterLikeHostname_(hostname) {
   const host = String(hostname || '').toLowerCase();
 
   return host === 'x.com' ||
     host.endsWith('.x.com') ||
     host === 'twitter.com' ||
     host.endsWith('.twitter.com') ||
-    host === 'facebook.com' ||
-    host.endsWith('.facebook.com') ||
-    host === 'fb.watch' ||
-    host.endsWith('.fb.watch') ||
-    host === 'threads.net' ||
-    host.endsWith('.threads.net');
+    host === 'mobile.twitter.com' ||
+    host === 'fxtwitter.com' ||
+    host.endsWith('.fxtwitter.com') ||
+    host === 'fixupx.com' ||
+    host.endsWith('.fixupx.com');
+}
+
+function extractTwitterStatusIdFromUrl_(url) {
+  const text = String(url || '').trim();
+
+  // 常見格式：/user/status/123、/i/web/status/123。
+  // 只抓 snowflake 數字 ID，不處理搜尋頁、個人頁、列表頁。
+  const statusMatch = text.match(/\/status\/(\d{5,})(?:[/?#]|$)/i);
+  if (statusMatch && statusMatch[1]) {
+    return statusMatch[1];
+  }
+
+  const webStatusMatch = text.match(/\/i\/web\/status\/(\d{5,})(?:[/?#]|$)/i);
+  if (webStatusMatch && webStatusMatch[1]) {
+    return webStatusMatch[1];
+  }
+
+  return '';
 }
 
 // ======================================================
@@ -148,12 +173,258 @@ function isUnsupportedSocialHostname_(hostname) {
 // ======================================================
 
 function fetchAndExtractWebPageLegacy_(url) {
-  // v1.10.6 整合說明：
-  // 1. v1.10.5 曾以 17_ReaderLayerCompat.gs 提供這個 wrapper。
-  // 2. 為了避免檔案過度分散，本版將 wrapper 收回 Reader Layer 主檔。
-  // 3. 目前 06_WebReader.gs 的 fetchAndExtractWebPage(url) 仍代表舊 raw HTML + Gemini extractor 流程。
-  // 4. 若未來把 fetchAndExtractWebPage(url) 改成也走 Reader Layer，這裡必須同步重構，避免遞迴。
+  // 目前 06_WebReader.gs 的 fetchAndExtractWebPage(url) 仍代表舊 raw HTML + Gemini extractor 流程。
+  // 若未來把 fetchAndExtractWebPage(url) 改成也走 Reader Layer，這裡必須同步重構，避免遞迴。
   return fetchAndExtractWebPage(url);
+}
+
+// ======================================================
+// X / Twitter provider：FxTwitter API
+// ======================================================
+
+function fetchTwitterStatusWithFxTwitter_(url) {
+  const statusId = extractTwitterStatusIdFromUrl_(url);
+
+  if (!statusId) {
+    return buildReaderLayerErrorResult_(
+      url,
+      WEB_READER_ROUTE_FXTWITTER_API,
+      'x_twitter_url_without_status_id',
+      '這個 X / Twitter 網址不是單篇 status 貼文，無法用 FxTwitter API 讀取。'
+    );
+  }
+
+  const apiUrl = FXTWITTER_API_STATUS_ENDPOINT_PREFIX + encodeURIComponent(statusId);
+  const options = {
+    method: 'get',
+    muteHttpExceptions: true,
+    followRedirects: true,
+    headers: {
+      'Accept': 'application/json',
+      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; FxTwitter Reader)'
+    }
+  };
+
+  try {
+    const response = UrlFetchApp.fetch(apiUrl, options);
+    const statusCode = response.getResponseCode();
+    const headers = response.getHeaders();
+    const contentType = headers['Content-Type'] || headers['content-type'] || 'application/json';
+    const bodyText = response.getContentText();
+
+    if (statusCode < 200 || statusCode >= 300) {
+      return buildReaderLayerErrorResult_(
+        url,
+        WEB_READER_ROUTE_FXTWITTER_API,
+        'fxtwitter_fetch_failed',
+        'FxTwitter API 讀取失敗，HTTP 狀態碼：' + statusCode + '；回應預覽：' + String(bodyText || '').slice(0, 500)
+      );
+    }
+
+    let json = null;
+    try {
+      json = JSON.parse(bodyText);
+    } catch (parseError) {
+      return buildReaderLayerErrorResult_(
+        url,
+        WEB_READER_ROUTE_FXTWITTER_API,
+        'fxtwitter_invalid_json',
+        'FxTwitter API 有回應，但內容不是合法 JSON：' + String(bodyText || '').slice(0, 500)
+      );
+    }
+
+    return normalizeFxTwitterStatusToReaderResult_(url, statusCode, contentType, json);
+
+  } catch (error) {
+    return buildReaderLayerErrorResult_(
+      url,
+      WEB_READER_ROUTE_FXTWITTER_API,
+      'fxtwitter_fetch_exception',
+      '呼叫 FxTwitter API 時發生錯誤：' + String(error && error.message ? error.message : error)
+    );
+  }
+}
+
+function normalizeFxTwitterStatusToReaderResult_(url, statusCode, contentType, json) {
+  if (json && json.code && Number(json.code) !== 200) {
+    return buildReaderLayerErrorResult_(
+      url,
+      WEB_READER_ROUTE_FXTWITTER_API,
+      'fxtwitter_status_unavailable',
+      'FxTwitter API 回傳 code=' + json.code + '，可能是貼文刪除、鎖帳、受限或 API 暫時不可用。'
+    );
+  }
+
+  const status = extractFxTwitterStatusObject_(json);
+
+  if (!status) {
+    return buildReaderLayerErrorResult_(
+      url,
+      WEB_READER_ROUTE_FXTWITTER_API,
+      'fxtwitter_status_unavailable',
+      'FxTwitter API 回傳中沒有可用的 status / tweet 物件，可能是貼文刪除、鎖帳、受限或 API 回傳格式變更。'
+    );
+  }
+
+  const text = normalizeFxTwitterString_(status.text || status.full_text || status.description || '');
+  const author = status.author || status.user || {};
+  const authorName = normalizeFxTwitterString_(author.name || author.display_name || '');
+  const screenName = normalizeFxTwitterString_(author.screen_name || author.username || author.handle || '');
+  const publishedAt = normalizeFxTwitterString_(status.created_at || status.createdAt || status.date || '');
+
+  if (!text) {
+    return buildReaderLayerErrorResult_(
+      url,
+      WEB_READER_ROUTE_FXTWITTER_API,
+      'fxtwitter_empty_status_text',
+      'FxTwitter API 有回應，但沒有可用貼文文字，可能是純媒體貼文、受限貼文或 API 格式變更。'
+    );
+  }
+
+  const mainText = buildFxTwitterMainText_(url, status, text, authorName, screenName, publishedAt);
+  const titleName = screenName ? '@' + screenName : (authorName || 'unknown');
+
+  return buildReaderLayerSuccessResult_({
+    url: url,
+    statusCode: statusCode,
+    contentType: contentType || 'application/json',
+    title: 'X / Twitter：' + titleName + ' 的貼文',
+    siteName: 'X / Twitter',
+    author: buildFxTwitterAuthorLabel_(authorName, screenName),
+    publishedAt: publishedAt,
+    mainText: mainText,
+    extractionConfidence: 0.9,
+    warnings: ['X / Twitter 貼文由 FxTwitter API 讀取並轉成 Reader Layer 文字。'],
+    readerRoute: WEB_READER_ROUTE_FXTWITTER_API
+  });
+}
+
+function extractFxTwitterStatusObject_(json) {
+  if (!json) return null;
+
+  // FxTwitter / FixupX API 主要會回 status；保留 tweet/data 形狀作為格式變動防守。
+  if (json.status) return json.status;
+  if (json.tweet) return json.tweet;
+  if (json.data && json.data.status) return json.data.status;
+  if (json.data && json.data.tweet) return json.data.tweet;
+
+  return null;
+}
+
+function buildFxTwitterMainText_(url, status, text, authorName, screenName, publishedAt) {
+  const lines = [];
+
+  lines.push('【平台】X / Twitter');
+  lines.push('【作者】' + (buildFxTwitterAuthorLabel_(authorName, screenName) || '未知'));
+
+  if (publishedAt) {
+    lines.push('【發布時間】' + publishedAt);
+  }
+
+  lines.push('');
+  lines.push('【貼文內容】');
+  lines.push(text);
+
+  const quoteText = buildFxTwitterQuoteText_(status);
+  if (quoteText) {
+    lines.push('');
+    lines.push('【引用貼文】');
+    lines.push(quoteText);
+  }
+
+  const mediaText = buildFxTwitterMediaText_(status);
+  if (mediaText) {
+    lines.push('');
+    lines.push('【媒體】');
+    lines.push(mediaText);
+  }
+
+  const metricText = buildFxTwitterMetricText_(status);
+  if (metricText) {
+    lines.push('');
+    lines.push('【互動數】');
+    lines.push(metricText);
+  }
+
+  lines.push('');
+  lines.push('【原始網址】');
+  lines.push(url);
+
+  return lines.join('\n').trim();
+}
+
+function buildFxTwitterAuthorLabel_(authorName, screenName) {
+  const name = normalizeFxTwitterString_(authorName || '');
+  const handle = normalizeFxTwitterString_(screenName || '').replace(/^@/, '');
+
+  if (name && handle) return name + ' (@' + handle + ')';
+  if (handle) return '@' + handle;
+  return name;
+}
+
+function buildFxTwitterQuoteText_(status) {
+  const quote = status && (status.quote || status.quoted_status || status.quote_tweet || status.quotedTweet);
+  if (!quote) return '';
+
+  const quoteAuthor = quote.author || quote.user || {};
+  const quoteAuthorLabel = buildFxTwitterAuthorLabel_(
+    quoteAuthor.name || quoteAuthor.display_name || '',
+    quoteAuthor.screen_name || quoteAuthor.username || quoteAuthor.handle || ''
+  );
+  const quoteBody = normalizeFxTwitterString_(quote.text || quote.full_text || quote.description || '');
+
+  return [
+    quoteAuthorLabel ? '作者：' + quoteAuthorLabel : '',
+    quoteBody ? '內容：' + quoteBody : ''
+  ].filter(function(line) { return line !== ''; }).join('\n');
+}
+
+function buildFxTwitterMediaText_(status) {
+  const media = status && status.media;
+  if (!media) return '';
+
+  const pieces = [];
+
+  if (Array.isArray(media.photos) && media.photos.length) {
+    pieces.push('圖片 ' + media.photos.length + ' 張');
+  }
+
+  if (Array.isArray(media.videos) && media.videos.length) {
+    pieces.push('影片 ' + media.videos.length + ' 則');
+  }
+
+  if (Array.isArray(media.animated_gifs) && media.animated_gifs.length) {
+    pieces.push('GIF ' + media.animated_gifs.length + ' 則');
+  }
+
+  if (Array.isArray(media) && media.length) {
+    pieces.push('媒體 ' + media.length + ' 個');
+  }
+
+  return pieces.join('、');
+}
+
+function buildFxTwitterMetricText_(status) {
+  const metrics = status && (status.metrics || status.public_metrics || {});
+  const pieces = [];
+
+  addFxTwitterMetricPiece_(pieces, 'Like', metrics.likes || metrics.like_count || status.likes || status.favorite_count);
+  addFxTwitterMetricPiece_(pieces, 'Repost', metrics.retweets || metrics.retweet_count || metrics.reposts || status.retweets);
+  addFxTwitterMetricPiece_(pieces, 'Reply', metrics.replies || metrics.reply_count || status.replies);
+  addFxTwitterMetricPiece_(pieces, 'Quote', metrics.quotes || metrics.quote_count || status.quotes);
+
+  return pieces.join(' / ');
+}
+
+function addFxTwitterMetricPiece_(pieces, label, value) {
+  const numberValue = Number(value || 0);
+  if (numberValue > 0) {
+    pieces.push(label + '：' + numberValue);
+  }
+}
+
+function normalizeFxTwitterString_(value) {
+  return String(value || '').replace(/\r\n/g, '\n').trim();
 }
 
 // ======================================================
@@ -170,7 +441,7 @@ function fetchReadablePageWithJina_(url) {
     headers: {
       // 明確要求文字輸出；Jina Reader 通常會回 Markdown / text。
       'Accept': 'text/plain',
-      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.6; Jina Reader Layer)'
+      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; Jina Reader Layer)'
     }
   };
 
@@ -313,7 +584,7 @@ function fetchPttPageWithOver18Cookie_(url) {
       // PTT 成人看板會用 over18 cookie 判斷使用者是否已確認年滿 18 歲。
       // 這不是登入 token，只是 PTT over18 gate 的確認狀態。
       'Cookie': 'over18=1',
-      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.6; PTT Reader)'
+      'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; PTT Reader)'
     }
   };
 
@@ -394,7 +665,6 @@ function looksLikePttOver18Gate_(html) {
   }
 
   // 真正的 PTT over18 gate 會出現明確的同意按鈕文字。
-  // 這個訊號足夠強，可以直接判定為成人確認頁。
   const hasAgreeButton = text.indexOf('我同意，我已年滿十八歲') >= 0;
 
   if (hasAgreeButton) {
@@ -466,7 +736,7 @@ function callGeminiReadableTextLazySummary_(url, readableText, contentType, orig
     '你是「Reader 文字快讀摘要器」，不是評論者，也不是節目企劃。',
     '',
     '任務：',
-    '你會收到由 Jina Reader、PTT reader 或 legacy reader 轉換後的網頁文字。請把它整理成可以放進素材池的快讀摘要。',
+    '你會收到由 Jina Reader、PTT reader、FxTwitter reader 或 legacy reader 轉換後的網頁文字。請把它整理成可以放進素材池的快讀摘要。',
     '',
     '重要定位：',
     '1. 這是快讀摘要，不是深度分析。',

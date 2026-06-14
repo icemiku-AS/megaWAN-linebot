@@ -1,3 +1,13 @@
+2026-06-14
+v1.10.9 Social Reader Edition
+- 以 v1.10.8 Manual News Supplement Parse Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
+- 新增 X / Twitter 單篇 status 貼文 reader：/status/{id} 類型網址會透過 FxTwitter API 讀取。
+- Facebook、fb.watch、Threads.com、Threads.net 不再提前攔截，改先交給 Jina Reader 嘗試讀取。
+- 成功讀取的社群內容會整理成 Reader Layer 統一 webResult 格式，讓 NewsInbox、#懶人包、#節目話題分析 沿用既有流程。
+- 本版不導入 Apify / ByCrawl，不修改 Google Sheet schema，不重構 NewsInbox、Gemini / DeepSeek prompt 或 Reader Layer 主架構。
+
+// ==================================================
+
 2026-06-08
 v1.10.8 Manual News Supplement Parse Hotfix
 - 以 v1.10.7 NewsInbox Queue Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。

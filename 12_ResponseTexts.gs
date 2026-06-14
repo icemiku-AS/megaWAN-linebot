@@ -2,18 +2,29 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.8 Manual News Supplement Parse Hotfix
+// 小浣 LINE Bot v1.10.9 Social Reader Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.8 修正 #新聞補充 的 JSON parser 命名錯誤，讓 DeepSeek 解析結果真正生效。
+// 3. v1.10.9 將社群 reader 版本資訊與非 status 社群網址提示併回本檔，避免額外版本文字小檔。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.8 Manual News Supplement Parse Hotfix';
-const BOT_CURRENT_VERSION_DATE = '2026-06-08';
+const BOT_CURRENT_VERSION = 'v1.10.9 Social Reader Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-06-14';
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.9 Social Reader Edition',
+    date: '2026-06-14',
+    summary: '新增社群網址 reader 分流：X / Twitter status 走 FxTwitter API，Facebook / Threads / fb.watch 先走 Jina Reader。',
+    changes: [
+      'X / Twitter 單篇 /status/{id} 貼文會由 FxTwitter API 轉成 Reader Layer 統一文字格式。',
+      'Facebook、fb.watch、Threads.com、Threads.net 不再被 NewsUrlQueue 入隊前攔截。',
+      '直接貼網址、#懶人包、#節目話題分析 都沿用原本下游流程。',
+      '本版不導入 ByCrawl / Apify，不修改 Sheet schema，不重構 NewsInbox。'
+    ]
+  },
   {
     version: 'v1.10.8 Manual News Supplement Parse Hotfix',
     date: '2026-06-08',
@@ -131,7 +142,7 @@ function getBotVersionText_() {
     '',
     '更新日期：' + BOT_CURRENT_VERSION_DATE,
     '',
-    '這版我修正了 #新聞補充 的解析流程：人工補充現在會真正使用 DeepSeek 解析出的分類、簡介、切角與節目潛力。',
+    current.summary,
     '',
     '本次新增 / 修正：',
     formatBulletList_(current.changes),
@@ -173,7 +184,7 @@ function getBotTextNewsInboxAccepted_(urlCount, skippedUnsupportedUrls) {
   const lines = ['收到，' + countText + '我先收進本週新聞素材池。', '我會在背景慢慢分類整理；之後用 #本週新聞，就可以看到這週的剪報。'];
 
   if (skippedUnsupportedUrls && skippedUnsupportedUrls.length) {
-    lines.push('', '另外，有 ' + skippedUnsupportedUrls.length + ' 個網址目前還不能自動讀取，這類 X / Facebook / Threads 連結要等未來接 Apify 或其他工具。', '你可以先用 #新聞補充 加上簡短說明，我會用人工補充方式收進 NewsInbox。');
+    lines.push('', '另外，有 ' + skippedUnsupportedUrls.length + ' 個網址目前不能自動入庫。v1.10.9 已支援 X / Twitter 單篇 status，Facebook / Threads 也會先走 Jina；如果仍被略過，通常代表它不是單篇貼文、網址格式不完整，或內容需要登入。', '你可以先用 #新聞補充 加上簡短說明，我會用人工補充方式收進 NewsInbox。');
   }
 
   return lines.join('\n');
@@ -182,8 +193,8 @@ function getBotTextNewsInboxAccepted_(urlCount, skippedUnsupportedUrls) {
 function getBotTextUnsupportedSocialUrl_(urls) {
   const count = urls && urls.length ? urls.length : 1;
   return [
-    '這 ' + count + ' 個網址屬於 X / Facebook / Threads 這類登入或動態載入平台。',
-    'v1.10.8 目前還沒有導入 Apify / ByCrawl，所以我不會把它丟進 NewsUrlQueue 反覆重試。',
+    '這 ' + count + ' 個網址目前不能自動讀取。',
+    'v1.10.9 已支援 X / Twitter 單篇 /status/{id} 貼文；請確認網址是不是單篇貼文格式。Facebook、fb.watch、Threads.com、Threads.net 會先走 Jina Reader，不會再提前攔截。',
     '',
     '你可以改用：',
     '#新聞補充 這篇大概在講某某事件，偏社群輿論，節目潛力高，後面附上原文網址'
