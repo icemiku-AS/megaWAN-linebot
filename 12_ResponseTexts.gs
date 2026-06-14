@@ -2,20 +2,32 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.10 Version History Maintenance Edition
+// 小浣 LINE Bot v1.11.0 Direct URL Summary Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
 // 3. v1.10.9 將社群 reader 版本資訊與非 status 社群網址提示併回本檔，避免額外版本文字小檔。
 // 4. v1.10.10 限制 #版本紀錄 只顯示最近 6 筆，避免回覆隨版本增加而過長。
+// 5. v1.11.0 新增直接貼單一網址的同步大綱、queue fallback 與失敗固定回覆。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.10 Version History Maintenance Edition';
+const BOT_CURRENT_VERSION = 'v1.11.0 Direct URL Summary Edition';
 const BOT_CURRENT_VERSION_DATE = '2026-06-14';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.11.0 Direct URL Summary Edition',
+    date: '2026-06-14',
+    summary: '直接貼單一網址時，同步回覆 100～200 字內容大綱，並在同一次 Gemini 呼叫完成 NewsInbox 分類。',
+    changes: [
+      '單一直接網址會先透過 Reader Layer 取得正文，再由 Gemini 一次產生大綱、分類、簡介、切角與節目潛力。',
+      '同步成功後直接寫入 NewsInbox 並回覆大綱，不再等待 NewsUrlQueue 或 PendingReplies。',
+      '多網址、Reader 過慢、同步分析失敗或結果不足時，會退回既有 NewsUrlQueue 背景處理。',
+      '本版不修改 #本週新聞、#懶人包、#節目話題分析、Reader 路由或 Google Sheet schema。'
+    ]
+  },
   {
     version: 'v1.10.10 Version History Maintenance Edition',
     date: '2026-06-14',
@@ -202,6 +214,28 @@ function getBotTextNewsInboxAccepted_(urlCount, skippedUnsupportedUrls) {
   }
 
   return lines.join('\n');
+}
+
+function getBotTextDirectNewsSummary_(outline) {
+  return String(outline || '').trim();
+}
+
+function getBotTextDirectNewsSummaryQueued_() {
+  return [
+    '這篇即時整理沒有在時間內完成，我先改到背景處理。',
+    '整理成功後會收進本週新聞素材池；之後可以用 #本週新聞 查看。'
+  ].join('\n');
+}
+
+function getBotTextDirectNewsSummaryFailed_(url, errorMessage) {
+  return [
+    '這個網址目前無法自動讀取：',
+    url || '',
+    '',
+    '原因：' + String(errorMessage || '未知錯誤').slice(0, 1000),
+    '',
+    '你可以改用 #新聞補充，加上簡短說明與原文網址。'
+  ].join('\n');
 }
 
 function getBotTextUnsupportedSocialUrl_(urls) {

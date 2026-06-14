@@ -15,6 +15,7 @@
 // 7. 因此目前仍採用相容性較高的 responseMimeType: application/json。
 //    schema 函式保留作為「程式端資料契約」與未來升級參考，不直接送入 Gemini API。
 // 8. v1.10.6 補上 callGeminiJson_()，供 NewsInbox 這類「prompt → JSON object」的小型任務共用。
+// 9. v1.11.0 起，直接貼單一網址會透過此 helper 一次產生 LINE 大綱與 NewsInbox 分類資料。
 // ======================================================
 
 // ======================================================
@@ -200,7 +201,7 @@ function callGeminiJson_(prompt, schema) {
   // 通用 Gemini JSON helper。
   //
   // 使用情境：
-  // 1. NewsInbox 自動網址分類：13_NewsInbox.gs 的 classifyNewsUrlWithGemini_()。
+  // 1. NewsInbox 自動網址整理：13_NewsInbox.gs 的 analyzeNewsUrlWithGemini_()。
   // 2. 未來其他「輸入一段 prompt，要求 Gemini 回傳單一 JSON object」的小型任務。
   //
   // 設計重點：

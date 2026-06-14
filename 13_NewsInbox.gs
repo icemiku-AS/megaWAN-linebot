@@ -1,17 +1,18 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.10.8 Manual News Supplement Parse Hotfix：新聞素材池、新聞網址佇列、#本週新聞、#新聞補充。
+// v1.11.0 Direct URL Summary Edition：新聞素材池、同步網址大綱、新聞網址佇列、#本週新聞、#新聞補充。
 //
 // 維護重點：
-// 1. 直接貼網址只收件分類，不產生懶人包。
-// 2. NewsUrlQueue 用 time-driven trigger 慢慢處理，每次最多 2 筆。
-// 3. v1.10.5 起，自動網址入庫會先透過 16_ReaderLayer.gs 取得 mainText，再交給 Gemini 分類。
-// 4. v1.10.7 起，X / Facebook / Threads 這類已知未支援平台會在入隊前直接攔截，不再進 NewsUrlQueue 重試。
+// 1. v1.11.0 起，直接貼單一網址會同步讀取，並由一次 Gemini 呼叫同時產生 LINE 大綱與 NewsInbox 分類資料。
+// 2. 多網址、Reader 過慢、同步 API 失敗或結果不足時，退回 NewsUrlQueue；time-driven trigger 每次最多處理 2 筆。
+// 3. v1.10.5 起，自動網址入庫會先透過 16_ReaderLayer.gs 取得 mainText，再交給 Gemini 整理。
+// 4. v1.10.9 起，X / Twitter 非單篇 status 網址會在入隊前直接攔截；Facebook / Threads 先交給 Jina Reader。
 // 5. v1.10.7 起，背景處理若遇到永久性錯誤，會直接 failed 並建立 PendingReplies，不再無效重試三次。
 // 6. DeepSeek 負責 #新聞補充 解析。
 // 7. v1.10.8 修正 #新聞補充 的 JSON parser 名稱錯誤，讓 DeepSeek 解析結果真的能被使用，而不是每次靜默 fallback。
 // 8. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
 // 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
+// 10. 同步大綱只用於當次 LINE 回覆，不新增 NewsInbox 欄位；NewsInbox schema 維持相容。
 // ======================================================
 
 const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '馬斯克', '川普', '待分類'];
@@ -39,13 +40,206 @@ function ensureNewsInboxSheet_() {
   return ensureSheetWithHeaders_(NEWS_INBOX_SHEET_NAME, headers);
 }
 
+// ======================================================
+// 直接貼網址：同步大綱與 NewsInbox 入庫
+// ======================================================
+
+function handleDirectNewsUrlMessage_(event, conversationId, userText) {
+  const urls = extractUrls(userText).slice(0, MAX_NEWS_URLS_PER_MESSAGE);
+
+  if (!urls.length) {
+    return {
+      ok: false,
+      replyText: getBotTextNoReadableUrl_(),
+      replyMode: 'news_inbox_no_url'
+    };
+  }
+
+  // 同步流程只處理單一網址。多網址維持背景 queue，避免同一個 LINE webhook
+  // 連續執行多次 Reader 與 Gemini，導致 replyToken 等待時間過長。
+  if (urls.length !== 1) {
+    return enqueueDirectNewsUrlsForBackground_(event, conversationId, userText, false, 'multiple_urls');
+  }
+
+  const partitionedUrls = partitionNewsUrlsForQueue_(urls);
+  if (!partitionedUrls.supportedUrls.length) {
+    return {
+      ok: false,
+      replyText: getBotTextUnsupportedSocialUrl_(partitionedUrls.unsupportedSocialUrls),
+      replyMode: 'news_inbox_unsupported_url'
+    };
+  }
+
+  const url = partitionedUrls.supportedUrls[0];
+  const totalStartedAt = Date.now();
+  const readerStartedAt = Date.now();
+  let webResult = null;
+  try {
+    webResult = fetchAndExtractWebPageByReaderLayer_(url);
+  } catch (error) {
+    console.error('Direct news Reader failed:', error && error.stack ? error.stack : error);
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      'reader_exception'
+    );
+  }
+
+  const readerElapsedMs = Date.now() - readerStartedAt;
+
+  if (!webResult.ok) {
+    // unsafe_url 等永久性錯誤不應寫入 queue，否則背景 trigger 只會再次得到相同結果。
+    if (isPermanentNewsUrlError_(webResult.errorType, webResult.error)) {
+      return {
+        ok: false,
+        replyText: getBotTextDirectNewsSummaryFailed_(url, webResult.error),
+        replyMode: 'news_inbox_sync_failed'
+      };
+    }
+
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      webResult.errorType || 'reader_error'
+    );
+  }
+
+  // Reader 已耗時過久時，不再追加 Gemini 同步呼叫。
+  // 網頁內容仍會由 NewsUrlQueue 在背景重新處理，避免 LINE replyToken 逼近有效期限。
+  if (readerElapsedMs > DIRECT_NEWS_SYNC_READER_MAX_MS) {
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      'reader_slow_' + readerElapsedMs + 'ms'
+    );
+  }
+
+  let analysis = null;
+  const geminiStartedAt = Date.now();
+  try {
+    analysis = analyzeNewsUrlWithGemini_(url, webResult);
+  } catch (error) {
+    console.error(
+      'Direct news Gemini analysis failed after ' + (Date.now() - geminiStartedAt) + 'ms:',
+      error && error.stack ? error.stack : error
+    );
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      'gemini_error'
+    );
+  }
+
+  if (isWeakAutoNewsClassification_(analysis, url)) {
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      'weak_classification'
+    );
+  }
+
+  const replyOutline = normalizeDirectNewsOutlineForReply_(analysis.outline);
+  if (!replyOutline) {
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      'weak_outline'
+    );
+  }
+
+  const source = event.source || {};
+  try {
+    appendNewsInboxRow_({
+      conversationId: conversationId,
+      sourceType: source.type || '',
+      userId: source.userId || '',
+      groupId: source.groupId || '',
+      roomId: source.roomId || '',
+      url: url,
+      title: analysis.title,
+      category: analysis.category,
+      brief: analysis.brief,
+      angle: analysis.angle,
+      topicPotential: analysis.topicPotential,
+      sourceMode: 'auto_url_sync',
+      status: 'ok',
+      errorText: ''
+    });
+  } catch (error) {
+    console.error('Direct news NewsInbox write failed:', error && error.stack ? error.stack : error);
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      'news_inbox_write_error'
+    );
+  }
+
+  console.log('Direct news URL sync completed:', JSON.stringify({
+    url: url,
+    readerRoute: webResult.readerRoute || '',
+    readerElapsedMs: readerElapsedMs,
+    geminiElapsedMs: Date.now() - geminiStartedAt,
+    totalElapsedMs: Date.now() - totalStartedAt,
+    outlineLength: replyOutline.length
+  }));
+
+  return {
+    ok: true,
+    queued: false,
+    replyText: getBotTextDirectNewsSummary_(replyOutline),
+    replyMode: 'news_inbox_sync_summary'
+  };
+}
+
+function enqueueDirectNewsUrlsForBackground_(event, conversationId, userText, isSyncFallback, fallbackReason) {
+  const enqueueResult = enqueueNewsUrlTasks(event, conversationId, userText);
+
+  console.log('Direct news URL switched to background queue:', JSON.stringify({
+    reason: fallbackReason || '',
+    queuedUrlCount: enqueueResult.urls ? enqueueResult.urls.length : 0,
+    ok: !!enqueueResult.ok
+  }));
+
+  if (!enqueueResult.ok) {
+    return {
+      ok: false,
+      queued: false,
+      replyText: enqueueResult.error || getBotTextNoReadableUrl_(),
+      replyMode: 'news_inbox_queue_failed'
+    };
+  }
+
+  return {
+    ok: true,
+    queued: true,
+    replyText: isSyncFallback
+      ? getBotTextDirectNewsSummaryQueued_()
+      : getBotTextNewsInboxAccepted_(enqueueResult.urls.length, enqueueResult.skippedUnsupportedUrls),
+    replyMode: isSyncFallback ? 'news_inbox_sync_fallback' : 'news_inbox_queued'
+  };
+}
+
 function enqueueNewsUrlTasks(event, conversationId, userText) {
   const urls = extractUrls(userText).slice(0, MAX_NEWS_URLS_PER_MESSAGE);
   if (!urls.length) return { ok: false, error: getBotTextNoReadableUrl_() };
 
   const partitionedUrls = partitionNewsUrlsForQueue_(urls);
 
-  // X / Facebook / Threads 目前明確不支援自動擷取。
+  // X / Twitter 非單篇 status 網址目前明確不支援自動擷取。
   // v1.10.5 的 Reader Layer 已能偵測 unsupported_social_platform，但若等到背景 trigger 才判斷，
   // 使用者會先收到「已收進素材池」，接著 queue 又無效重試三次，體驗與維護都很差。
   // 因此 v1.10.7 將「已知未支援平台」提前到入隊前攔截。
@@ -164,9 +358,9 @@ function processSingleNewsUrlTask_(task) {
       throw readerError;
     }
 
-    const classification = classifyNewsUrlWithGemini_(task.url, webResult);
+    const analysis = analyzeNewsUrlWithGemini_(task.url, webResult);
 
-    if (isWeakAutoNewsClassification_(classification, task.url)) {
+    if (isWeakAutoNewsClassification_(analysis, task.url)) {
       const weakError = new Error('weak_auto_classification: Gemini classification is insufficient for NewsInbox');
       weakError.errorType = 'weak_classification';
       throw weakError;
@@ -179,11 +373,11 @@ function processSingleNewsUrlTask_(task) {
       groupId: task.groupId,
       roomId: task.roomId,
       url: task.url,
-      title: classification.title,
-      category: classification.category,
-      brief: classification.brief,
-      angle: classification.angle,
-      topicPotential: classification.topicPotential,
+      title: analysis.title,
+      category: analysis.category,
+      brief: analysis.brief,
+      angle: analysis.angle,
+      topicPotential: analysis.topicPotential,
       sourceMode: 'auto_url',
       status: 'ok',
       errorText: ''
@@ -245,12 +439,13 @@ function isPermanentNewsUrlError_(errorType, errorText) {
     text.indexOf('網址安全檢查未通過') >= 0;
 }
 
-function classifyNewsUrlWithGemini_(url, webResult) {
-  const prompt = buildNewsClassificationPrompt_(url, webResult);
-  const result = callGeminiJson_(prompt, buildNewsClassificationSchema_());
+function analyzeNewsUrlWithGemini_(url, webResult) {
+  const prompt = buildNewsAnalysisPrompt_(url, webResult);
+  const result = callGeminiJson_(prompt, buildNewsAnalysisSchema_());
 
   return {
     title: String(result.title || webResult.title || '未取得標題').trim(),
+    outline: String(result.outline || '').trim(),
     category: normalizeNewsCategory_(result.category),
     brief: String(result.brief || '').trim(),
     angle: String(result.angle || '').trim(),
@@ -258,35 +453,80 @@ function classifyNewsUrlWithGemini_(url, webResult) {
   };
 }
 
-function buildNewsClassificationPrompt_(url, webResult) {
+function buildNewsAnalysisPrompt_(url, webResult) {
   return [
-    '請閱讀以下網頁資料，將它分類成 Podcast「現正熱潮中」可用的新聞素材。',
+    '請閱讀以下網頁資料，同時產生 LINE 回覆用內容大綱，以及 Podcast「現正熱潮中」NewsInbox 所需的分類資料。',
     '請只輸出 JSON，不要加解釋。',
     '',
+    '輸出欄位：title、outline、category、brief、angle、topicPotential。',
+    'outline 請使用繁體中文，整理成一段 100～200 個中文字的內容大綱。',
+    'outline 只描述網頁在講什麼，不要加入標題、條列、Markdown、前言、結語、立場評論或節目建議。',
     '可用分類：' + NEWS_INBOX_CATEGORIES.join('、'),
     '分類規則：如果明顯與馬斯克相關，優先選「馬斯克」；如果明顯與川普相關，優先選「川普」。其他再依內容選分類。',
     'topicPotential 只能是：低、中、高。',
     'brief 請控制在 50 個中文字內。',
+    'angle 請整理成一段精簡的節目討論切角。',
+    '只能根據提供的 Reader 文字，不可補充外部資訊或捏造內容。',
+    '',
+    'JSON 格式必須如下：',
+    '{',
+    '  "title": "",',
+    '  "outline": "",',
+    '  "category": "",',
+    '  "brief": "",',
+    '  "angle": "",',
+    '  "topicPotential": ""',
+    '}',
     '',
     'URL：' + url,
-    '網頁標題：' + (webResult.title || ''),
-    '網頁內容：',
-    String(webResult.mainText || '').slice(0, 12000)
+    'Reader Route：' + (webResult.readerRoute || ''),
+    'Reader 標題：' + (webResult.title || ''),
+    'Reader 來源：' + (webResult.siteName || ''),
+    'Reader 內容：',
+    String(webResult.mainText || '').slice(0, DIRECT_NEWS_GEMINI_TEXT_LIMIT)
   ].join('\n');
 }
 
-function buildNewsClassificationSchema_() {
+function buildNewsAnalysisSchema_() {
   return {
     type: 'object',
     properties: {
       title: { type: 'string' },
+      outline: { type: 'string' },
       category: { type: 'string' },
       brief: { type: 'string' },
       angle: { type: 'string' },
       topicPotential: { type: 'string' }
     },
-    required: ['title', 'category', 'brief', 'angle', 'topicPotential']
+    required: ['title', 'outline', 'category', 'brief', 'angle', 'topicPotential']
   };
+}
+
+function normalizeDirectNewsOutlineForReply_(outline) {
+  const text = String(outline || '').trim();
+  if (text.length < DIRECT_NEWS_OUTLINE_MIN_LENGTH) {
+    return '';
+  }
+
+  if (text.length <= DIRECT_NEWS_OUTLINE_MAX_LENGTH) {
+    return text;
+  }
+
+  // Gemini 偶爾會略超過指定長度。這裡優先在約 200 字內的句尾截斷；
+  // 找不到合適句尾時才加省略號，避免只因大綱偏長而重跑背景任務。
+  const limited = text.slice(0, 200);
+  const sentenceMarks = ['。', '！', '？', '!', '?'];
+  let lastSentenceEnd = -1;
+
+  sentenceMarks.forEach(function(mark) {
+    lastSentenceEnd = Math.max(lastSentenceEnd, limited.lastIndexOf(mark));
+  });
+
+  if (lastSentenceEnd >= 99) {
+    return limited.slice(0, lastSentenceEnd + 1).trim();
+  }
+
+  return text.slice(0, 199).trim() + '…';
 }
 
 function isWeakAutoNewsClassification_(classification, url) {

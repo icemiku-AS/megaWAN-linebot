@@ -1,4 +1,13 @@
 2026-06-14
+v1.11.0 Direct URL Summary Edition
+- 直接貼單一網址時，改為同步透過 Reader Layer 讀取，並由一次 Gemini 呼叫同時產生 100～200 字內容大綱與 NewsInbox 分類資料。
+- 同步成功後直接寫入 NewsInbox 並回覆大綱，不再等待 NewsUrlQueue 或 PendingReplies。
+- 多網址、Reader 過慢、同步 API 失敗或結果不足時，退回既有 NewsUrlQueue 背景處理。
+- 本版不修改 #本週新聞、#懶人包、#節目話題分析、Reader 路由或 Google Sheet schema。
+
+// ==================================================
+
+2026-06-14
 v1.10.10 Version History Maintenance Edition
 - 更新 #版本 與 #版本紀錄 的固定文字，並在內建版本紀錄最前方加入 v1.10.10。
 - #版本紀錄 改為只顯示最近 6 筆，避免回覆隨版本增加而過長。
