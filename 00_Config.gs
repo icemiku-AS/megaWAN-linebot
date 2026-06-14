@@ -2,7 +2,7 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.10.10 Version History Maintenance Edition
+// 小浣 LINE Bot v1.11.0 Direct URL Summary Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
@@ -23,10 +23,10 @@ const FXTWITTER_API_STATUS_ENDPOINT_PREFIX = 'https://api.fxtwitter.com/2/status
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.10.9 中 Gemini 仍負責：
+// v1.11.0 中 Gemini 負責：
 // 1. 快讀摘要：#懶人包 指令使用
 // 2. 正文抽取：legacy fallback 使用
-// 3. 新聞素材分類：直接貼網址進 NewsInbox 使用
+// 3. 新聞素材整理：直接貼單一網址時，一次產生 LINE 大綱與 NewsInbox 分類資料
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 const GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
@@ -48,7 +48,7 @@ const WEEKLY_SUMMARY_SHEET_NAME = 'WeeklySummary';
 // 網頁讀取任務佇列 Sheet：保留給 #懶人包 / #節目話題分析
 const WEB_TASK_QUEUE_SHEET_NAME = 'WebTaskQueue';
 
-// 新聞網址待處理佇列 Sheet：直接貼網址會先進這裡
+// 新聞網址待處理佇列 Sheet：多網址、同步處理過慢或失敗時使用
 const NEWS_URL_QUEUE_SHEET_NAME = 'NewsUrlQueue';
 
 // 新聞素材池 Sheet：#本週新聞 的資料來源
@@ -79,11 +79,12 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 
 // 群組中只有這些開頭才會觸發一般 Bot 回覆。
 // 例外：
-// 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會自動排入 NewsInbox 新聞素材池。
+// 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會進入 NewsInbox 收件流程。
 // 2. 個人聊天室直接貼網址也走相同 NewsInbox 收件流程，方便在私訊測試群組行為。
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
 // 4. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
 // 5. v1.10.4 新增多資料表清理指令，所有清理都只作用於目前 conversationId。
+// 6. v1.11.0 起，單一直接網址優先同步回覆大綱；多網址或同步失敗才改走 NewsUrlQueue。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#help',
@@ -134,6 +135,18 @@ const MAX_HTML_FOR_GEMINI = 180000;
 
 // Gemini 抽出的正文送給 DeepSeek 前的最大長度
 const MAX_EXTRACTED_TEXT_FOR_DEEPSEEK = 12000;
+
+// 直接貼單一網址時，Reader 完成後若已超過此時間，就不再追加 Gemini 同步分析，
+// 而是改放入 NewsUrlQueue，避免 LINE replyToken 等待時間過長。
+const DIRECT_NEWS_SYNC_READER_MAX_MS = 15000;
+
+// 同步大綱與 NewsInbox 分類共用同一次 Gemini 呼叫。
+// 只送入正文前 12000 字，兼顧新聞內容完整度、模型速度與 API 成本。
+const DIRECT_NEWS_GEMINI_TEXT_LIMIT = 12000;
+
+// Prompt 目標是 100～200 字；程式端接受稍寬範圍，過長時直接裁切，避免再次呼叫 Gemini。
+const DIRECT_NEWS_OUTLINE_MIN_LENGTH = 80;
+const DIRECT_NEWS_OUTLINE_MAX_LENGTH = 240;
 
 // #統整話題 預設讀取最近幾筆網址摘要
 const DEFAULT_RECENT_WEB_SUMMARY_COUNT = 20;

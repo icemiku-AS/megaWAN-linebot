@@ -2,15 +2,17 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.10.7 NewsInbox Queue Hotfix
+// 小浣 LINE Bot v1.11.0 Direct URL Summary Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. 群組與個人聊天室「直接貼網址」都維持 NewsInbox 收件分類。
+// 3. 群組與個人聊天室「直接貼網址」都走相同 NewsInbox 收件流程。
 // 4. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
 // 5. v1.10.4 將資料清理統一交給 15_DataCleanup.gs，所有清理都需二段確認。
-// 6. v1.10.7 起，直接貼網址若混入 X / Facebook / Threads，回覆會提示不支援的部分沒有入隊。
+// 6. v1.10.9 起，X / Twitter 非單篇 status 網址不入隊；Facebook / Threads 會先交給 Jina Reader。
+// 7. v1.11.0 起，單一直接網址會同步產生 100～200 字大綱並寫入 NewsInbox；
+//    多網址、Reader 過慢或同步分析失敗時，才退回 NewsUrlQueue 背景處理。
 // ======================================================
 
 function setupLogSheet() {
@@ -125,18 +127,26 @@ function handleLineEvent(event) {
   }
 
   // ======================================================
-  // 群組一般訊息：沒有觸發詞但含網址 → NewsInbox 收件分類
+  // 群組一般訊息：沒有觸發詞但含網址 → NewsInbox 同步收件或 queue fallback
   // ======================================================
 
   if (isGroupLike && !hasTriggerPrefix(userText)) {
     if (shouldUseWebReading(userText)) {
-      const enqueueResult = enqueueNewsUrlTasks(event, conversationId, userText);
-      const replyText = enqueueResult.ok
-        ? getBotTextNewsInboxAccepted_(enqueueResult.urls.length, enqueueResult.skippedUnsupportedUrls)
-        : enqueueResult.error || getBotTextNoReadableUrl_();
+      let directNewsResult = null;
+      try {
+        directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, userText);
+      } catch (error) {
+        console.error('Direct group news URL error:', error && error.stack ? error.stack : error);
+        directNewsResult = {
+          replyText: getBotTextAiError_(),
+          replyMode: 'news_inbox_sync_error'
+        };
+      }
+
+      const replyText = directNewsResult.replyText || getBotTextNoReadableUrl_();
 
       replyToLine(event.replyToken, replyText);
-      logAssistantReplyToSheet(event, conversationId, replyText, 'news_inbox_accepted');
+      logAssistantReplyToSheet(event, conversationId, replyText, directNewsResult.replyMode || 'news_inbox_url');
       return;
     }
 
@@ -225,6 +235,7 @@ function handleLineEvent(event) {
 
   const commandInfo = parseCommand(userText);
   let aiReply = '';
+  let aiReplyMode = commandInfo.mode;
 
   try {
     if (commandInfo.mode === 'integrate_topics') {
@@ -255,10 +266,9 @@ function handleLineEvent(event) {
 
     } else {
       if (shouldUseWebReading(commandInfo.userPrompt)) {
-        const enqueueResult = enqueueNewsUrlTasks(event, conversationId, commandInfo.userPrompt);
-        aiReply = enqueueResult.ok
-          ? getBotTextNewsInboxAccepted_(enqueueResult.urls.length, enqueueResult.skippedUnsupportedUrls)
-          : enqueueResult.error || getBotTextNoReadableUrl_();
+        const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt);
+        aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
+        aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
       } else {
         aiReply = callDeepSeekWithMemory(conversationId, commandInfo.userPrompt, commandInfo.mode);
       }
@@ -271,5 +281,5 @@ function handleLineEvent(event) {
   }
 
   replyToLine(event.replyToken, aiReply);
-  logAssistantReplyToSheet(event, conversationId, aiReply, commandInfo.mode);
+  logAssistantReplyToSheet(event, conversationId, aiReply, aiReplyMode);
 }

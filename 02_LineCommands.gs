@@ -174,7 +174,7 @@ function getHelpText() {
     '小浣可以幫你把群組裡的雜訊、網址和討論，整理成節目素材。',
     '',
     '常用功能：',
-    '・直接貼網址：收進 NewsInbox 新聞素材池。',
+    '・直接貼單一網址：回覆內容大綱並收進 NewsInbox。',
     '・#本週新聞：整理最近 7 天新聞素材。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
     '・#懶人包 網址：產生網址快讀摘要。',
@@ -230,7 +230,7 @@ function getHelpDataText_() {
     '・WeeklySummary：#封存本週話題 的長期記憶。',
     '・WebTaskQueue：#懶人包 與網址分析任務。',
     '・WebSummary：網址快讀摘要。',
-    '・NewsUrlQueue：直接貼網址後的待處理網址。',
+    '・NewsUrlQueue：多網址或同步整理失敗時的待處理網址。',
     '・NewsInbox：新聞素材池。',
     '・PendingReplies：背景任務完成後等待交付的回覆。'
   ].join('\n');
