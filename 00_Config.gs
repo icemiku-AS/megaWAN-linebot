@@ -2,25 +2,30 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.10.4 Data Cleanup Edition
+// 小浣 LINE Bot v1.10.9 Social Reader Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
-// 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
-// 4. v1.10.4 新增資料清理層：多資料表清理皆需二段確認，且只作用於目前 conversationId。
+// 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複；若新增版本相容層，必須在註解中明確說明用途。
+// 4. v1.10.9 新增 FxTwitter API endpoint 設定，供 X / Twitter 單篇貼文 reader 使用。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 
+// FxTwitter API：v1.10.9 起用於讀取 X / Twitter 單篇 status 貼文。
+// 使用方式：FXTWITTER_API_STATUS_ENDPOINT_PREFIX + statusId
+// 例：https://api.fxtwitter.com/2/status/1234567890123456789
+const FXTWITTER_API_STATUS_ENDPOINT_PREFIX = 'https://api.fxtwitter.com/2/status/';
+
 // DeepSeek 主模型
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.10.4 中 Gemini 仍負責：
+// v1.10.9 中 Gemini 仍負責：
 // 1. 快讀摘要：#懶人包 指令使用
-// 2. 正文抽取：#節目話題分析 使用
+// 2. 正文抽取：legacy fallback 使用
 // 3. 新聞素材分類：直接貼網址進 NewsInbox 使用
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 const GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
