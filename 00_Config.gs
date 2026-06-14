@@ -2,7 +2,7 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.10.9 Social Reader Edition
+// 小浣 LINE Bot v1.10.10 Version History Maintenance Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。

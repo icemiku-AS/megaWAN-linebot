@@ -1,4 +1,13 @@
 2026-06-14
+v1.10.10 Version History Maintenance Edition
+- 更新 #版本 與 #版本紀錄 的固定文字，並在內建版本紀錄最前方加入 v1.10.10。
+- #版本紀錄 改為只顯示最近 6 筆，避免回覆隨版本增加而過長。
+- 保留完整歷史以 99_changelog.md 為準的提醒。
+- 本版不修改 Reader Layer、NewsInbox、WebTaskQueue、Google Sheet schema 或 LINE webhook 主流程。
+
+// ==================================================
+
+2026-06-14
 v1.10.9 Social Reader Edition
 - 以 v1.10.8 Manual News Supplement Parse Hotfix 為基礎，維持 Google Apps Script 分檔架構，不導入 Node.js / npm。
 - 新增 X / Twitter 單篇 status 貼文 reader：/status/{id} 類型網址會透過 FxTwitter API 讀取。

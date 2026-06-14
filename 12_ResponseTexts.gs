@@ -2,18 +2,31 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.10.9 Social Reader Edition
+// 小浣 LINE Bot v1.10.10 Version History Maintenance Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
 // 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
 // 3. v1.10.9 將社群 reader 版本資訊與非 status 社群網址提示併回本檔，避免額外版本文字小檔。
+// 4. v1.10.10 限制 #版本紀錄 只顯示最近 6 筆，避免回覆隨版本增加而過長。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.10.9 Social Reader Edition';
+const BOT_CURRENT_VERSION = 'v1.10.10 Version History Maintenance Edition';
 const BOT_CURRENT_VERSION_DATE = '2026-06-14';
+const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.10.10 Version History Maintenance Edition',
+    date: '2026-06-14',
+    summary: '優化 #版本 與 #版本紀錄 的固定文字，並限制版本紀錄只顯示最近 6 筆。',
+    changes: [
+      '更新小浣目前版本文字與內建版本摘要。',
+      '#版本紀錄 改為只顯示最近 6 筆，避免回覆隨版本增加而過長。',
+      '保留完整歷史以 GitHub 的 99_changelog.md 為準的提醒。',
+      '本版不修改 Reader Layer、NewsInbox、WebTaskQueue、Sheet schema 或 LINE webhook 主流程。'
+    ]
+  },
   {
     version: 'v1.10.9 Social Reader Edition',
     date: '2026-06-14',
@@ -153,11 +166,12 @@ function getBotVersionText_() {
 }
 
 function getBotVersionHistoryText_() {
-  const blocks = BOT_VERSION_HISTORY.map(function(item) {
+  const recentHistory = BOT_VERSION_HISTORY.slice(0, BOT_VERSION_HISTORY_LIMIT);
+  const blocks = recentHistory.map(function(item) {
     return [item.version + '｜' + item.date, item.summary, formatBulletList_(item.changes)].join('\n');
   });
 
-  return ['我把目前記得的版本紀錄翻出來了：', '', blocks.join('\n\n'), '', '提醒：這裡是小浣執行時內建的版本摘要，完整歷史仍以 GitHub 的 99_changelog.md 為準。'].join('\n');
+  return ['我把最近 ' + BOT_VERSION_HISTORY_LIMIT + ' 筆版本紀錄翻出來了：', '', blocks.join('\n\n'), '', '提醒：這裡是小浣執行時內建的近期版本摘要，完整歷史仍以 GitHub 的 99_changelog.md 為準。'].join('\n');
 }
 
 function formatBulletList_(items) {
