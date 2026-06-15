@@ -1,9 +1,9 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.11.1 Compact News Brief Edition：新聞素材池、同步短 Brief、完整 Outline、新聞網址佇列、#本週新聞、#新聞補充。
+// v1.11.2 Brief Range Hotfix：新聞素材池、同步短 Brief、完整 Outline、新聞網址佇列、#本週新聞、#新聞補充。
 //
 // 維護重點：
-// 1. v1.11.1 起，直接貼單一網址會同步讀取，並由一次 Gemini 呼叫同時產生 LINE 短 Brief、NewsInbox 長 Outline 與分類資料。
+// 1. v1.11.2 起，直接貼單一網址會同步讀取，並由一次 Gemini 呼叫同時產生 LINE 短 Brief、NewsInbox 長 Outline 與分類資料。
 // 2. 多網址、Reader 過慢、同步 API 失敗或結果不足時，退回 NewsUrlQueue；time-driven trigger 每次最多處理 2 筆。
 // 3. v1.10.5 起，自動網址入庫會先透過 16_ReaderLayer.gs 取得 mainText，再交給 Gemini 整理。
 // 4. v1.10.9 起，X / Twitter 非單篇 status 網址會在入隊前直接攔截；Facebook / Threads 先交給 Jina Reader。
@@ -462,8 +462,9 @@ function buildNewsAnalysisPrompt_(url, webResult) {
     '請只輸出 JSON，不要加解釋。',
     '',
     '輸出欄位：title、outline、category、brief、angle、topicPotential。',
-    'brief 請使用繁體中文，控制在 20 個中文字內，讓群組成員一眼知道這篇在講什麼。',
-    'brief 只保留最核心事件，不要使用「本文介紹」、「這篇文章」等空泛開頭。',
+    'brief 請使用繁體中文，目標整理成 ' + NEWS_INBOX_BRIEF_TARGET_MIN_LENGTH + '～' + NEWS_INBOX_BRIEF_TARGET_MAX_LENGTH + ' 個中文字的自然短簡介，讓群組成員不用點開連結就知道事件核心。',
+    '如果原文很短，例如 X / Twitter 貼文、公告或單句消息，brief 可以自然少於 ' + NEWS_INBOX_BRIEF_TARGET_MIN_LENGTH + ' 字，不要硬湊字數。',
+    'brief 不要只是重寫標題，也不要使用「本文介紹」、「這篇文章」等空泛開頭。',
     'outline 請使用繁體中文，整理成一段 100～200 個中文字的完整內容大綱。',
     'outline 只描述網頁在講什麼，不要加入標題、條列、Markdown、前言、結語、立場評論或節目建議。',
     '可用分類：' + NEWS_INBOX_CATEGORIES.join('、'),
@@ -509,9 +510,23 @@ function buildNewsAnalysisSchema_() {
 function normalizeNewsInboxBrief_(brief) {
   const text = String(brief || '').replace(/\s+/g, ' ').trim();
   if (!text) return '';
-  if (text.length <= NEWS_INBOX_BRIEF_MAX_LENGTH) return text;
+  if (text.length <= NEWS_INBOX_BRIEF_HARD_MAX_LENGTH) return text;
 
-  return text.slice(0, NEWS_INBOX_BRIEF_MAX_LENGTH - 1).trim() + '…';
+  // 30～50 字是 prompt 目標，不在程式端硬裁；這裡只處理模型失控輸出。
+  // 若必須防爆，優先在句尾截斷，避免把正常簡介切成半句。
+  const limited = text.slice(0, NEWS_INBOX_BRIEF_HARD_MAX_LENGTH);
+  const sentenceMarks = ['。', '！', '？', '!', '?'];
+  let lastSentenceEnd = -1;
+
+  sentenceMarks.forEach(function(mark) {
+    lastSentenceEnd = Math.max(lastSentenceEnd, limited.lastIndexOf(mark));
+  });
+
+  if (lastSentenceEnd >= NEWS_INBOX_BRIEF_TARGET_MAX_LENGTH) {
+    return limited.slice(0, lastSentenceEnd + 1).trim();
+  }
+
+  return text.slice(0, NEWS_INBOX_BRIEF_HARD_MAX_LENGTH - 1).trim() + '…';
 }
 
 function normalizeDirectNewsOutline_(outline) {
@@ -769,7 +784,7 @@ function buildManualNewsSupplementPrompt_(userText) {
     '',
     '可用分類：' + NEWS_INBOX_CATEGORIES.join('、'),
     'topicPotential 只能是：低、中、高。',
-    'brief 請控制在 20 個中文字內。',
+    'brief 請以 30～50 個中文字整理成自然短簡介；如果素材本身很短，可以少於 30 字，不要硬湊字數。',
     '',
     '使用者輸入：',
     userText

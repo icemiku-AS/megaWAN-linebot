@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
+// 小浣 LINE Bot v1.11.2 Brief Range Hotfix
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
@@ -174,7 +174,7 @@ function getHelpText() {
     '小浣可以幫你把群組裡的雜訊、網址和討論，整理成節目素材。',
     '',
     '常用功能：',
-    '・直接貼單一網址：回覆 20 字內簡介，完整大綱收進 NewsInbox。',
+    '・直接貼單一網址：回覆 30～50 字短簡介，完整大綱收進 NewsInbox。',
     '・#本週新聞：整理最近 7 天新聞素材。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
     '・#懶人包 網址：產生網址快讀摘要。',

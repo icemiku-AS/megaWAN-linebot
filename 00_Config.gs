@@ -2,7 +2,7 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
+// 小浣 LINE Bot v1.11.2 Brief Range Hotfix
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
@@ -23,7 +23,7 @@ const FXTWITTER_API_STATUS_ENDPOINT_PREFIX = 'https://api.fxtwitter.com/2/status
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.11.1 中 Gemini 負責：
+// v1.11.2 中 Gemini 負責：
 // 1. 快讀摘要：#懶人包 指令使用
 // 2. 正文抽取：legacy fallback 使用
 // 3. 新聞素材整理：直接貼單一網址時，一次產生 LINE 短 Brief、NewsInbox 長 Outline 與分類資料
@@ -84,7 +84,7 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
 // 4. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
 // 5. v1.10.4 新增多資料表清理指令，所有清理都只作用於目前 conversationId。
-// 6. v1.11.1 起，單一直接網址優先同步回覆 20 字內 Brief；100～200 字 Outline 留在 NewsInbox。
+// 6. v1.11.2 起，單一直接網址優先同步回覆 30～50 字目標 Brief；100～200 字 Outline 留在 NewsInbox。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#help',
@@ -144,8 +144,13 @@ const DIRECT_NEWS_SYNC_READER_MAX_MS = 15000;
 // 只送入正文前 12000 字，兼顧新聞內容完整度、模型速度與 API 成本。
 const DIRECT_NEWS_GEMINI_TEXT_LIMIT = 12000;
 
-// Brief 用於直接網址 LINE 回覆與 #本週新聞，程式端會再次限制長度。
-const NEWS_INBOX_BRIEF_MAX_LENGTH = 20;
+// Brief 用於直接網址 LINE 回覆與 #本週新聞。
+// 30～50 字是 prompt 目標區間，不是正常流程的硬裁切；短內容可自然低於 30 字。
+const NEWS_INBOX_BRIEF_TARGET_MIN_LENGTH = 30;
+const NEWS_INBOX_BRIEF_TARGET_MAX_LENGTH = 50;
+
+// 防爆上限只處理模型失控輸出，避免 LINE 回覆與 Sheet 欄位塞入過長文字。
+const NEWS_INBOX_BRIEF_HARD_MAX_LENGTH = 120;
 
 // Outline 保存於 NewsInbox，供 #統整話題讀取。
 // Prompt 目標是 100～200 字；程式端接受稍寬範圍，過長時直接裁切，避免再次呼叫 Gemini。

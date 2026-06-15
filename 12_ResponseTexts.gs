@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
+// 小浣 LINE Bot v1.11.2 Brief Range Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -11,13 +11,25 @@
 // 4. v1.10.10 限制 #版本紀錄 只顯示最近 6 筆，避免回覆隨版本增加而過長。
 // 5. v1.11.0 新增直接貼單一網址的同步大綱、queue fallback 與失敗固定回覆。
 // 6. v1.11.1 將直接網址回覆縮短為 20 字內 Brief，完整 Outline 留給 NewsInbox 與 #統整話題。
+// 7. v1.11.2 將 Brief 改為 30～50 字目標區間，程式端只保留防爆上限，不再正常硬裁。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.11.1 Compact News Brief Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-06-15';
+const BOT_CURRENT_VERSION = 'v1.11.2 Brief Range Hotfix';
+const BOT_CURRENT_VERSION_DATE = '2026-06-16';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.11.2 Brief Range Hotfix',
+    date: '2026-06-16',
+    summary: '調整直接網址 Brief 長度策略：改以 30～50 字為目標區間，短內容可更短，程式端不再正常硬裁。',
+    changes: [
+      'Gemini Brief prompt 從 20 字內改為 30～50 字自然短簡介，避免回覆太像標題。',
+      'X / Twitter 貼文、公告或單句消息等短內容可自然少於 30 字，不硬湊字數。',
+      '程式端只保留 120 字防爆上限，避免模型失控輸出；正常超過目標區間不再被硬切成半句。',
+      '本版不修改 NewsInbox schema、Outline、Reader Layer、WebTaskQueue 或 LINE router。'
+    ]
+  },
   {
     version: 'v1.11.1 Compact News Brief Edition',
     date: '2026-06-15',

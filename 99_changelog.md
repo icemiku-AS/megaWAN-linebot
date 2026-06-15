@@ -1,3 +1,12 @@
+2026-06-16
+v1.11.2 Brief Range Hotfix
+- 將直接貼網址與 NewsInbox Brief 從 20 字內硬限制改為 30～50 字目標區間。
+- 短內容例如 X / Twitter 貼文、公告或單句消息可自然少於 30 字，不硬湊字數。
+- 程式端不再正常硬裁 Brief，只保留 120 字防爆上限，避免模型失控輸出。
+- 本版不修改 NewsInbox schema、Outline、Reader Layer、WebTaskQueue、LINE router 或外部服務。
+
+// ==================================================
+
 2026-06-15
 v1.11.1 Compact News Brief Edition
 - 直接貼單一網址改為回覆 20 字內 Brief；Gemini 仍維持一次呼叫，同時產生 100～200 字 Outline 與 NewsInbox 分類資料。
