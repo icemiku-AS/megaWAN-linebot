@@ -1,3 +1,12 @@
+2026-06-15
+v1.11.1 Compact News Brief Edition
+- 直接貼單一網址改為回覆 20 字內 Brief；Gemini 仍維持一次呼叫，同時產生 100～200 字 Outline 與 NewsInbox 分類資料。
+- NewsInbox 最右側新增 Outline 欄位；同步與背景網址入庫都會保存完整 Outline。
+- #本週新聞 使用短 Brief 並移除切角顯示；#統整話題會讀取近期 NewsInbox Outline，舊資料缺少時退回 Brief。
+- 本版不修改 Reader Layer、WebTaskQueue、LINE router、外部 reader 服務或其他 Sheet schema。
+
+// ==================================================
+
 2026-06-14
 v1.11.0 Direct URL Summary Edition
 - 直接貼單一網址時，改為同步透過 Reader Layer 讀取，並由一次 Gemini 呼叫同時產生 100～200 字內容大綱與 NewsInbox 分類資料。

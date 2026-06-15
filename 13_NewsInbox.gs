@@ -1,9 +1,9 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.11.0 Direct URL Summary Edition：新聞素材池、同步網址大綱、新聞網址佇列、#本週新聞、#新聞補充。
+// v1.11.1 Compact News Brief Edition：新聞素材池、同步短 Brief、完整 Outline、新聞網址佇列、#本週新聞、#新聞補充。
 //
 // 維護重點：
-// 1. v1.11.0 起，直接貼單一網址會同步讀取，並由一次 Gemini 呼叫同時產生 LINE 大綱與 NewsInbox 分類資料。
+// 1. v1.11.1 起，直接貼單一網址會同步讀取，並由一次 Gemini 呼叫同時產生 LINE 短 Brief、NewsInbox 長 Outline 與分類資料。
 // 2. 多網址、Reader 過慢、同步 API 失敗或結果不足時，退回 NewsUrlQueue；time-driven trigger 每次最多處理 2 筆。
 // 3. v1.10.5 起，自動網址入庫會先透過 16_ReaderLayer.gs 取得 mainText，再交給 Gemini 整理。
 // 4. v1.10.9 起，X / Twitter 非單篇 status 網址會在入隊前直接攔截；Facebook / Threads 先交給 Jina Reader。
@@ -12,7 +12,7 @@
 // 7. v1.10.8 修正 #新聞補充 的 JSON parser 名稱錯誤，讓 DeepSeek 解析結果真的能被使用，而不是每次靜默 fallback。
 // 8. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
 // 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
-// 10. 同步大綱只用於當次 LINE 回覆，不新增 NewsInbox 欄位；NewsInbox schema 維持相容。
+// 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
 // ======================================================
 
 const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '馬斯克', '川普', '待分類'];
@@ -37,11 +37,20 @@ function ensureNewsUrlQueueSheet_() {
 
 function ensureNewsInboxSheet_() {
   const headers = ['NewsId', 'CreatedAt', 'ConversationId', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'Url', 'Title', 'Category', 'Brief', 'Angle', 'TopicPotential', 'SourceMode', 'Status', 'ErrorText'];
-  return ensureSheetWithHeaders_(NEWS_INBOX_SHEET_NAME, headers);
+  const sheet = ensureSheetWithHeaders_(NEWS_INBOX_SHEET_NAME, headers);
+
+  // Outline 固定新增在目前最右側，讓既有 NewsInbox 欄位順序與舊資料保持相容。
+  // 不把 Outline 直接放進共用 headers，避免舊表擴欄時在新欄前留下空白欄。
+  const headerMap = getHeaderMap_(sheet);
+  if (!headerMap.Outline) {
+    sheet.getRange(1, sheet.getLastColumn() + 1).setValue('Outline');
+  }
+
+  return sheet;
 }
 
 // ======================================================
-// 直接貼網址：同步大綱與 NewsInbox 入庫
+// 直接貼網址：同步短 Brief、完整 Outline 與 NewsInbox 入庫
 // ======================================================
 
 function handleDirectNewsUrlMessage_(event, conversationId, userText) {
@@ -148,16 +157,7 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText) {
     );
   }
 
-  const replyOutline = normalizeDirectNewsOutlineForReply_(analysis.outline);
-  if (!replyOutline) {
-    return enqueueDirectNewsUrlsForBackground_(
-      event,
-      conversationId,
-      userText,
-      true,
-      'weak_outline'
-    );
-  }
+  const newsOutline = analysis.outline;
 
   const source = event.source || {};
   try {
@@ -175,7 +175,8 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText) {
       topicPotential: analysis.topicPotential,
       sourceMode: 'auto_url_sync',
       status: 'ok',
-      errorText: ''
+      errorText: '',
+      outline: newsOutline
     });
   } catch (error) {
     console.error('Direct news NewsInbox write failed:', error && error.stack ? error.stack : error);
@@ -194,14 +195,15 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText) {
     readerElapsedMs: readerElapsedMs,
     geminiElapsedMs: Date.now() - geminiStartedAt,
     totalElapsedMs: Date.now() - totalStartedAt,
-    outlineLength: replyOutline.length
+    briefLength: analysis.brief.length,
+    outlineLength: newsOutline.length
   }));
 
   return {
     ok: true,
     queued: false,
-    replyText: getBotTextDirectNewsSummary_(replyOutline),
-    replyMode: 'news_inbox_sync_summary'
+    replyText: getBotTextDirectNewsBrief_(analysis.brief),
+    replyMode: 'news_inbox_sync_brief'
   };
 }
 
@@ -380,7 +382,8 @@ function processSingleNewsUrlTask_(task) {
       topicPotential: analysis.topicPotential,
       sourceMode: 'auto_url',
       status: 'ok',
-      errorText: ''
+      errorText: '',
+      outline: analysis.outline
     });
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
@@ -445,9 +448,9 @@ function analyzeNewsUrlWithGemini_(url, webResult) {
 
   return {
     title: String(result.title || webResult.title || '未取得標題').trim(),
-    outline: String(result.outline || '').trim(),
+    outline: normalizeDirectNewsOutline_(result.outline),
     category: normalizeNewsCategory_(result.category),
-    brief: String(result.brief || '').trim(),
+    brief: normalizeNewsInboxBrief_(result.brief),
     angle: String(result.angle || '').trim(),
     topicPotential: normalizeTopicPotential_(result.topicPotential)
   };
@@ -455,16 +458,17 @@ function analyzeNewsUrlWithGemini_(url, webResult) {
 
 function buildNewsAnalysisPrompt_(url, webResult) {
   return [
-    '請閱讀以下網頁資料，同時產生 LINE 回覆用內容大綱，以及 Podcast「現正熱潮中」NewsInbox 所需的分類資料。',
+    '請閱讀以下網頁資料，同時產生 LINE 回覆用短 Brief、NewsInbox 保存用完整 Outline，以及 Podcast「現正熱潮中」所需的分類資料。',
     '請只輸出 JSON，不要加解釋。',
     '',
     '輸出欄位：title、outline、category、brief、angle、topicPotential。',
-    'outline 請使用繁體中文，整理成一段 100～200 個中文字的內容大綱。',
+    'brief 請使用繁體中文，控制在 20 個中文字內，讓群組成員一眼知道這篇在講什麼。',
+    'brief 只保留最核心事件，不要使用「本文介紹」、「這篇文章」等空泛開頭。',
+    'outline 請使用繁體中文，整理成一段 100～200 個中文字的完整內容大綱。',
     'outline 只描述網頁在講什麼，不要加入標題、條列、Markdown、前言、結語、立場評論或節目建議。',
     '可用分類：' + NEWS_INBOX_CATEGORIES.join('、'),
     '分類規則：如果明顯與馬斯克相關，優先選「馬斯克」；如果明顯與川普相關，優先選「川普」。其他再依內容選分類。',
     'topicPotential 只能是：低、中、高。',
-    'brief 請控制在 50 個中文字內。',
     'angle 請整理成一段精簡的節目討論切角。',
     '只能根據提供的 Reader 文字，不可補充外部資訊或捏造內容。',
     '',
@@ -502,7 +506,15 @@ function buildNewsAnalysisSchema_() {
   };
 }
 
-function normalizeDirectNewsOutlineForReply_(outline) {
+function normalizeNewsInboxBrief_(brief) {
+  const text = String(brief || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= NEWS_INBOX_BRIEF_MAX_LENGTH) return text;
+
+  return text.slice(0, NEWS_INBOX_BRIEF_MAX_LENGTH - 1).trim() + '…';
+}
+
+function normalizeDirectNewsOutline_(outline) {
   const text = String(outline || '').trim();
   if (text.length < DIRECT_NEWS_OUTLINE_MIN_LENGTH) {
     return '';
@@ -536,8 +548,9 @@ function isWeakAutoNewsClassification_(classification, url) {
   const category = String(classification.category || '').trim();
   const brief = String(classification.brief || '').trim();
   const angle = String(classification.angle || '').trim();
+  const outline = String(classification.outline || '').trim();
 
-  if (!title || !brief) return true;
+  if (!title || !brief || !outline) return true;
   if (category === '待分類') return true;
   if (NEWS_INBOX_CATEGORIES.indexOf(category) === -1) return true;
 
@@ -563,25 +576,36 @@ function normalizeTopicPotential_(value) {
 function appendNewsInboxRow_(item) {
   const sheet = ensureNewsInboxSheet_();
   const now = new Date();
+  const valuesByHeader = {
+    NewsId: createSimpleId('news'),
+    CreatedAt: now,
+    ConversationId: item.conversationId || '',
+    SourceType: item.sourceType || '',
+    UserId: item.userId || '',
+    GroupId: item.groupId || '',
+    RoomId: item.roomId || '',
+    Url: item.url || '',
+    Title: truncateForSheet(item.title || ''),
+    Category: item.category || '待分類',
+    Brief: truncateForSheet(item.brief || ''),
+    Angle: truncateForSheet(item.angle || ''),
+    TopicPotential: item.topicPotential || '中',
+    SourceMode: item.sourceMode || '',
+    Status: item.status || 'ok',
+    ErrorText: truncateForSheet(item.errorText || ''),
+    Outline: truncateForSheet(item.outline || '')
+  };
 
-  sheet.appendRow([
-    createSimpleId('news'),
-    now,
-    item.conversationId || '',
-    item.sourceType || '',
-    item.userId || '',
-    item.groupId || '',
-    item.roomId || '',
-    item.url || '',
-    truncateForSheet(item.title || ''),
-    item.category || '待分類',
-    truncateForSheet(item.brief || ''),
-    truncateForSheet(item.angle || ''),
-    item.topicPotential || '中',
-    item.sourceMode || '',
-    item.status || 'ok',
-    truncateForSheet(item.errorText || '')
-  ]);
+  // 依實際表頭對位，避免舊 Sheet 補上 Outline 後因欄位位置不同而寫錯資料。
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const row = headers.map(function(header) {
+    const key = String(header || '').trim();
+    return Object.prototype.hasOwnProperty.call(valuesByHeader, key)
+      ? valuesByHeader[key]
+      : '';
+  });
+
+  sheet.appendRow(row);
 }
 
 function classifyNewsUrlError_(errorText) {
@@ -618,6 +642,7 @@ function getRecentNewsInboxItems_(conversationId, days) {
       title: getRowValueByHeader_(row, headerMap, 'Title'),
       category: getRowValueByHeader_(row, headerMap, 'Category'),
       brief: getRowValueByHeader_(row, headerMap, 'Brief'),
+      outline: getRowValueByHeader_(row, headerMap, 'Outline'),
       angle: getRowValueByHeader_(row, headerMap, 'Angle'),
       topicPotential: getRowValueByHeader_(row, headerMap, 'TopicPotential'),
       status: getRowValueByHeader_(row, headerMap, 'Status')
@@ -646,15 +671,36 @@ function formatWeeklyNewsDigest_(items) {
     grouped[category].forEach(function(item, index) {
       lines.push(
         (index + 1) + '. ' + (item.title || '未取得標題'),
-        '來源：' + (item.url || ''),
-        '節目潛力：' + (item.topicPotential || '中'),
         item.brief ? '簡介：' + item.brief : '',
-        item.angle ? '切角：' + item.angle : ''
+        '來源：' + (item.url || ''),
+        '節目潛力：' + (item.topicPotential || '中')
       );
     });
   });
 
   return lines.filter(function(line) { return line !== ''; }).join('\n');
+}
+
+function getRecentNewsInboxTextForTopics_(conversationId, days, limit) {
+  const items = getRecentNewsInboxItems_(conversationId, days)
+    .slice()
+    .sort(function(a, b) {
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    })
+    .slice(0, Math.max(1, Number(limit) || DEFAULT_RECENT_NEWS_INBOX_COUNT))
+    .reverse();
+
+  return items.map(function(item, index) {
+    return [
+      '【NewsInbox ' + (index + 1) + '】',
+      '標題：' + (item.title || '未取得標題'),
+      '分類：' + (item.category || '待分類'),
+      '網址：' + (item.url || ''),
+      '內容大綱：' + (item.outline || item.brief || '無'),
+      '節目切角：' + (item.angle || '無'),
+      '節目潛力：' + (item.topicPotential || '中')
+    ].join('\n');
+  }).join('\n\n');
 }
 
 function handleManualNewsSupplement_(event, conversationId, userText) {
@@ -678,7 +724,8 @@ function handleManualNewsSupplement_(event, conversationId, userText) {
     topicPotential: parsed.topicPotential || '中',
     sourceMode: 'manual_supplement',
     status: 'ok',
-    errorText: ''
+    errorText: '',
+    outline: ''
   });
 
   return getBotTextManualNewsSupplementSaved_(parsed);
@@ -699,7 +746,7 @@ function parseManualNewsSupplement_(userText) {
     return {
       title: String(result.title || '').trim(),
       category: normalizeNewsCategory_(result.category),
-      brief: String(result.brief || '').trim(),
+      brief: normalizeNewsInboxBrief_(result.brief),
       angle: String(result.angle || '').trim(),
       topicPotential: normalizeTopicPotential_(result.topicPotential)
     };
@@ -708,7 +755,7 @@ function parseManualNewsSupplement_(userText) {
     return {
       title: '人工補充素材',
       category: '待分類',
-      brief: String(userText || '').slice(0, 80),
+      brief: normalizeNewsInboxBrief_(userText),
       angle: '',
       topicPotential: '中'
     };
@@ -722,7 +769,7 @@ function buildManualNewsSupplementPrompt_(userText) {
     '',
     '可用分類：' + NEWS_INBOX_CATEGORIES.join('、'),
     'topicPotential 只能是：低、中、高。',
-    'brief 請控制在 50 個中文字內。',
+    'brief 請控制在 20 個中文字內。',
     '',
     '使用者輸入：',
     userText

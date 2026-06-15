@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.10.4 Data Cleanup Edition
+// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
@@ -91,7 +91,7 @@ function parseCommand(text) {
     } else if (mode === 'program_topic_analysis') {
       userPrompt = '請根據最近使用者聊天內容、人工畫重點、網址快讀摘要與封存記憶，判斷目前最值得分析的節目話題。';
     } else if (mode === 'integrate_topics') {
-      userPrompt = '請統整最近使用者聊天內容、人工畫重點、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
+      userPrompt = '請統整最近使用者聊天內容、人工畫重點、NewsInbox 新聞素材、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
     } else if (mode === 'weekly_news') {
       userPrompt = '請整理最近 7 天 NewsInbox 中的新聞素材。';
     } else if (mode === 'manual_news_supplement') {
@@ -174,7 +174,7 @@ function getHelpText() {
     '小浣可以幫你把群組裡的雜訊、網址和討論，整理成節目素材。',
     '',
     '常用功能：',
-    '・直接貼單一網址：回覆內容大綱並收進 NewsInbox。',
+    '・直接貼單一網址：回覆 20 字內簡介，完整大綱收進 NewsInbox。',
     '・#本週新聞：整理最近 7 天新聞素材。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
     '・#懶人包 網址：產生網址快讀摘要。',
@@ -231,7 +231,7 @@ function getHelpDataText_() {
     '・WebTaskQueue：#懶人包 與網址分析任務。',
     '・WebSummary：網址快讀摘要。',
     '・NewsUrlQueue：多網址或同步整理失敗時的待處理網址。',
-    '・NewsInbox：新聞素材池。',
+    '・NewsInbox：新聞素材池，保存短 Brief 與完整 Outline。',
     '・PendingReplies：背景任務完成後等待交付的回覆。'
   ].join('\n');
 }
