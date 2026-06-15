@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.11.0 Direct URL Summary Edition
+// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -10,13 +10,25 @@
 // 3. v1.10.9 將社群 reader 版本資訊與非 status 社群網址提示併回本檔，避免額外版本文字小檔。
 // 4. v1.10.10 限制 #版本紀錄 只顯示最近 6 筆，避免回覆隨版本增加而過長。
 // 5. v1.11.0 新增直接貼單一網址的同步大綱、queue fallback 與失敗固定回覆。
+// 6. v1.11.1 將直接網址回覆縮短為 20 字內 Brief，完整 Outline 留給 NewsInbox 與 #統整話題。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.11.0 Direct URL Summary Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-06-14';
+const BOT_CURRENT_VERSION = 'v1.11.1 Compact News Brief Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-06-15';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.11.1 Compact News Brief Edition',
+    date: '2026-06-15',
+    summary: '直接貼網址改回覆 20 字內簡介，完整 100～200 字 Outline 保存至 NewsInbox 並提供 #統整話題使用。',
+    changes: [
+      'Gemini 維持一次呼叫，同時產生 20 字內 Brief、100～200 字 Outline、分類、切角與節目潛力。',
+      '直接貼單一網址只回覆短 Brief；#本週新聞也使用短 Brief，不再顯示切角。',
+      'NewsInbox 最右側新增 Outline 欄位，#統整話題會讀取近期完整 Outline，舊資料缺少時退回 Brief。',
+      '本版不修改 Reader Layer、WebTaskQueue、LINE router 或外部服務。'
+    ]
+  },
   {
     version: 'v1.11.0 Direct URL Summary Edition',
     date: '2026-06-14',
@@ -216,8 +228,8 @@ function getBotTextNewsInboxAccepted_(urlCount, skippedUnsupportedUrls) {
   return lines.join('\n');
 }
 
-function getBotTextDirectNewsSummary_(outline) {
-  return String(outline || '').trim();
+function getBotTextDirectNewsBrief_(brief) {
+  return String(brief || '').trim();
 }
 
 function getBotTextDirectNewsSummaryQueued_() {

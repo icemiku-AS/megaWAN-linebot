@@ -2,7 +2,7 @@
 // 11_Prompts.gs
 // 集中管理小浣人格、模式提示詞與任務提示詞。
 //
-// 小浣 LINE Bot v1.10.2 Secretary Cleanup Edition
+// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
 //
 // 維護原則：
 // 1. 本檔只管理 DeepSeek system prompt，不直接呼叫模型。
@@ -54,10 +54,11 @@ function buildSystemPrompt(mode) {
       basePrompt,
       '',
       '目前任務：統整話題。',
-      '請把最近聊天內容、WebSummary 網址快讀摘要與 WeeklySummary 封存記憶整合成節目素材地圖。',
+      '請把最近聊天內容、TopicHighlights 人工重點、NewsInbox 新聞 Outline、WebSummary 網址快讀摘要與 WeeklySummary 封存記憶整合成節目素材地圖。',
       '',
       '這不是單篇分析，而是素材編輯台。',
       '請判斷哪些資訊只是背景、哪些可以合併、哪些值得追蹤、哪些適合成為本週節目段落。',
+      'NewsInbox 的 Brief 只供快速瀏覽；統整時應優先採用 Outline，只有舊資料缺少 Outline 時才退回 Brief。',
       '',
       '請務實、具體，不要空泛。'
     ].join('\n');

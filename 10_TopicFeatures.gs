@@ -2,13 +2,14 @@
 // 10_TopicFeatures.gs
 // 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
 //
-// 小浣 LINE Bot v1.10.3 Highlight Layer Edition
+// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
 //
 // 設計說明：
 // 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
 // 2. v1.10.3 起，節目整理相關功能從 ConversationLog 只讀 role=user，避免小浣回覆污染素材。
 // 3. v1.10.3 起，TopicHighlights 是人工畫重點資料，統整、分析、封存時都要優先參考。
 // 4. WeeklySummary 仍是封存結果；封存來源是 user-only ConversationLog + TopicHighlights + WebSummary。
+// 5. v1.11.1 起，#統整話題會額外讀取 NewsInbox 的完整 Outline；舊資料沒有 Outline 時退回 Brief。
 // ======================================================
 
 // ======================================================
@@ -110,16 +111,22 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
     DEFAULT_RECENT_WEB_SUMMARY_COUNT
   );
 
+  const recentNewsInboxText = getRecentNewsInboxTextForTopics_(
+    conversationId,
+    DEFAULT_WEEKLY_NEWS_DAYS,
+    DEFAULT_RECENT_NEWS_INBOX_COUNT
+  );
+
   const recentWeeklySummaryText = getRecentWeeklySummaryText(conversationId, 8);
 
-  if (!recentConversationText && !recentHighlightText && !recentWebSummaryText && !recentWeeklySummaryText) {
+  if (!recentConversationText && !recentHighlightText && !recentNewsInboxText && !recentWebSummaryText && !recentWeeklySummaryText) {
     return getBotTextNoTopicContextForIntegration_();
   }
 
   const prompt = [
     '使用者下了 #統整話題。',
     '',
-    '你的任務是把最近使用者聊天內容、人工畫重點、網址快讀摘要、封存記憶整合成「近期可用節目話題地圖」。',
+    '你的任務是把最近使用者聊天內容、人工畫重點、NewsInbox 新聞素材、網址快讀摘要、封存記憶整合成「近期可用節目話題地圖」。',
     '',
     '這不是單篇分析。',
     '這是把一批素材整理成：哪些可以聊、哪些只是背景資料、哪些可以合併成同一段、哪些值得追蹤。',
@@ -127,8 +134,9 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
     '重要規則：',
     '1. ConversationLog 只包含使用者訊息，不包含小浣回覆。',
     '2. TopicHighlights 是使用者手動畫出的高優先級素材，統整時應優先參考。',
-    '3. WebSummary 是使用者明確要求 #懶人包 或分析網址後留下的素材。',
-    '4. WeeklySummary 是過去封存記憶，可用來判斷是否曾經討論過。',
+    '3. NewsInbox 是直接貼網址收進來的新聞素材；請優先讀取其中 100～200 字 Outline，舊資料沒有 Outline 時才使用 Brief。',
+    '4. WebSummary 是使用者明確要求 #懶人包 或分析網址後留下的素材。',
+    '5. WeeklySummary 是過去封存記憶，可用來判斷是否曾經討論過。',
     '',
     '使用者補充需求：',
     userPrompt || '無',
@@ -138,6 +146,9 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
     '',
     '最近 TopicHighlights：',
     recentHighlightText || '無',
+    '',
+    '最近 NewsInbox：',
+    recentNewsInboxText || '無',
     '',
     '最近 WebSummary：',
     recentWebSummaryText || '無',
