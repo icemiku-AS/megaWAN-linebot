@@ -203,6 +203,7 @@ function getTemperatureByMode(mode) {
   // 需要收束、判斷與整理的任務使用較低 temperature，減少發散。
   if (
     mode === 'archive' ||
+    mode === 'archive_news' ||
     mode === 'web_read' ||
     mode === 'program_topic_analysis' ||
     mode === 'integrate_topics'
@@ -229,6 +230,10 @@ function getMaxTokensByMode(mode) {
 
   if (mode === 'archive') {
     return 1200;
+  }
+
+  if (mode === 'archive_news') {
+    return 2200;
   }
 
   return 900;

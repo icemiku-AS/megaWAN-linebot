@@ -284,16 +284,18 @@ function archiveWeeklyNews(event, conversationId) {
     '{',
     '  "topicTitle": "一句話概括本週新聞主軸",',
     '  "keywords": ["關鍵字1", "關鍵字2", "關鍵字3"],',
-    '  "summary": "150到300字摘要，整理本週新聞共同脈絡、主要事件與可追蹤方向",',
-    '  "reusableAngles": ["未來比對本週新聞時可重用的脈絡1", "可重用脈絡2", "可重用脈絡3"],',
-    '  "followUpQuestions": ["後續可追蹤問題1", "後續可追蹤問題2", "後續可追蹤問題3"]',
+    '  "summary": "120到180字摘要，整理本週新聞共同脈絡、主要事件與可追蹤方向",',
+    '  "reusableAngles": ["40字內可重用脈絡1", "40字內可重用脈絡2", "40字內可重用脈絡3"],',
+    '  "followUpQuestions": ["40字內後續追蹤問題1", "40字內後續追蹤問題2", "40字內後續追蹤問題3"]',
     '}',
     '',
     '要求：',
     '1. 使用繁體中文。',
     '2. 重點是建立可供未來比對的新聞記憶，不要寫成節目逐字稿。',
-    '3. 若本週新聞分散，請整理出 2 到 4 個共同主軸。',
-    '4. 保留有助於未來辨識延續事件的關鍵人物、公司、平台、政策或作品名稱。',
+    '3. 若本週新聞分散，請整理出 2 到 3 個共同主軸，不要逐條列出每一則新聞。',
+    '4. keywords 最多 6 個；reusableAngles 與 followUpQuestions 各最多 3 個，每個項目 40 字內。',
+    '5. 整個 JSON 請控制在 900 個中文字內，避免輸出被截斷。',
+    '6. 保留有助於未來辨識延續事件的關鍵人物、公司、平台、政策或作品名稱。',
     '',
     '封存期間：' + period.start + ' ～ ' + period.end,
     '',
@@ -301,8 +303,8 @@ function archiveWeeklyNews(event, conversationId) {
     newsText
   ].join('\n');
 
-  const archiveText = callDeepSeekDirect(prompt, 'archive');
-  const archiveJson = parseArchiveJson(archiveText);
+  const archiveText = callDeepSeekDirect(prompt, 'archive_news');
+  const archiveJson = parseArchiveJsonStrict_(archiveText, 'news_archive');
   const source = event.source || {};
 
   appendWeeklySummaryRow_({
@@ -374,4 +376,18 @@ function parseArchiveJson(text) {
     reusableAngles: [],
     followUpQuestions: []
   };
+}
+
+function parseArchiveJsonStrict_(text, sourceLabel) {
+  const raw = String(text || '').trim();
+  const parsed = parseJsonObjectLoose(raw);
+
+  if (parsed && String(parsed.summary || '').trim()) {
+    return parsed;
+  }
+
+  // #封存本週新聞 若 DeepSeek JSON 被 max_tokens 截斷，不能把半截 JSON 當摘要寫入 WeeklySummary。
+  // 直接丟錯讓 01_Main.gs 回 getBotTextNewsArchiveError_()，維護者可重試，不會污染長期記憶。
+  console.error('parseArchiveJsonStrict_ failed:', sourceLabel || '', raw);
+  throw new Error('archive_json_parse_failed: DeepSeek returned invalid or truncated JSON');
 }
