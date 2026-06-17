@@ -2,13 +2,15 @@
 // 04_Storage.gs
 // Google Sheet 資料層。負責表頭建立、讀寫 ConversationLog / WebSummary / WeeklySummary / Queue 等資料。
 //
-// 小浣 LINE Bot v1.9 Service Split Edition
+// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
 //
 // 設計說明：
 // 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
 // 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
 // 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
 // 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
+// 5. v1.12.0 起，WeeklySummary 追加 ArchiveType / PeriodStart / PeriodEnd / SourceItemCount，
+//    用來區分 #封存本週話題 與 #封存本週新聞 的長期記憶來源。
 // ======================================================
 
 // ======================================================
