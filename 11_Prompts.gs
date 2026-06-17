@@ -2,7 +2,7 @@
 // 11_Prompts.gs
 // 集中管理小浣人格、模式提示詞與任務提示詞。
 //
-// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
+// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
 //
 // 維護原則：
 // 1. 本檔只管理 DeepSeek system prompt，不直接呼叫模型。
@@ -78,9 +78,9 @@ function buildSystemPrompt(mode) {
     return [
       basePrompt,
       '',
-      '目前任務：封存本週話題。',
-      '請把零散對話壓縮成可以長期保存的精簡知識。',
-      '重點不是逐字摘要，而是保留未來可以重用的觀點、切角、爭議點與追蹤問題。',
+      '目前任務：封存長期記憶。',
+      '呼叫端可能要求封存 ConversationLog 對話，也可能要求封存 NewsInbox 新聞摘要；請以使用者 prompt 內的資料來源與 JSON 格式為準。',
+      '重點不是逐字摘要，而是保留未來可以重用的脈絡、觀點、切角、爭議點與追蹤問題。',
       '請務必按照使用者要求的 JSON 格式輸出。',
       '不要輸出 JSON 以外的文字。'
     ].join('\n');

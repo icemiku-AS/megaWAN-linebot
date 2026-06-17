@@ -152,10 +152,51 @@ function ensureWeeklySummarySheet_() {
     'Summary',
     'ReusableAngles',
     'FollowUpQuestions',
-    'RawMessageCount'
+    'RawMessageCount',
+    'ArchiveType',
+    'PeriodStart',
+    'PeriodEnd',
+    'SourceItemCount'
   ];
 
   return ensureSheetWithHeaders_(WEEKLY_SUMMARY_SHEET_NAME, headers);
+}
+
+function appendWeeklySummaryRow_(item) {
+  const sheet = ensureWeeklySummarySheet_();
+  const archivedAt = item.archivedAt || new Date();
+  const sourceItemCount = Number(item.sourceItemCount || item.rawMessageCount || 0);
+
+  const valuesByHeader = {
+    ArchivedAt: archivedAt,
+    ConversationId: item.conversationId || '',
+    SourceType: item.sourceType || '',
+    UserId: item.userId || '',
+    GroupId: item.groupId || '',
+    RoomId: item.roomId || '',
+    TopicTitle: truncateForSheet(item.topicTitle || ''),
+    Keywords: truncateForSheet(item.keywords || ''),
+    Summary: truncateForSheet(item.summary || ''),
+    ReusableAngles: truncateForSheet(item.reusableAngles || ''),
+    FollowUpQuestions: truncateForSheet(item.followUpQuestions || ''),
+    RawMessageCount: Number(item.rawMessageCount || sourceItemCount || 0),
+    ArchiveType: item.archiveType || WEEKLY_ARCHIVE_TYPE_TOPIC,
+    PeriodStart: item.periodStart || '',
+    PeriodEnd: item.periodEnd || '',
+    SourceItemCount: sourceItemCount
+  };
+
+  // v1.12.0 起 WeeklySummary 同時保存話題封存與新聞封存。
+  // 這裡依實際表頭寫入，讓既有 Sheet 只追加新欄位，不需要重排或 migration。
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const row = headers.map(function(header) {
+    const key = String(header || '').trim();
+    return Object.prototype.hasOwnProperty.call(valuesByHeader, key)
+      ? valuesByHeader[key]
+      : '';
+  });
+
+  sheet.appendRow(row);
 }
 
 function ensureWebTaskQueueSheet_() {
@@ -496,7 +537,7 @@ function getRecentWebSummariesText(conversationId, limit) {
   }
 }
 
-function getRecentWeeklySummaryText(conversationId, limit) {
+function getRecentWeeklySummaryText(conversationId, limit, archiveType) {
   try {
     const sheet = ensureWeeklySummarySheet_();
     const lastRow = sheet.getLastRow();
@@ -506,6 +547,7 @@ function getRecentWeeklySummaryText(conversationId, limit) {
     }
 
     const lastCol = sheet.getLastColumn();
+    const headerMap = getHeaderMap_(sheet);
 
     // 最多往回讀最近 100 筆 WeeklySummary
     const readRows = Math.min(lastRow - 1, 100);
@@ -520,14 +562,23 @@ function getRecentWeeklySummaryText(conversationId, limit) {
     for (let i = values.length - 1; i >= 0; i--) {
       const row = values[i];
 
-      const rowConversationId = row[1];
-      const topicTitle = row[6];
-      const keywords = row[7];
-      const summary = row[8];
-      const reusableAngles = row[9];
-      const followUpQuestions = row[10];
+      const rowConversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
+      const rowArchiveType = getRowValueByHeader_(row, headerMap, 'ArchiveType') || WEEKLY_ARCHIVE_TYPE_TOPIC;
+      const topicTitle = getRowValueByHeader_(row, headerMap, 'TopicTitle');
+      const keywords = getRowValueByHeader_(row, headerMap, 'Keywords');
+      const summary = getRowValueByHeader_(row, headerMap, 'Summary');
+      const reusableAngles = getRowValueByHeader_(row, headerMap, 'ReusableAngles');
+      const followUpQuestions = getRowValueByHeader_(row, headerMap, 'FollowUpQuestions');
+      const periodStart = getRowValueByHeader_(row, headerMap, 'PeriodStart');
+      const periodEnd = getRowValueByHeader_(row, headerMap, 'PeriodEnd');
+      const sourceItemCount = getRowValueByHeader_(row, headerMap, 'SourceItemCount') ||
+        getRowValueByHeader_(row, headerMap, 'RawMessageCount');
 
       if (rowConversationId !== conversationId) {
+        continue;
+      }
+
+      if (archiveType && rowArchiveType !== archiveType) {
         continue;
       }
 
@@ -540,7 +591,11 @@ function getRecentWeeklySummaryText(conversationId, limit) {
         keywords: keywords,
         summary: summary,
         reusableAngles: reusableAngles,
-        followUpQuestions: followUpQuestions
+        followUpQuestions: followUpQuestions,
+        archiveType: rowArchiveType,
+        periodStart: periodStart,
+        periodEnd: periodEnd,
+        sourceItemCount: sourceItemCount
       });
 
       if (matched.length >= limit) {
@@ -553,18 +608,26 @@ function getRecentWeeklySummaryText(conversationId, limit) {
     return matched.map(function(item, index) {
       return [
         '【封存記憶 ' + (index + 1) + '】',
+        '類型：' + getWeeklyArchiveTypeLabel_(item.archiveType),
+        item.periodStart || item.periodEnd ? '期間：' + (item.periodStart || '未記錄') + ' ～ ' + (item.periodEnd || '未記錄') : '',
+        item.sourceItemCount ? '來源筆數：' + item.sourceItemCount : '',
         '主題：' + item.topicTitle,
         '關鍵字：' + item.keywords,
         '摘要：' + item.summary,
         '可重用切角：' + item.reusableAngles,
         '後續問題：' + item.followUpQuestions
-      ].join('\n');
+      ].filter(function(line) { return line !== ''; }).join('\n');
     }).join('\n\n');
 
   } catch (error) {
     console.error('getRecentWeeklySummaryText error:', error);
     return '';
   }
+}
+
+function getWeeklyArchiveTypeLabel_(archiveType) {
+  if (archiveType === WEEKLY_ARCHIVE_TYPE_NEWS) return '新聞封存';
+  return '話題封存';
 }
 
 // ======================================================

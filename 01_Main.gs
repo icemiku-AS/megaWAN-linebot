@@ -2,17 +2,16 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.11.0 Direct URL Summary Edition
+// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. 群組與個人聊天室「直接貼網址」都走相同 NewsInbox 收件流程。
+// 3. 群組「直接貼網址」走靜默 NewsUrlQueue；個人聊天室與明確指令保留同步回覆，方便維護測試。
 // 4. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
 // 5. v1.10.4 將資料清理統一交給 15_DataCleanup.gs，所有清理都需二段確認。
 // 6. v1.10.9 起，X / Twitter 非單篇 status 網址不入隊；Facebook / Threads 會先交給 Jina Reader。
-// 7. v1.11.0 起，單一直接網址會同步產生 100～200 字大綱並寫入 NewsInbox；
-//    多網址、Reader 過慢或同步分析失敗時，才退回 NewsUrlQueue 背景處理。
+// 7. v1.12.0 起，群組非 trigger 網址不再回覆 Brief；失敗或不支援網址改由 PendingReplies 回報。
 // ======================================================
 
 function setupLogSheet() {
@@ -127,26 +126,22 @@ function handleLineEvent(event) {
   }
 
   // ======================================================
-  // 群組一般訊息：沒有觸發詞但含網址 → NewsInbox 同步收件或 queue fallback
+  // 群組一般訊息：沒有觸發詞但含網址 → 靜默進 NewsUrlQueue
   // ======================================================
 
   if (isGroupLike && !hasTriggerPrefix(userText)) {
     if (shouldUseWebReading(userText)) {
-      let directNewsResult = null;
       try {
-        directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, userText);
+        handleSilentNewsUrlMessage_(event, conversationId, userText);
       } catch (error) {
         console.error('Direct group news URL error:', error && error.stack ? error.stack : error);
-        directNewsResult = {
-          replyText: getBotTextAiError_(),
-          replyMode: 'news_inbox_sync_error'
-        };
+        createPendingReplyForNewsUrlIntake_(
+          event,
+          conversationId,
+          getBotTextAiError_(),
+          'news_url_intake_error'
+        );
       }
-
-      const replyText = directNewsResult.replyText || getBotTextNoReadableUrl_();
-
-      replyToLine(event.replyToken, replyText);
-      logAssistantReplyToSheet(event, conversationId, replyText, directNewsResult.replyMode || 'news_inbox_url');
       return;
     }
 
@@ -233,6 +228,20 @@ function handleLineEvent(event) {
     return;
   }
 
+  if (userText === '#封存本週新聞') {
+    let archiveNewsReply = '';
+    try {
+      archiveNewsReply = archiveWeeklyNews(event, conversationId);
+    } catch (error) {
+      console.error('archiveWeeklyNews error:', error && error.stack ? error.stack : error);
+      archiveNewsReply = getBotTextNewsArchiveError_();
+    }
+
+    replyToLine(event.replyToken, archiveNewsReply);
+    logAssistantReplyToSheet(event, conversationId, archiveNewsReply, 'archive_weekly_news');
+    return;
+  }
+
   const commandInfo = parseCommand(userText);
   let aiReply = '';
   let aiReplyMode = commandInfo.mode;
@@ -244,8 +253,14 @@ function handleLineEvent(event) {
     } else if (commandInfo.mode === 'weekly_news') {
       aiReply = handleWeeklyNewsDigest_(event, conversationId, commandInfo.userPrompt);
 
+    } else if (commandInfo.mode === 'news_status_report') {
+      aiReply = handleNewsStatusReport_(event, conversationId);
+
     } else if (commandInfo.mode === 'manual_news_supplement') {
       aiReply = handleManualNewsSupplement_(event, conversationId, userText);
+
+    } else if (commandInfo.mode === 'archive_weekly_news') {
+      aiReply = archiveWeeklyNews(event, conversationId);
 
     } else if (commandInfo.mode === 'program_topic_analysis') {
       const urls = extractUrls(commandInfo.userPrompt);

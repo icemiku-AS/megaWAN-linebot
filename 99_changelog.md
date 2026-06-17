@@ -1,3 +1,13 @@
+2026-06-17
+v1.12.0 Silent URL Status & News Archive Edition
+- 群組直接貼網址改為靜默進 NewsUrlQueue 背景整理，不再主動回覆 Brief。
+- 網址不支援、入隊失敗或背景讀取失敗時，改透過 PendingReplies 延後回報。
+- 新增 #狀態回報 與 #封存本週新聞；WeeklySummary 追加 ArchiveType / PeriodStart / PeriodEnd / SourceItemCount 以區分話題與新聞封存。
+- #封存本週話題 改為只讀 ConversationLog；#本週新聞 移除節目潛力顯示，並可參考過去新聞封存脈絡。
+- 本版不刪除既有進階功能，不修改 Reader Layer、WebTaskQueue、NewsInbox Outline 或外部服務。
+
+// ==================================================
+
 2026-06-16
 v1.11.2 Brief Range Hotfix
 - 將直接貼網址與 NewsInbox Brief 從 20 字內硬限制改為 30～50 字目標區間。

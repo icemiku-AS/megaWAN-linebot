@@ -1,9 +1,9 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.11.2 Brief Range Hotfix：新聞素材池、同步短 Brief、完整 Outline、新聞網址佇列、#本週新聞、#新聞補充。
+// v1.12.0 Silent URL Status & News Archive Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
 //
 // 維護重點：
-// 1. v1.11.2 起，直接貼單一網址會同步讀取，並由一次 Gemini 呼叫同時產生 LINE 短 Brief、NewsInbox 長 Outline 與分類資料。
+// 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
 // 2. 多網址、Reader 過慢、同步 API 失敗或結果不足時，退回 NewsUrlQueue；time-driven trigger 每次最多處理 2 筆。
 // 3. v1.10.5 起，自動網址入庫會先透過 16_ReaderLayer.gs 取得 mainText，再交給 Gemini 整理。
 // 4. v1.10.9 起，X / Twitter 非單篇 status 網址會在入隊前直接攔截；Facebook / Threads 先交給 Jina Reader。
@@ -21,6 +21,7 @@ const MAX_NEWS_QUEUE_TASKS_PER_RUN = 2;
 const MAX_NEWS_URLS_PER_MESSAGE = 10;
 const MAX_NEWS_QUEUE_RETRY_COUNT = 3;
 const DEFAULT_WEEKLY_NEWS_DAYS = 7;
+const DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT = 4;
 
 // NewsUrlQueue 永久性錯誤清單。
 //
@@ -50,7 +51,7 @@ function ensureNewsInboxSheet_() {
 }
 
 // ======================================================
-// 直接貼網址：同步短 Brief、完整 Outline 與 NewsInbox 入庫
+// 直接貼網址：私訊 / 明確指令保留同步 Brief；群組一般網址另走靜默 queue
 // ======================================================
 
 function handleDirectNewsUrlMessage_(event, conversationId, userText) {
@@ -233,6 +234,58 @@ function enqueueDirectNewsUrlsForBackground_(event, conversationId, userText, is
       : getBotTextNewsInboxAccepted_(enqueueResult.urls.length, enqueueResult.skippedUnsupportedUrls),
     replyMode: isSyncFallback ? 'news_inbox_sync_fallback' : 'news_inbox_queued'
   };
+}
+
+function handleSilentNewsUrlMessage_(event, conversationId, userText) {
+  const enqueueResult = enqueueNewsUrlTasks(event, conversationId, userText);
+
+  if (!enqueueResult.ok) {
+    if (enqueueResult.error) {
+      createPendingReplyForNewsUrlIntake_(
+        event,
+        conversationId,
+        enqueueResult.error,
+        'news_url_intake_failed'
+      );
+    }
+
+    return {
+      ok: false,
+      queued: false,
+      error: enqueueResult.error || ''
+    };
+  }
+
+  // 混合貼多個網址時，可支援的網址會靜默入隊；
+  // 不支援的網址另透過 PendingReplies 延後回報，避免直接洗群組。
+  if (enqueueResult.skippedUnsupportedUrls && enqueueResult.skippedUnsupportedUrls.length) {
+    createPendingReplyForNewsUrlIntake_(
+      event,
+      conversationId,
+      getBotTextUnsupportedSocialUrl_(enqueueResult.skippedUnsupportedUrls),
+      'news_url_unsupported'
+    );
+  }
+
+  return {
+    ok: true,
+    queued: true,
+    urls: enqueueResult.urls || [],
+    skippedUnsupportedUrls: enqueueResult.skippedUnsupportedUrls || []
+  };
+}
+
+function createPendingReplyForNewsUrlIntake_(event, conversationId, replyText, replyMode) {
+  const source = event.source || {};
+
+  return createPendingReplyFromTask({
+    conversationId: conversationId,
+    sourceType: source.type || '',
+    userId: source.userId || '',
+    groupId: source.groupId || '',
+    roomId: source.roomId || '',
+    taskType: replyMode || 'news_url_intake'
+  }, replyText, replyMode || 'news_url_intake');
 }
 
 function enqueueNewsUrlTasks(event, conversationId, userText) {
@@ -637,7 +690,12 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
   const items = getRecentNewsInboxItems_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
   if (!items.length) return getBotTextWeeklyNewsNoData_();
 
-  return formatWeeklyNewsDigest_(items);
+  const digestText = formatWeeklyNewsDigest_(items);
+  const memoryBridgeText = buildWeeklyNewsMemoryBridge_(conversationId, items);
+
+  return [digestText, memoryBridgeText].filter(function(block) {
+    return String(block || '').trim() !== '';
+  }).join('\n\n');
 }
 
 function getRecentNewsInboxItems_(conversationId, days) {
@@ -687,13 +745,225 @@ function formatWeeklyNewsDigest_(items) {
       lines.push(
         (index + 1) + '. ' + (item.title || '未取得標題'),
         item.brief ? '簡介：' + item.brief : '',
-        '來源：' + (item.url || ''),
-        '節目潛力：' + (item.topicPotential || '中')
+        '來源：' + (item.url || '')
       );
     });
   });
 
   return lines.filter(function(line) { return line !== ''; }).join('\n');
+}
+
+function buildWeeklyNewsMemoryBridge_(conversationId, items) {
+  const archiveText = getRecentWeeklySummaryText(
+    conversationId,
+    DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT,
+    WEEKLY_ARCHIVE_TYPE_NEWS
+  );
+
+  if (!archiveText) {
+    return '';
+  }
+
+  const currentNewsText = formatNewsItemsForMemoryBridge_(items);
+  const prompt = [
+    '請判斷「本週 NewsInbox」和「過去新聞封存記憶」之間是否有值得提醒的延續、反轉、同題材累積或可合併討論關聯。',
+    '',
+    '輸出限制：',
+    '1. 使用繁體中文。',
+    '2. 如果沒有明確關聯，請只回覆空字串。',
+    '3. 如果有關聯，請用「過去脈絡：」開頭，最多列 3 點。',
+    '4. 不要捏造資料中沒有的事實，不要補充外部資訊。',
+    '5. 不要使用 Markdown 表格。',
+    '',
+    '本週 NewsInbox：',
+    currentNewsText,
+    '',
+    '過去新聞封存記憶：',
+    archiveText
+  ].join('\n');
+
+  try {
+    const relationText = String(callDeepSeekDirect(prompt, 'integrate_topics') || '').trim();
+    if (relationText === '空字串' || relationText === '""') {
+      return '';
+    }
+    return relationText;
+  } catch (error) {
+    console.error('buildWeeklyNewsMemoryBridge_ error:', error && error.stack ? error.stack : error);
+    return '';
+  }
+}
+
+function formatNewsItemsForMemoryBridge_(items) {
+  return items.slice(0, 20).map(function(item, index) {
+    return [
+      '【本週新聞 ' + (index + 1) + '】',
+      '分類：' + (item.category || '待分類'),
+      '標題：' + (item.title || '未取得標題'),
+      '簡介：' + (item.brief || '無'),
+      '大綱：' + (item.outline || '無'),
+      '來源：' + (item.url || '')
+    ].join('\n');
+  }).join('\n\n');
+}
+
+function handleNewsStatusReport_(event, conversationId) {
+  const stats = collectNewsStatusStats_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
+  return formatNewsStatusReport_(stats);
+}
+
+function collectNewsStatusStats_(conversationId, days) {
+  const cutoffTime = new Date().getTime() - Math.max(1, Number(days) || 7) * 24 * 60 * 60 * 1000;
+  const urlMap = {};
+  const stats = {
+    days: days,
+    inboxOkCount: 0,
+    categoryCounts: {},
+    receivedUrlCount: 0,
+    queueTotalCount: 0,
+    queueStatusCounts: {
+      pending: 0,
+      processing: 0,
+      done: 0,
+      failed: 0
+    },
+    errorTypeCounts: {},
+    failedItems: [],
+    pendingFailureReplyCount: 0
+  };
+
+  getRecentNewsInboxItems_(conversationId, days).forEach(function(item) {
+    stats.inboxOkCount++;
+    if (item.url) urlMap[item.url] = true;
+
+    const category = item.category || '待分類';
+    stats.categoryCounts[category] = (stats.categoryCounts[category] || 0) + 1;
+  });
+
+  collectNewsQueueStatusInto_(conversationId, cutoffTime, urlMap, stats);
+  collectPendingNewsReplyStatusInto_(conversationId, cutoffTime, stats);
+
+  stats.receivedUrlCount = Object.keys(urlMap).length;
+  return stats;
+}
+
+function collectNewsQueueStatusInto_(conversationId, cutoffTime, urlMap, stats) {
+  const sheet = ensureNewsUrlQueueSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return;
+
+  const headerMap = getHeaderMap_(sheet);
+  const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+
+  for (let i = values.length - 1; i >= 0; i--) {
+    const row = values[i];
+    const rowConversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
+    const createdAt = getRowValueByHeader_(row, headerMap, 'CreatedAt');
+    const createdAtTime = createdAt ? new Date(createdAt).getTime() : 0;
+
+    if (rowConversationId !== conversationId || createdAtTime < cutoffTime) {
+      continue;
+    }
+
+    const url = getRowValueByHeader_(row, headerMap, 'Url');
+    const status = String(getRowValueByHeader_(row, headerMap, 'Status') || 'pending');
+    const errorType = String(getRowValueByHeader_(row, headerMap, 'LastErrorType') || 'unknown_error');
+    const errorText = String(getRowValueByHeader_(row, headerMap, 'LastErrorText') || '');
+
+    if (url) urlMap[url] = true;
+    stats.queueTotalCount++;
+
+    if (!Object.prototype.hasOwnProperty.call(stats.queueStatusCounts, status)) {
+      stats.queueStatusCounts[status] = 0;
+    }
+    stats.queueStatusCounts[status]++;
+
+    if (status === 'failed') {
+      stats.errorTypeCounts[errorType] = (stats.errorTypeCounts[errorType] || 0) + 1;
+      if (stats.failedItems.length < 3) {
+        stats.failedItems.push({
+          url: url,
+          errorType: errorType,
+          errorText: errorText
+        });
+      }
+    }
+  }
+}
+
+function collectPendingNewsReplyStatusInto_(conversationId, cutoffTime, stats) {
+  const sheet = ensurePendingRepliesSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return;
+
+  const headerMap = getHeaderMap_(sheet);
+  const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+
+  values.forEach(function(row) {
+    const rowConversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
+    const createdAt = getRowValueByHeader_(row, headerMap, 'CreatedAt');
+    const createdAtTime = createdAt ? new Date(createdAt).getTime() : 0;
+    const status = getRowValueByHeader_(row, headerMap, 'Status');
+    const replyMode = String(getRowValueByHeader_(row, headerMap, 'ReplyMode') || '');
+
+    if (rowConversationId !== conversationId || createdAtTime < cutoffTime) {
+      return;
+    }
+
+    if (status === 'pending' && replyMode.indexOf('news_url') === 0) {
+      stats.pendingFailureReplyCount++;
+    }
+  });
+}
+
+function formatNewsStatusReport_(stats) {
+  const queue = stats.queueStatusCounts || {};
+  const lines = [
+    '最近 ' + stats.days + ' 天新聞收件狀態：',
+    '',
+    '收到網址：' + stats.receivedUrlCount + ' 個',
+    '已入庫 NewsInbox：' + stats.inboxOkCount + ' 則',
+    '背景佇列：待處理 ' + (queue.pending || 0) + '、處理中 ' + (queue.processing || 0) + '、完成 ' + (queue.done || 0) + '、失敗 ' + (queue.failed || 0),
+    '待回報錯誤：' + stats.pendingFailureReplyCount + ' 則'
+  ];
+
+  const categoryText = formatCountMap_(stats.categoryCounts);
+  if (categoryText) {
+    lines.push('', '分類概況：', categoryText);
+  }
+
+  const errorTypeText = formatCountMap_(stats.errorTypeCounts);
+  if (errorTypeText) {
+    lines.push('', '失敗類型：', errorTypeText);
+  }
+
+  if (stats.failedItems.length) {
+    lines.push('', '最近失敗：');
+    stats.failedItems.forEach(function(item, index) {
+      lines.push(
+        (index + 1) + '. ' + (item.url || '未記錄網址'),
+        '原因：' + (item.errorType || 'unknown_error') + (item.errorText ? ' / ' + item.errorText.slice(0, 120) : '')
+      );
+    });
+  }
+
+  return lines.join('\n');
+}
+
+function formatCountMap_(countMap) {
+  const keys = Object.keys(countMap || {}).filter(function(key) {
+    return countMap[key] > 0;
+  });
+
+  if (!keys.length) {
+    return '';
+  }
+
+  return keys.sort(function(a, b) {
+    return countMap[b] - countMap[a];
+  }).map(function(key) {
+    return '・' + key + '：' + countMap[key];
+  }).join('\n');
 }
 
 function getRecentNewsInboxTextForTopics_(conversationId, days, limit) {

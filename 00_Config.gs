@@ -2,7 +2,7 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.11.2 Brief Range Hotfix
+// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
@@ -23,10 +23,10 @@ const FXTWITTER_API_STATUS_ENDPOINT_PREFIX = 'https://api.fxtwitter.com/2/status
 const DEEPSEEK_MODEL = 'deepseek-v4-flash';
 
 // Gemini 模型
-// v1.11.2 中 Gemini 負責：
+// v1.12.0 中 Gemini 負責：
 // 1. 快讀摘要：#懶人包 指令使用
 // 2. 正文抽取：legacy fallback 使用
-// 3. 新聞素材整理：直接貼單一網址時，一次產生 LINE 短 Brief、NewsInbox 長 Outline 與分類資料
+// 3. 新聞素材整理：產生 NewsInbox 短 Brief、長 Outline 與分類資料
 const GEMINI_MODEL = 'gemini-3.1-flash-lite';
 const GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
@@ -44,6 +44,12 @@ const TOPIC_HIGHLIGHTS_SHEET_NAME = 'TopicHighlights';
 
 // 封存後的極簡長期記憶 Sheet
 const WEEKLY_SUMMARY_SHEET_NAME = 'WeeklySummary';
+
+// WeeklySummary 封存類型。
+// v1.12.0 起 #封存本週話題 與 #封存本週新聞 共用 WeeklySummary，
+// 透過 ArchiveType 區分「對話記憶」與「新聞記憶」，避免未來讀取長期記憶時混淆來源。
+const WEEKLY_ARCHIVE_TYPE_TOPIC = 'topic';
+const WEEKLY_ARCHIVE_TYPE_NEWS = 'news';
 
 // 網頁讀取任務佇列 Sheet：保留給 #懶人包 / #節目話題分析
 const WEB_TASK_QUEUE_SHEET_NAME = 'WebTaskQueue';
@@ -79,12 +85,12 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 
 // 群組中只有這些開頭才會觸發一般 Bot 回覆。
 // 例外：
-// 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會進入 NewsInbox 收件流程。
-// 2. 個人聊天室直接貼網址也走相同 NewsInbox 收件流程，方便在私訊測試群組行為。
+// 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會靜默進入 NewsUrlQueue 背景收件流程，不回覆群組。
+// 2. 個人聊天室直接貼網址仍保留同步回覆路徑，方便維護者測試 Reader / Gemini 行為。
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
 // 4. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
 // 5. v1.10.4 新增多資料表清理指令，所有清理都只作用於目前 conversationId。
-// 6. v1.11.2 起，單一直接網址優先同步回覆 30～50 字目標 Brief；100～200 字 Outline 留在 NewsInbox。
+// 6. v1.12.0 起，群組直接貼網址不再回 Brief；失敗或不支援網址改由 PendingReplies 延後回報。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#help',
@@ -99,8 +105,10 @@ const TRIGGER_PREFIXES = [
   '#清空新聞',
   '#清空待回覆',
   '#封存本週話題',
+  '#封存本週新聞',
   '#懶人包',
   '#本週新聞',
+  '#狀態回報',
   '#新聞補充',
   '#節目話題分析',
   '#統整話題'
@@ -166,5 +174,5 @@ const DEFAULT_RECENT_NEWS_INBOX_COUNT = 20;
 // #統整話題 / #節目話題分析 沒貼網址時，預設讀取最近幾則對話
 const DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC = 80;
 
-// #統整話題 / #節目話題分析 / #封存本週話題 預設讀取最近幾筆人工重點
+// #統整話題 / #節目話題分析 預設讀取最近幾筆人工重點
 const DEFAULT_RECENT_TOPIC_HIGHLIGHT_COUNT = 50;
