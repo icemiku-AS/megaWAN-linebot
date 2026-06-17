@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.11.2 Brief Range Hotfix
+// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -12,13 +12,26 @@
 // 5. v1.11.0 新增直接貼單一網址的同步大綱、queue fallback 與失敗固定回覆。
 // 6. v1.11.1 將直接網址回覆縮短為 20 字內 Brief，完整 Outline 留給 NewsInbox 與 #統整話題。
 // 7. v1.11.2 將 Brief 改為 30～50 字目標區間，程式端只保留防爆上限，不再正常硬裁。
+// 8. v1.12.0 將群組貼網址改為靜默收件，新增 #狀態回報 與 #封存本週新聞。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.11.2 Brief Range Hotfix';
-const BOT_CURRENT_VERSION_DATE = '2026-06-16';
+const BOT_CURRENT_VERSION = 'v1.12.0 Silent URL Status & News Archive Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-06-17';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.12.0 Silent URL Status & News Archive Edition',
+    date: '2026-06-17',
+    summary: '群組貼網址改為靜默背景收件，新增新聞狀態回報與新聞封存記憶，並簡化 #本週新聞 顯示。',
+    changes: [
+      '群組非 trigger 訊息內含網址時，不再回覆 Brief，改靜默寫入 NewsUrlQueue 背景整理。',
+      '網址不支援、入隊失敗或背景讀取失敗時，改透過 PendingReplies 延後回報。',
+      '新增 #狀態回報，統計最近 7 天網址收件、NewsInbox 入庫、NewsUrlQueue 佇列與失敗狀態。',
+      '新增 #封存本週新聞，將最近 7 天 NewsInbox 摘要寫入 WeeklySummary，並以 ArchiveType=news 區分新聞記憶。',
+      '#封存本週話題 改為只讀 ConversationLog；#本週新聞 移除節目潛力顯示，並可參考過去新聞封存脈絡。'
+    ]
+  },
   {
     version: 'v1.11.2 Brief Range Hotfix',
     date: '2026-06-16',
@@ -276,7 +289,7 @@ function getBotTextUnsupportedSocialUrl_(urls) {
 function getBotTextPendingDelivery_(pendingText, alsoAcceptedNewUrl) {
   let text = ['我剛剛那包資料整理好了，先端上來：', '', pendingText || ''].join('\n');
   if (alsoAcceptedNewUrl) {
-    text += ['', '另外，你這次貼的新網址我也收到了。', '一般貼網址會放進 NewsInbox；如果是 #懶人包，我會照指令做快讀。'].join('\n');
+    text += ['', '另外，你這次貼的新網址我也收到了。', '一般貼網址會靜默進背景佇列，整理後收進 NewsInbox；如果是 #懶人包，我會照指令做快讀。'].join('\n');
   }
   return text;
 }
@@ -287,7 +300,7 @@ function getBotTextNewsUrlFailed_(url, errorMessage) {
 
 function getBotTextManualNewsSupplementNeedUrl_() { return ['我大概懂你想補一個素材，不過新聞素材池需要有網址，之後你們才找得到原文。', '你可以用這種方式丟我：', '#新聞補充 這篇大概是在講某某事件，偏社群輿論，節目潛力高，後面附上原文網址'].join('\n'); }
 function getBotTextManualNewsSupplementSaved_(parsed) { return ['收到，我幫你補進本週新聞素材池了。', '我先理解成：' + (parsed.category || '待分類') + '，節目潛力：' + (parsed.topicPotential || '中') + '。'].join('\n'); }
-function getBotTextWeeklyNewsNoData_() { return ['我翻了一下，最近 7 天 NewsInbox 還沒有可整理的新聞素材。', '你可以先直接貼網址讓我收進素材池，或用 #新聞補充 手動補一筆。'].join('\n'); }
+function getBotTextWeeklyNewsNoData_() { return ['我翻了一下，最近 7 天 NewsInbox 還沒有可整理的新聞素材。', '你可以先直接貼網址讓我靜默收進素材池，或用 #新聞補充 手動補一筆。'].join('\n'); }
 
 // ======================================================
 // 一般系統提示
@@ -343,14 +356,20 @@ function getBotTextClearDone_(deletedCount) {
 
 function getBotTextHighlightSaved_() { return '我幫你畫起來了。這段已寫入 TopicHighlights，之後統整、分析、封存都會優先參考。'; }
 function getBotTextHighlightEmpty_() { return ['你要我畫哪一段重點？', '#畫重點 這段內容之後節目可以從平台風險和創作者依賴切入'].join('\n'); }
-function getBotTextArchiveError_() { return '我剛剛封存本週話題時卡住了。可能是紀錄太長、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
+function getBotTextArchiveError_() { return '我剛剛封存本週話題時卡住了。可能是對話紀錄太長、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
 function getBotTextAiError_() { return '我剛剛連接 AI、讀取網頁或翻紀錄時卡住了。你可以稍後再叫我一次，或把任務拆小一點給我處理。'; }
-function getBotTextArchiveNoData_() { return '目前還沒有足夠的使用者對話、畫重點或網址快讀摘要可以封存。等素材多一點，我再幫你收進 WeeklySummary。'; }
+function getBotTextArchiveNoData_() { return '目前還沒有足夠的使用者對話可以封存。等群組多聊一點，我再幫你收進 WeeklySummary。'; }
+function getBotTextNewsArchiveError_() { return '我剛剛封存本週新聞時卡住了。可能是 NewsInbox 素材太多、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
+function getBotTextNewsArchiveNoData_() { return '最近 7 天 NewsInbox 還沒有可封存的新聞素材。你可以先貼幾個網址，或用 #新聞補充 手動補素材。'; }
 function getBotTextNoTopicContextForAnalysis_() { return '目前我還翻不到足夠的使用者對話、畫重點、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或用 #畫重點 補一段想討論的脈絡。'; }
 function getBotTextNoTopicContextForIntegration_() { return '目前我還翻不到足夠的使用者聊天、畫重點、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。'; }
 
 function getBotTextArchiveDone_(archiveJson, recentCount) {
-  return ['本週話題我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名主題'), '', '摘要：', archiveJson.summary || '已建立摘要，但內容比較短。', '', '這次封存參考了 ' + recentCount + ' 則使用者訊息 / 畫重點。', '之後你們再聊到相關主題時，我就能把這份極簡記憶翻出來接著用。'].join('\n');
+  return ['本週話題我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名主題'), '', '摘要：', archiveJson.summary || '已建立摘要，但內容比較短。', '', '這次封存只參考 ConversationLog 的 ' + recentCount + ' 則使用者訊息。', '之後你們再聊到相關主題時，我就能把這份對話記憶翻出來接著用。'].join('\n');
+}
+
+function getBotTextNewsArchiveDone_(archiveJson, recentCount) {
+  return ['本週新聞我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名新聞主軸'), '', '摘要：', archiveJson.summary || '已建立新聞摘要，但內容比較短。', '', '這次封存參考了 ' + recentCount + ' 則 NewsInbox 素材。', '之後 #本週新聞 就可以拿這份新聞記憶比對過去脈絡。'].join('\n');
 }
 
 // ======================================================

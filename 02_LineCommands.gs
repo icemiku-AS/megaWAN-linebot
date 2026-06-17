@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.11.2 Brief Range Hotfix
+// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
@@ -23,7 +23,10 @@ function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userTe
     return enqueueWebTask(event, conversationId, userText, TASK_TYPE_WEB_LAZY_SUMMARY);
   }
 
-  return enqueueNewsUrlTasks(event, conversationId, userText);
+  // 一般貼網址在 v1.12.0 起以靜默新聞收件為主。
+  // 若此訊息同時觸發 pending reply 交付，新網址仍會入 NewsUrlQueue；
+  // 不支援或入隊失敗的網址則另建 PendingReplies，避免錯誤直接洗版。
+  return handleSilentNewsUrlMessage_(event, conversationId, userText);
 }
 
 function buildWebTaskAcceptedText_(taskType, urlCount) {
@@ -40,7 +43,9 @@ function getUserLogMode(text) {
   if (text.startsWith('#節目話題分析')) return 'program_topic_analysis_command';
   if (text.startsWith('#統整話題')) return 'integrate_topics_command';
   if (text.startsWith('#本週新聞')) return 'weekly_news_command';
+  if (text.startsWith('#狀態回報')) return 'news_status_report_command';
   if (text.startsWith('#新聞補充')) return 'manual_news_supplement_command';
+  if (text.startsWith('#封存本週新聞')) return 'archive_news_command';
   if (text.startsWith('#封存本週話題')) return 'archive_command';
   if (text.startsWith('#懶人包')) return 'web_read_command';
   if (text.startsWith('#清空')) return 'cleanup_command';
@@ -72,9 +77,17 @@ function parseCommand(text) {
     mode = 'weekly_news';
     userPrompt = text.replace('#本週新聞', '').trim();
 
+  } else if (text.startsWith('#狀態回報')) {
+    mode = 'news_status_report';
+    userPrompt = text.replace('#狀態回報', '').trim();
+
   } else if (text.startsWith('#新聞補充')) {
     mode = 'manual_news_supplement';
     userPrompt = text.replace('#新聞補充', '').trim();
+
+  } else if (text.startsWith('#封存本週新聞')) {
+    mode = 'archive_weekly_news';
+    userPrompt = text.replace('#封存本週新聞', '').trim();
 
   } else if (text.startsWith('#懶人包')) {
     mode = 'web_read';
@@ -94,8 +107,12 @@ function parseCommand(text) {
       userPrompt = '請統整最近使用者聊天內容、人工畫重點、NewsInbox 新聞素材、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
     } else if (mode === 'weekly_news') {
       userPrompt = '請整理最近 7 天 NewsInbox 中的新聞素材。';
+    } else if (mode === 'news_status_report') {
+      userPrompt = '請回報最近 7 天新聞收件、入庫、背景處理與失敗狀態。';
     } else if (mode === 'manual_news_supplement') {
       userPrompt = '請補充新聞素材；如果要寫入素材池，需要附上網址。';
+    } else if (mode === 'archive_weekly_news') {
+      userPrompt = '請封存最近 7 天 NewsInbox 新聞素材。';
     } else if (mode === 'chat') {
       userPrompt = '請簡短介紹你可以協助的事情。';
     }
@@ -174,14 +191,18 @@ function getHelpText() {
     '小浣可以幫你把群組裡的雜訊、網址和討論，整理成節目素材。',
     '',
     '常用功能：',
-    '・直接貼單一網址：回覆 30～50 字短簡介，完整大綱收進 NewsInbox。',
+    '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
     '・#本週新聞：整理最近 7 天新聞素材。',
+    '・#狀態回報：查看最近 7 天網址收件、入庫、佇列與失敗狀態。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
+    '・#封存本週新聞：把最近 7 天 NewsInbox 摘要封存成新聞記憶。',
+    '・#封存本週話題：只根據 ConversationLog 封存近期對話記憶。',
+    '',
+    '進階功能：',
     '・#懶人包 網址：產生網址快讀摘要。',
     '・#節目話題分析：分析網址或近期素材。',
     '・#統整話題：整理近期節目話題地圖。',
     '・#畫重點 內容：寫入 TopicHighlights。',
-    '・#封存本週話題：寫入 WeeklySummary。',
     '',
     '更多說明：',
     '・#help 清理',
@@ -215,6 +236,7 @@ function getHelpAdminText_() {
     '',
     '・#版本：查看目前版本。',
     '・#版本紀錄：查看近期版本紀錄。',
+    '・#狀態回報：查看新聞素材池與背景佇列狀態。',
     '・#reset：清除短期對話記憶，不動 Google Sheet。',
     '・#help 清理：查看資料清理指令。',
     '・#help 資料：查看各 Sheet 用途。'
@@ -227,7 +249,7 @@ function getHelpDataText_() {
     '',
     '・ConversationLog：原始對話紀錄。',
     '・TopicHighlights：#畫重點 的人工重點。',
-    '・WeeklySummary：#封存本週話題 的長期記憶。',
+    '・WeeklySummary：#封存本週話題 與 #封存本週新聞 的長期記憶，透過 ArchiveType 區分來源。',
     '・WebTaskQueue：#懶人包 與網址分析任務。',
     '・WebSummary：網址快讀摘要。',
     '・NewsUrlQueue：多網址或同步整理失敗時的待處理網址。',

@@ -2,13 +2,13 @@
 // 10_TopicFeatures.gs
 // 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
 //
-// 小浣 LINE Bot v1.11.1 Compact News Brief Edition
+// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
 //
 // 設計說明：
 // 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
 // 2. v1.10.3 起，節目整理相關功能從 ConversationLog 只讀 role=user，避免小浣回覆污染素材。
 // 3. v1.10.3 起，TopicHighlights 是人工畫重點資料，統整、分析、封存時都要優先參考。
-// 4. WeeklySummary 仍是封存結果；封存來源是 user-only ConversationLog + TopicHighlights + WebSummary。
+// 4. v1.12.0 起，#封存本週話題 只讀 user-only ConversationLog；#封存本週新聞 另讀 NewsInbox。
 // 5. v1.11.1 起，#統整話題會額外讀取 NewsInbox 的完整 Outline；舊資料沒有 Outline 時退回 Brief。
 // ======================================================
 
@@ -184,11 +184,8 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
 function archiveWeeklyTopics(event, conversationId) {
   const recentCount = 200;
   const recentItems = getRecentConversationItems(conversationId, recentCount, false);
-  const recentHighlightItems = getRecentTopicHighlightItems_(conversationId, DEFAULT_RECENT_TOPIC_HIGHLIGHT_COUNT);
-  const recentHighlightText = formatTopicHighlightItems_(recentHighlightItems);
-  const recentWebSummaryText = getRecentWebSummariesText(conversationId, 20);
 
-  if ((!recentItems || recentItems.length === 0) && (!recentHighlightItems || recentHighlightItems.length === 0) && !recentWebSummaryText) {
+  if (!recentItems || recentItems.length === 0) {
     return getBotTextArchiveNoData_();
   }
 
@@ -196,18 +193,18 @@ function archiveWeeklyTopics(event, conversationId) {
     return (index + 1) + '. [' + item.role + '/' + item.mode + '] ' + item.text;
   }).join('\n');
 
-  const rawMaterialCount = recentItems.length + recentHighlightItems.length;
+  const rawMaterialCount = recentItems.length;
+  const period = getWeeklyArchivePeriod_(DEFAULT_WEEKLY_NEWS_DAYS);
 
   const prompt = [
-    '請把以下近期素材整理成「極度精簡版長期記憶」。',
+    '請把以下近期使用者對話整理成「極度精簡版長期記憶」。',
     '',
     '用途：',
     '這份摘要未來會被 AI 助手讀取，用來判斷這個話題以前是否討論過，以及當時有哪些觀點。',
     '',
     '資料來源說明：',
     '1. ConversationLog 僅包含使用者訊息，不包含小浣回覆。',
-    '2. TopicHighlights 是使用者手動畫出的重點，應優先保留。',
-    '3. WebSummary 是網址快讀摘要，可作為補充脈絡。',
+    '2. 本指令只封存群組對話脈絡，不讀 TopicHighlights、WebSummary 或 NewsInbox。',
     '',
     '請輸出成 JSON，且只輸出 JSON，不要加任何解釋文字。',
     '',
@@ -228,37 +225,136 @@ function archiveWeeklyTopics(event, conversationId) {
     '5. 這份內容是給未來 AI 助手參考，所以要精煉、可重用、好檢索。',
     '',
     '以下是最近使用者對話紀錄：',
-    recentText || '無',
-    '',
-    '以下是最近人工畫重點：',
-    recentHighlightText || '無',
-    '',
-    '以下是最近網址快讀摘要：',
-    recentWebSummaryText || '無'
+    recentText || '無'
   ].join('\n');
 
   const archiveText = callDeepSeekDirect(prompt, 'archive');
   const archiveJson = parseArchiveJson(archiveText);
 
   const source = event.source || {};
-  const sheet = ensureWeeklySummarySheet_();
-
-  sheet.appendRow([
-    new Date(),
-    conversationId,
-    source.type || '',
-    source.userId || '',
-    source.groupId || '',
-    source.roomId || '',
-    archiveJson.topicTitle || '',
-    Array.isArray(archiveJson.keywords) ? archiveJson.keywords.join(', ') : '',
-    archiveJson.summary || '',
-    Array.isArray(archiveJson.reusableAngles) ? archiveJson.reusableAngles.join('\n') : '',
-    Array.isArray(archiveJson.followUpQuestions) ? archiveJson.followUpQuestions.join('\n') : '',
-    rawMaterialCount
-  ]);
+  appendWeeklySummaryRow_({
+    conversationId: conversationId,
+    sourceType: source.type || '',
+    userId: source.userId || '',
+    groupId: source.groupId || '',
+    roomId: source.roomId || '',
+    topicTitle: archiveJson.topicTitle || '',
+    keywords: Array.isArray(archiveJson.keywords) ? archiveJson.keywords.join(', ') : '',
+    summary: archiveJson.summary || '',
+    reusableAngles: Array.isArray(archiveJson.reusableAngles) ? archiveJson.reusableAngles.join('\n') : '',
+    followUpQuestions: Array.isArray(archiveJson.followUpQuestions) ? archiveJson.followUpQuestions.join('\n') : '',
+    rawMessageCount: rawMaterialCount,
+    archiveType: WEEKLY_ARCHIVE_TYPE_TOPIC,
+    periodStart: period.start,
+    periodEnd: period.end,
+    sourceItemCount: rawMaterialCount
+  });
 
   return getBotTextArchiveDone_(archiveJson, rawMaterialCount);
+}
+
+// ======================================================
+// #封存本週新聞：將 NewsInbox 週摘要寫入 WeeklySummary
+// ======================================================
+
+function archiveWeeklyNews(event, conversationId) {
+  const items = getRecentNewsInboxItems_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
+
+  if (!items.length) {
+    return getBotTextNewsArchiveNoData_();
+  }
+
+  const period = getWeeklyArchivePeriod_(DEFAULT_WEEKLY_NEWS_DAYS);
+  const newsText = formatNewsInboxItemsForArchivePrompt_(items);
+
+  const prompt = [
+    '請把以下 NewsInbox 新聞素材整理成「本週新聞封存記憶」。',
+    '',
+    '用途：',
+    '這份摘要未來會被 #本週新聞 讀取，用來判斷新一週新聞和過去新聞脈絡是否有延續、反轉或可合併討論的關聯。',
+    '',
+    '資料來源說明：',
+    '1. NewsInbox 是群組貼網址或 #新聞補充 收進來的新聞素材。',
+    '2. Outline 是完整大綱，Brief 是短簡介；請優先使用 Outline，沒有 Outline 時才使用 Brief。',
+    '3. 不要加入外部資料，也不要捏造新聞之間沒有呈現的關聯。',
+    '',
+    '請輸出成 JSON，且只輸出 JSON，不要加任何解釋文字。',
+    '',
+    'JSON 格式如下：',
+    '{',
+    '  "topicTitle": "一句話概括本週新聞主軸",',
+    '  "keywords": ["關鍵字1", "關鍵字2", "關鍵字3"],',
+    '  "summary": "150到300字摘要，整理本週新聞共同脈絡、主要事件與可追蹤方向",',
+    '  "reusableAngles": ["未來比對本週新聞時可重用的脈絡1", "可重用脈絡2", "可重用脈絡3"],',
+    '  "followUpQuestions": ["後續可追蹤問題1", "後續可追蹤問題2", "後續可追蹤問題3"]',
+    '}',
+    '',
+    '要求：',
+    '1. 使用繁體中文。',
+    '2. 重點是建立可供未來比對的新聞記憶，不要寫成節目逐字稿。',
+    '3. 若本週新聞分散，請整理出 2 到 4 個共同主軸。',
+    '4. 保留有助於未來辨識延續事件的關鍵人物、公司、平台、政策或作品名稱。',
+    '',
+    '封存期間：' + period.start + ' ～ ' + period.end,
+    '',
+    '以下是本週 NewsInbox：',
+    newsText
+  ].join('\n');
+
+  const archiveText = callDeepSeekDirect(prompt, 'archive');
+  const archiveJson = parseArchiveJson(archiveText);
+  const source = event.source || {};
+
+  appendWeeklySummaryRow_({
+    conversationId: conversationId,
+    sourceType: source.type || '',
+    userId: source.userId || '',
+    groupId: source.groupId || '',
+    roomId: source.roomId || '',
+    topicTitle: archiveJson.topicTitle || '',
+    keywords: Array.isArray(archiveJson.keywords) ? archiveJson.keywords.join(', ') : '',
+    summary: archiveJson.summary || '',
+    reusableAngles: Array.isArray(archiveJson.reusableAngles) ? archiveJson.reusableAngles.join('\n') : '',
+    followUpQuestions: Array.isArray(archiveJson.followUpQuestions) ? archiveJson.followUpQuestions.join('\n') : '',
+    rawMessageCount: items.length,
+    archiveType: WEEKLY_ARCHIVE_TYPE_NEWS,
+    periodStart: period.start,
+    periodEnd: period.end,
+    sourceItemCount: items.length
+  });
+
+  return getBotTextNewsArchiveDone_(archiveJson, items.length);
+}
+
+function formatNewsInboxItemsForArchivePrompt_(items) {
+  return items.map(function(item, index) {
+    return [
+      '【新聞 ' + (index + 1) + '】',
+      '分類：' + (item.category || '待分類'),
+      '標題：' + (item.title || '未取得標題'),
+      '網址：' + (item.url || ''),
+      '內容：' + (item.outline || item.brief || '無'),
+      '切角：' + (item.angle || '無')
+    ].join('\n');
+  }).join('\n\n');
+}
+
+function getWeeklyArchivePeriod_(days) {
+  const end = new Date();
+  const start = new Date(end.getTime() - Math.max(1, Number(days) || 7) * 24 * 60 * 60 * 1000);
+
+  return {
+    start: formatArchiveDate_(start),
+    end: formatArchiveDate_(end)
+  };
+}
+
+function formatArchiveDate_(date) {
+  try {
+    return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  } catch (error) {
+    return date.toISOString().slice(0, 10);
+  }
 }
 
 function parseArchiveJson(text) {
