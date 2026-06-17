@@ -74,16 +74,17 @@ function buildSystemPrompt(mode) {
     ].join('\n');
   }
 
-  if (mode === 'archive') {
+  if (mode === 'archive' || mode === 'archive_news') {
     return [
       basePrompt,
       '',
       '目前任務：封存長期記憶。',
       '呼叫端可能要求封存 ConversationLog 對話，也可能要求封存 NewsInbox 新聞摘要；請以使用者 prompt 內的資料來源與 JSON 格式為準。',
       '重點不是逐字摘要，而是保留未來可以重用的脈絡、觀點、切角、爭議點與追蹤問題。',
+      mode === 'archive_news' ? '新聞封存請務必精簡，不要逐條列出每一則新聞，避免 JSON 過長而被截斷。' : '',
       '請務必按照使用者要求的 JSON 格式輸出。',
       '不要輸出 JSON 以外的文字。'
-    ].join('\n');
+    ].filter(function(line) { return line !== ''; }).join('\n');
   }
 
   return [
