@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
+// 小浣 LINE Bot v1.12.1 Weekly News Query & Help Focus Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -13,13 +13,25 @@
 // 6. v1.11.1 將直接網址回覆縮短為 20 字內 Brief，完整 Outline 留給 NewsInbox 與 #統整話題。
 // 7. v1.11.2 將 Brief 改為 30～50 字目標區間，程式端只保留防爆上限，不再正常硬裁。
 // 8. v1.12.0 將群組貼網址改為靜默收件，新增 #狀態回報 與 #封存本週新聞。
+// 9. v1.12.1 強化 #本週新聞 查詢模式，並讓 #help 聚焦核心新聞工作流。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.12.0 Silent URL Status & News Archive Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-06-17';
+const BOT_CURRENT_VERSION = 'v1.12.1 Weekly News Query & Help Focus Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-06-18';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.12.1 Weekly News Query & Help Focus Edition',
+    date: '2026-06-18',
+    summary: '強化 #本週新聞 的常用檢視模式，調整新聞封存為週報索引取向，並讓 #help 聚焦核心新聞工作流。',
+    changes: [
+      '#本週新聞 支援預設 7 天、高潛力、詳細、精簡、24 小時與指定分類檢視。',
+      '#封存本週新聞 的 prompt 改為週報索引取向，優先保留代表性事件、人物、公司、平台、政策、作品名稱與主要脈絡。',
+      '#help 只顯示核心功能，較少用的詳細檢視、懶人包、節目話題分析、統整話題、畫重點與話題封存移到 #help 進階。',
+      '本版不修改 Reader Layer、NewsInbox schema、WeeklySummary schema、群組貼網址靜默收件流程或外部 reader 服務。'
+    ]
+  },
   {
     version: 'v1.12.0 Silent URL Status & News Archive Edition',
     date: '2026-06-17',
@@ -300,7 +312,21 @@ function getBotTextNewsUrlFailed_(url, errorMessage) {
 
 function getBotTextManualNewsSupplementNeedUrl_() { return ['我大概懂你想補一個素材，不過新聞素材池需要有網址，之後你們才找得到原文。', '你可以用這種方式丟我：', '#新聞補充 這篇大概是在講某某事件，偏社群輿論，節目潛力高，後面附上原文網址'].join('\n'); }
 function getBotTextManualNewsSupplementSaved_(parsed) { return ['收到，我幫你補進本週新聞素材池了。', '我先理解成：' + (parsed.category || '待分類') + '，節目潛力：' + (parsed.topicPotential || '中') + '。'].join('\n'); }
-function getBotTextWeeklyNewsNoData_() { return ['我翻了一下，最近 7 天 NewsInbox 還沒有可整理的新聞素材。', '你可以先直接貼網址讓我靜默收進素材池，或用 #新聞補充 手動補一筆。'].join('\n'); }
+function getBotTextWeeklyNewsNoData_(queryOptions) {
+  const options = queryOptions || {};
+  const periodText = Number(options.days) === 1 ? '最近 24 小時' : '最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天';
+  const scopeParts = [periodText];
+
+  if (options.onlyHighPotential) {
+    scopeParts.push('高潛力');
+  }
+
+  if (options.categoryFilter) {
+    scopeParts.push('分類「' + options.categoryFilter + '」');
+  }
+
+  return ['我翻了一下，' + scopeParts.join('、') + ' NewsInbox 還沒有可整理的新聞素材。', '你可以先直接貼網址讓我靜默收進素材池，或用 #新聞補充 手動補一筆。'].join('\n');
+}
 
 // ======================================================
 // 一般系統提示

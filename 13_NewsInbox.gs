@@ -1,6 +1,6 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.12.0 Silent URL Status & News Archive Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
+// v1.12.1 Weekly News Query & Help Focus Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
@@ -11,6 +11,7 @@
 // 6. DeepSeek 負責 #新聞補充 解析。
 // 7. v1.10.8 修正 #新聞補充 的 JSON parser 名稱錯誤，讓 DeepSeek 解析結果真的能被使用，而不是每次靜默 fallback。
 // 8. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
+// 8.1 v1.12.1 起，#本週新聞 支援高潛力、詳細、精簡、24 小時與分類篩選模式。
 // 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
 // 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
 // ======================================================
@@ -687,15 +688,96 @@ function classifyNewsUrlError_(errorText) {
 }
 
 function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
-  const items = getRecentNewsInboxItems_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
-  if (!items.length) return getBotTextWeeklyNewsNoData_();
+  const queryOptions = parseWeeklyNewsQueryOptions_(userPrompt);
+  const items = getRecentNewsInboxItems_(conversationId, queryOptions.days);
+  const filteredItems = filterWeeklyNewsItems_(items, queryOptions);
 
-  const digestText = formatWeeklyNewsDigest_(items);
-  const memoryBridgeText = buildWeeklyNewsMemoryBridge_(conversationId, items);
+  if (!filteredItems.length) return getBotTextWeeklyNewsNoData_(queryOptions);
+
+  const digestText = formatWeeklyNewsDigest_(filteredItems, queryOptions);
+  const memoryBridgeText = shouldBuildWeeklyNewsMemoryBridge_(queryOptions)
+    ? buildWeeklyNewsMemoryBridge_(conversationId, filteredItems)
+    : '';
 
   return [digestText, memoryBridgeText].filter(function(block) {
     return String(block || '').trim() !== '';
   }).join('\n\n');
+}
+
+function parseWeeklyNewsQueryOptions_(userPrompt) {
+  const text = String(userPrompt || '').replace(/\s+/g, ' ').trim();
+  const options = {
+    days: DEFAULT_WEEKLY_NEWS_DAYS,
+    viewMode: 'default',
+    onlyHighPotential: false,
+    categoryFilter: '',
+    rawText: text
+  };
+
+  if (!text) return options;
+
+  if (text.indexOf('24小時') >= 0 || text.indexOf('24 小時') >= 0 || text.indexOf('一天') >= 0 || text.indexOf('1天') >= 0) {
+    options.days = 1;
+  }
+
+  if (text.indexOf('高潛力') >= 0) {
+    options.onlyHighPotential = true;
+  }
+
+  if (text.indexOf('詳細') >= 0) {
+    options.viewMode = 'detailed';
+  }
+
+  if (text.indexOf('精簡') >= 0) {
+    options.viewMode = 'compact';
+  }
+
+  const categoryMatch = text.match(/(?:^|\s)分類\s+(.+)$/);
+  if (categoryMatch && categoryMatch[1]) {
+    const categoryText = categoryMatch[1]
+      .replace(/高潛力/g, '')
+      .replace(/詳細/g, '')
+      .replace(/精簡/g, '')
+      .replace(/24\s*小時/g, '')
+      .replace(/一天/g, '')
+      .replace(/1天/g, '')
+      .trim();
+    options.categoryFilter = normalizeWeeklyNewsCategoryFilter_(categoryText);
+  }
+
+  return options;
+}
+
+function normalizeWeeklyNewsCategoryFilter_(categoryText) {
+  const raw = String(categoryText || '').trim();
+  if (!raw) return '';
+  if (NEWS_INBOX_CATEGORIES.indexOf(raw) >= 0) return raw;
+
+  const compactRaw = raw.replace(/\s+/g, '').toLowerCase();
+  for (let i = 0; i < NEWS_INBOX_CATEGORIES.length; i++) {
+    const category = NEWS_INBOX_CATEGORIES[i];
+    if (category.replace(/\s+/g, '').toLowerCase() === compactRaw) {
+      return category;
+    }
+  }
+
+  return raw;
+}
+
+function filterWeeklyNewsItems_(items, queryOptions) {
+  const options = queryOptions || {};
+
+  return (items || []).filter(function(item) {
+    if (options.onlyHighPotential && item.topicPotential !== '高') {
+      return false;
+    }
+
+    if (options.categoryFilter && item.category !== options.categoryFilter) {
+      return false;
+    }
+
+    return true;
+  });
 }
 
 function getRecentNewsInboxItems_(conversationId, days) {
@@ -730,7 +812,21 @@ function getRecentNewsInboxItems_(conversationId, days) {
   });
 }
 
-function formatWeeklyNewsDigest_(items) {
+function formatWeeklyNewsDigest_(items, queryOptions) {
+  const options = queryOptions || {};
+
+  if (options.viewMode === 'compact') {
+    return formatWeeklyNewsCompactDigest_(items, options);
+  }
+
+  if (options.viewMode === 'detailed') {
+    return formatWeeklyNewsDetailedDigest_(items, options);
+  }
+
+  return formatWeeklyNewsDefaultDigest_(items, options);
+}
+
+function formatWeeklyNewsDefaultDigest_(items, queryOptions) {
   const grouped = {};
   items.forEach(function(item) {
     const category = item.category || '待分類';
@@ -738,7 +834,7 @@ function formatWeeklyNewsDigest_(items) {
     grouped[category].push(item);
   });
 
-  const lines = ['我把最近 7 天的新聞素材翻出來了：'];
+  const lines = [buildWeeklyNewsDigestHeader_(queryOptions)];
   Object.keys(grouped).forEach(function(category) {
     lines.push('', '【' + category + '】');
     grouped[category].forEach(function(item, index) {
@@ -751,6 +847,86 @@ function formatWeeklyNewsDigest_(items) {
   });
 
   return lines.filter(function(line) { return line !== ''; }).join('\n');
+}
+
+function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
+  const grouped = {};
+  items.forEach(function(item) {
+    const category = item.category || '待分類';
+    if (!grouped[category]) grouped[category] = [];
+    grouped[category].push(item);
+  });
+
+  const lines = [buildWeeklyNewsDigestHeader_(queryOptions)];
+  Object.keys(grouped).forEach(function(category) {
+    lines.push('', '【' + category + '】');
+    grouped[category].forEach(function(item, index) {
+      lines.push(
+        (index + 1) + '. ' + (item.title || '未取得標題'),
+        '來源：' + (item.url || ''),
+        '內容大綱：' + (item.outline || item.brief || '無'),
+        item.angle ? '切角：' + item.angle : '',
+        '節目潛力：' + (item.topicPotential || '中')
+      );
+    });
+  });
+
+  return lines.filter(function(line) { return line !== ''; }).join('\n');
+}
+
+function formatWeeklyNewsCompactDigest_(items, queryOptions) {
+  const lines = [buildWeeklyNewsDigestHeader_(queryOptions)];
+
+  items.forEach(function(item, index) {
+    lines.push(
+      '',
+      (index + 1) + '. 分類：' + (item.category || '待分類'),
+      '標題：' + (item.title || '未取得標題'),
+      '來源：' + (item.url || '')
+    );
+  });
+
+  return lines.filter(function(line) { return line !== ''; }).join('\n');
+}
+
+function buildWeeklyNewsDigestHeader_(queryOptions) {
+  const options = queryOptions || {};
+  const parts = [formatWeeklyNewsPeriodLabel_(options.days)];
+
+  if (options.onlyHighPotential) {
+    parts.push('高潛力');
+  }
+
+  if (options.categoryFilter) {
+    parts.push('分類「' + options.categoryFilter + '」');
+  }
+
+  if (options.viewMode === 'detailed') {
+    parts.push('詳細');
+  } else if (options.viewMode === 'compact') {
+    parts.push('精簡');
+  }
+
+  return '我把' + parts.join('、') + '的新聞素材翻出來了：';
+}
+
+function formatWeeklyNewsPeriodLabel_(days) {
+  return Number(days) === 1 ? '最近 24 小時' : '最近 ' + (Number(days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天';
+}
+
+function shouldBuildWeeklyNewsMemoryBridge_(queryOptions) {
+  const options = queryOptions || {};
+
+  // 「高潛力 / 24 小時 / 分類 / 精簡」都屬於聚焦檢視；
+  // 這些模式只輸出篩選後素材，避免額外補過去脈絡造成「只看」語意混淆。
+  if (options.viewMode === 'compact' ||
+      Number(options.days) === 1 ||
+      options.onlyHighPotential ||
+      options.categoryFilter) {
+    return false;
+  }
+
+  return true;
 }
 
 function buildWeeklyNewsMemoryBridge_(conversationId, items) {

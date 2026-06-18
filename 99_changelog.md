@@ -1,3 +1,13 @@
+2026-06-18
+v1.12.1 Weekly News Query & Help Focus Edition
+- 強化 #本週新聞：支援預設 7 天、高潛力、詳細、精簡、24 小時與指定分類檢視。
+- #封存本週新聞 prompt 改為週報索引取向，保留代表性事件、人物、公司、平台、政策、作品名稱與主要脈絡。
+- #help 收斂為核心新聞工作流；詳細新聞檢視、#懶人包、#節目話題分析、#統整話題、#畫重點 與 #封存本週話題 移到 #help 進階。
+- CURRENT_VERSION.md 改為描述此 Git ref 所代表的版本與版本邊界，不再記錄暫時性的 branch / PR / merge 狀態。
+- 本版不修改 Reader Layer、NewsInbox schema、WeeklySummary schema、群組貼網址靜默收件流程，也不新增 Node.js / npm / 自架伺服器架構。
+
+// ==================================================
+
 2026-06-17
 v1.12.0 Silent URL Status & News Archive Edition
 - 群組直接貼網址改為靜默進 NewsUrlQueue 背景整理，不再主動回覆 Brief。
