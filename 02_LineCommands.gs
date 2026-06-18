@@ -2,12 +2,13 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
+// 小浣 LINE Bot v1.12.1 Weekly News Query & Help Focus Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
 // 3. v1.10.4 新增分層 help，避免清理指令全部塞進主 help 造成壓力。
+// 4. v1.12.1 起，#help 聚焦核心新聞入口，低頻功能移到 #help 進階。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -178,6 +179,7 @@ function getHelpTextByCommand_(text) {
   const normalized = normalizeHelpCommandText_(text);
 
   if (normalized === '#help') return getHelpText();
+  if (normalized === '#help 進階') return getHelpAdvancedText_();
   if (normalized === '#help 清理') return getHelpCleanupText_();
   if (normalized === '#help 管理') return getHelpAdminText_();
   if (normalized === '#help 資料') return getHelpDataText_();
@@ -192,23 +194,37 @@ function getHelpText() {
     '',
     '常用功能：',
     '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
-    '・#本週新聞：整理最近 7 天新聞素材。',
+    '・#本週新聞：查看最近 7 天新聞素材。',
+    '・#本週新聞 高潛力：只看適合做節目的素材。',
     '・#狀態回報：查看最近 7 天網址收件、入庫、佇列與失敗狀態。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
     '・#封存本週新聞：把最近 7 天 NewsInbox 摘要封存成新聞記憶。',
-    '・#封存本週話題：只根據 ConversationLog 封存近期對話記憶。',
-    '',
-    '進階功能：',
-    '・#懶人包 網址：產生網址快讀摘要。',
-    '・#節目話題分析：分析網址或近期素材。',
-    '・#統整話題：整理近期節目話題地圖。',
-    '・#畫重點 內容：寫入 TopicHighlights。',
     '',
     '更多說明：',
+    '・#help 進階',
     '・#help 清理',
     '・#help 管理',
     '・#help 資料',
     '・#help 全部'
+  ].join('\n');
+}
+
+function getHelpAdvancedText_() {
+  return [
+    '進階功能：',
+    '',
+    '新聞檢視：',
+    '・#本週新聞 詳細：顯示較完整內容大綱、切角與節目潛力。',
+    '・#本週新聞 精簡：只列分類、標題與來源。',
+    '・#本週新聞 24小時：只看最近一天新聞素材。',
+    '・#本週新聞 分類 <分類名>：只看指定分類。',
+    '',
+    '素材整理：',
+    '・#懶人包 網址：產生網址快讀摘要。',
+    '・#節目話題分析：分析網址或近期素材。',
+    '・#統整話題：整理近期節目話題地圖。',
+    '・#畫重點 內容：寫入 TopicHighlights。',
+    '・#封存本週話題：只根據 ConversationLog 封存近期對話記憶。'
   ].join('\n');
 }
 
@@ -261,6 +277,9 @@ function getHelpDataText_() {
 function getHelpAllText_() {
   return [
     getHelpText(),
+    '',
+    '---',
+    getHelpAdvancedText_(),
     '',
     '---',
     getHelpCleanupText_(),
