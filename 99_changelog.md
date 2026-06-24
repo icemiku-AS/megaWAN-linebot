@@ -1,3 +1,13 @@
+2026-06-24
+v1.12.2 News Classification Audit Edition
+- NewsInbox 追加 SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities、ClassificationWarning，協助分類稽核與診斷。
+- #本週新聞 精簡 改為按分類分組並只列標題與來源網域；新增 #本週新聞 診斷 / 24小時 診斷。
+- 自動分類不再把馬斯克 / 川普當主要分類，改以 SpecialTopic 保存，並在關鍵字不支撐或信心偏低時寫入警告。
+- #封存本週新聞 納入 SpecialTopic / MatchedEntities 作為週報索引素材；#新聞問答 保留到 v1.12.3。
+- 本版不修改 Reader Layer、WeeklySummary schema、群組貼網址靜默收件流程，也不新增 Node.js / npm / 自架伺服器架構。
+
+// ==================================================
+
 2026-06-18
 v1.12.1 Weekly News Query & Help Focus Edition
 - 強化 #本週新聞：支援預設 7 天、高潛力、詳細、精簡、24 小時與指定分類檢視。

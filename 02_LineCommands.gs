@@ -2,13 +2,14 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.12.1 Weekly News Query & Help Focus Edition
+// 小浣 LINE Bot v1.12.2 News Classification Audit Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
 // 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
 // 3. v1.10.4 新增分層 help，避免清理指令全部塞進主 help 造成壓力。
 // 4. v1.12.1 起，#help 聚焦核心新聞入口，低頻功能移到 #help 進階。
+// 5. v1.12.2 起，#help 進階列出 #本週新聞 診斷，用來檢查分類稽核欄位。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -215,9 +216,10 @@ function getHelpAdvancedText_() {
     '',
     '新聞檢視：',
     '・#本週新聞 詳細：顯示較完整內容大綱、切角與節目潛力。',
-    '・#本週新聞 精簡：只列分類、標題與來源。',
+    '・#本週新聞 精簡：按分類分組，只列標題與來源網域。',
     '・#本週新聞 24小時：只看最近一天新聞素材。',
     '・#本週新聞 分類 <分類名>：只看指定分類。',
+    '・#本週新聞 診斷：檢查待分類、低信心與特殊主題疑似誤判素材。',
     '',
     '素材整理：',
     '・#懶人包 網址：產生網址快讀摘要。',
@@ -269,7 +271,7 @@ function getHelpDataText_() {
     '・WebTaskQueue：#懶人包 與網址分析任務。',
     '・WebSummary：網址快讀摘要。',
     '・NewsUrlQueue：多網址或同步整理失敗時的待處理網址。',
-    '・NewsInbox：新聞素材池，保存短 Brief 與完整 Outline。',
+    '・NewsInbox：新聞素材池，保存短 Brief、完整 Outline、SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities 與 ClassificationWarning。',
     '・PendingReplies：背景任務完成後等待交付的回覆。'
   ].join('\n');
 }
