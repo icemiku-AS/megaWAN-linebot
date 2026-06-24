@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.12.1 Weekly News Query & Help Focus Edition
+// 小浣 LINE Bot v1.12.2 News Classification Audit Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -14,13 +14,25 @@
 // 7. v1.11.2 將 Brief 改為 30～50 字目標區間，程式端只保留防爆上限，不再正常硬裁。
 // 8. v1.12.0 將群組貼網址改為靜默收件，新增 #狀態回報 與 #封存本週新聞。
 // 9. v1.12.1 強化 #本週新聞 查詢模式，並讓 #help 聚焦核心新聞工作流。
+// 10. v1.12.2 強化 NewsInbox 分類稽核、#本週新聞 精簡分組與診斷檢視。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.12.1 Weekly News Query & Help Focus Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-06-18';
+const BOT_CURRENT_VERSION = 'v1.12.2 News Classification Audit Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-06-24';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.12.2 News Classification Audit Edition',
+    date: '2026-06-24',
+    summary: '強化 NewsInbox 分類稽核，讓 #本週新聞 精簡模式更像分類掃描，並新增診斷檢視協助抓出疑似錯分素材。',
+    changes: [
+      'NewsInbox 新增 SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities 與 ClassificationWarning 欄位，保留主要分類以外的主角與稽核線索。',
+      '自動分類不再把馬斯克 / 川普當主要分類；相關人物改放 SpecialTopic，並在關鍵字不支撐時寫入分類警告。',
+      '#本週新聞 精簡 改為按分類分組，只列標題與來源網域；#本週新聞 診斷 可檢查待分類、低信心與特殊主題疑似誤判素材。',
+      '#封存本週新聞 會把 SpecialTopic / MatchedEntities 納入週報索引素材；本版不新增 #新聞問答，保留到 v1.12.3。'
+    ]
+  },
   {
     version: 'v1.12.1 Weekly News Query & Help Focus Edition',
     date: '2026-06-18',
@@ -326,6 +338,22 @@ function getBotTextWeeklyNewsNoData_(queryOptions) {
   }
 
   return ['我翻了一下，' + scopeParts.join('、') + ' NewsInbox 還沒有可整理的新聞素材。', '你可以先直接貼網址讓我靜默收進素材池，或用 #新聞補充 手動補一筆。'].join('\n');
+}
+
+function getBotTextWeeklyNewsDiagnosticNoIssue_(queryOptions) {
+  const options = queryOptions || {};
+  const periodText = Number(options.days) === 1 ? '最近 24 小時' : '最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天';
+  const scopeParts = [periodText];
+
+  if (options.categoryFilter) {
+    scopeParts.push('分類「' + options.categoryFilter + '」');
+  }
+
+  if (options.onlyHighPotential) {
+    scopeParts.push('高潛力');
+  }
+
+  return '我檢查了' + scopeParts.join('、') + '的新聞分類，目前沒有明顯的低信心、待分類或特殊主題誤判警告。';
 }
 
 // ======================================================

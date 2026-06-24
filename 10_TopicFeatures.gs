@@ -2,7 +2,7 @@
 // 10_TopicFeatures.gs
 // 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
 //
-// 小浣 LINE Bot v1.12.1 Weekly News Query & Help Focus Edition
+// 小浣 LINE Bot v1.12.2 News Classification Audit Edition
 //
 // 設計說明：
 // 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
@@ -11,6 +11,7 @@
 // 4. v1.12.0 起，#封存本週話題 只讀 user-only ConversationLog；#封存本週新聞 另讀 NewsInbox。
 // 5. v1.11.1 起，#統整話題會額外讀取 NewsInbox 的完整 Outline；舊資料沒有 Outline 時退回 Brief。
 // 6. v1.12.1 起，#封存本週新聞 的 prompt 改為週報索引取向，優先保留可回查的事件與名稱。
+// 7. v1.12.2 起，新聞封存會讀取 SpecialTopic / MatchedEntities，協助保留可回查的主角與事件名稱。
 // ======================================================
 
 // ======================================================
@@ -279,7 +280,8 @@ function archiveWeeklyNews(event, conversationId) {
     '1. NewsInbox 是群組貼網址或 #新聞補充 收進來的新聞素材。',
     '2. Outline 是完整大綱，Brief 是短簡介；請優先使用 Outline，沒有 Outline 時才使用 Brief。',
     '3. Category、Angle 與 TopicPotential 可協助判斷素材用途，但不得覆蓋原始新聞事實。',
-    '4. 不要加入外部資料，也不要捏造新聞之間沒有呈現的關聯。',
+    '4. SpecialTopic 與 MatchedEntities 用來保留人物、公司、平台、政策、作品、產品或事件名稱；若有 ClassificationWarning，請保守看待該素材分類。',
+    '5. 不要加入外部資料，也不要捏造新聞之間沒有呈現的關聯。',
     '',
     '請輸出成 JSON，且只輸出 JSON，不要加任何解釋文字。',
     '',
@@ -338,12 +340,15 @@ function formatNewsInboxItemsForArchivePrompt_(items) {
     return [
       '【新聞 ' + (index + 1) + '】',
       '分類：' + (item.category || '待分類'),
+      item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
+      item.matchedEntities && item.matchedEntities !== '無' ? '辨識實體：' + item.matchedEntities : '',
       '標題：' + (item.title || '未取得標題'),
       '網址：' + (item.url || ''),
       '節目潛力：' + (item.topicPotential || '中'),
       '內容：' + (item.outline || item.brief || '無'),
-      '切角：' + (item.angle || '無')
-    ].join('\n');
+      '切角：' + (item.angle || '無'),
+      item.classificationWarning ? '分類警告：' + item.classificationWarning : ''
+    ].filter(function(line) { return line !== ''; }).join('\n');
   }).join('\n\n');
 }
 
