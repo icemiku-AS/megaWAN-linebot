@@ -1,4 +1,14 @@
 2026-06-24
+v1.12.3 News QA Edition
+- 新增 #新聞問答 <問題>，可根據最近 7 天 NewsInbox 素材回答新聞問題，並附完整原文網址。
+- #新聞問答 支援高潛力與分類篩選；素材不足時會明確說目前素材池看不出來。
+- #本週新聞 精簡 與 #本週新聞 診斷 的來源改為完整原文網址，不再只顯示網域。
+- 移除 #本週新聞 24小時 與 #本週新聞 24小時 診斷，並同步更新 help 與文件。
+- 本版不修改 Reader Layer、NewsInbox schema、WeeklySummary schema、群組貼網址靜默收件流程，也不新增 Node.js / npm / 自架伺服器架構。
+
+// ==================================================
+
+2026-06-24
 v1.12.2 News Classification Audit Edition
 - NewsInbox 追加 SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities、ClassificationWarning，協助分類稽核與診斷。
 - #本週新聞 精簡 改為按分類分組並只列標題與來源網域；新增 #本週新聞 診斷 / 24小時 診斷。

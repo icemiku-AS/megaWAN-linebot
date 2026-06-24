@@ -2,13 +2,14 @@
 // 11_Prompts.gs
 // 集中管理小浣人格、模式提示詞與任務提示詞。
 //
-// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
+// 小浣 LINE Bot v1.12.3 News QA Edition
 //
 // 維護原則：
 // 1. 本檔只管理 DeepSeek system prompt，不直接呼叫模型。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
 // 4. v1.10.2 移除 #摘要 / #摘要最近 / #回顧最近 / #標題 專用 prompt，保留節目素材秘書核心任務。
+// 5. v1.12.3 起，news_question system prompt 限制只能根據 NewsInbox 與新聞封存脈絡回答。
 // ======================================================
 
 function buildSystemPrompt(mode) {
@@ -71,6 +72,19 @@ function buildSystemPrompt(mode) {
       '目前任務：網址快讀。',
       '這個模式只做輕量摘要與素材整理，不做深度節目分析。',
       '如果使用者想要深度分析，應提醒可以使用 #節目話題分析。'
+    ].join('\n');
+  }
+
+  if (mode === 'news_question') {
+    return [
+      basePrompt,
+      '',
+      '目前任務：新聞素材問答。',
+      '請只根據使用者 prompt 中提供的 NewsInbox 素材與新聞封存脈絡回答，不要補充外部資訊。',
+      'NewsInbox 是主要依據；新聞封存只能作為過去脈絡，不可當成本週新聞事實。',
+      '如果資料不足，請明確說目前素材池看不出來。',
+      '回答中提到相關素材時，必須附完整原文網址，不可只寫網域。',
+      '不要使用 Markdown 表格。'
     ].join('\n');
   }
 

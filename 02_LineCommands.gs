@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.12.2 News Classification Audit Edition
+// 小浣 LINE Bot v1.12.3 News QA Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
@@ -10,6 +10,7 @@
 // 3. v1.10.4 新增分層 help，避免清理指令全部塞進主 help 造成壓力。
 // 4. v1.12.1 起，#help 聚焦核心新聞入口，低頻功能移到 #help 進階。
 // 5. v1.12.2 起，#help 進階列出 #本週新聞 診斷，用來檢查分類稽核欄位。
+// 6. v1.12.3 起，#新聞問答 讀取近期 NewsInbox 素材並回覆可追溯來源。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -45,6 +46,7 @@ function getUserLogMode(text) {
   if (text.startsWith('#節目話題分析')) return 'program_topic_analysis_command';
   if (text.startsWith('#統整話題')) return 'integrate_topics_command';
   if (text.startsWith('#本週新聞')) return 'weekly_news_command';
+  if (text.startsWith('#新聞問答')) return 'news_question_command';
   if (text.startsWith('#狀態回報')) return 'news_status_report_command';
   if (text.startsWith('#新聞補充')) return 'manual_news_supplement_command';
   if (text.startsWith('#封存本週新聞')) return 'archive_news_command';
@@ -79,6 +81,10 @@ function parseCommand(text) {
     mode = 'weekly_news';
     userPrompt = text.replace('#本週新聞', '').trim();
 
+  } else if (text.startsWith('#新聞問答')) {
+    mode = 'news_question';
+    userPrompt = text.replace('#新聞問答', '').trim();
+
   } else if (text.startsWith('#狀態回報')) {
     mode = 'news_status_report';
     userPrompt = text.replace('#狀態回報', '').trim();
@@ -109,6 +115,8 @@ function parseCommand(text) {
       userPrompt = '請統整最近使用者聊天內容、人工畫重點、NewsInbox 新聞素材、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
     } else if (mode === 'weekly_news') {
       userPrompt = '請整理最近 7 天 NewsInbox 中的新聞素材。';
+    } else if (mode === 'news_question') {
+      userPrompt = '';
     } else if (mode === 'news_status_report') {
       userPrompt = '請回報最近 7 天新聞收件、入庫、背景處理與失敗狀態。';
     } else if (mode === 'manual_news_supplement') {
@@ -197,6 +205,7 @@ function getHelpText() {
     '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
     '・#本週新聞：查看最近 7 天新聞素材。',
     '・#本週新聞 高潛力：只看適合做節目的素材。',
+    '・#新聞問答 <問題>：根據最近 7 天新聞素材回答並附原文網址。',
     '・#狀態回報：查看最近 7 天網址收件、入庫、佇列與失敗狀態。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
     '・#封存本週新聞：把最近 7 天 NewsInbox 摘要封存成新聞記憶。',
@@ -216,8 +225,7 @@ function getHelpAdvancedText_() {
     '',
     '新聞檢視：',
     '・#本週新聞 詳細：顯示較完整內容大綱、切角與節目潛力。',
-    '・#本週新聞 精簡：按分類分組，只列標題與來源網域。',
-    '・#本週新聞 24小時：只看最近一天新聞素材。',
+    '・#本週新聞 精簡：按分類分組，只列標題與原文網址。',
     '・#本週新聞 分類 <分類名>：只看指定分類。',
     '・#本週新聞 診斷：檢查待分類、低信心與特殊主題疑似誤判素材。',
     '',
