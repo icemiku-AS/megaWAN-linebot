@@ -2,13 +2,14 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
+// 小浣 LINE Bot v1.12.3 News QA Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複；若新增版本相容層，必須在註解中明確說明用途。
 // 4. v1.10.9 新增 FxTwitter API endpoint 設定，供 X / Twitter 單篇貼文 reader 使用。
+// 5. v1.12.3 新增 #新聞問答 trigger，讓使用者可直接詢問近期 NewsInbox 素材。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -108,6 +109,7 @@ const TRIGGER_PREFIXES = [
   '#封存本週新聞',
   '#懶人包',
   '#本週新聞',
+  '#新聞問答',
   '#狀態回報',
   '#新聞補充',
   '#節目話題分析',

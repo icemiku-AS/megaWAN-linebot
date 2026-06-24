@@ -1,6 +1,6 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.12.2 News Classification Audit Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
+// v1.12.3 News QA Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
@@ -11,8 +11,9 @@
 // 6. DeepSeek 負責 #新聞補充 解析。
 // 7. v1.10.8 修正 #新聞補充 的 JSON parser 名稱錯誤，讓 DeepSeek 解析結果真的能被使用，而不是每次靜默 fallback。
 // 8. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
-// 8.1 v1.12.1 起，#本週新聞 支援高潛力、詳細、精簡、24 小時與分類篩選模式。
+// 8.1 v1.12.1 起，#本週新聞 支援高潛力、詳細、精簡與分類篩選模式。
 // 8.2 v1.12.2 起，NewsInbox 分離主要分類與特殊主題，並追加分類稽核欄位供診斷。
+// 8.3 v1.12.3 起，移除 24 小時檢視，並新增 #新聞問答 以近期 NewsInbox 回答素材問題。
 // 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
 // 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
 // ======================================================
@@ -28,6 +29,7 @@ const MAX_NEWS_URLS_PER_MESSAGE = 10;
 const MAX_NEWS_QUEUE_RETRY_COUNT = 3;
 const DEFAULT_WEEKLY_NEWS_DAYS = 7;
 const DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT = 4;
+const MAX_NEWS_QUESTION_ITEMS = 30;
 
 // NewsUrlQueue 永久性錯誤清單。
 //
@@ -870,6 +872,10 @@ function classifyNewsUrlError_(errorText) {
 }
 
 function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
+  if (isRemovedWeeklyNews24HourQuery_(userPrompt)) {
+    return getBotTextWeeklyNews24HourRemoved_();
+  }
+
   const queryOptions = parseWeeklyNewsQueryOptions_(userPrompt);
   const items = getRecentNewsInboxItems_(conversationId, queryOptions.days);
   const filteredItems = filterWeeklyNewsItems_(items, queryOptions);
@@ -886,6 +892,154 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
   }).join('\n\n');
 }
 
+function isRemovedWeeklyNews24HourQuery_(userPrompt) {
+  // v1.12.3 起移除低頻的 24 小時檢視；保留明確提示，避免舊指令被誤解為仍有最近一天篩選。
+  const text = String(userPrompt || '').replace(/\s+/g, ' ').trim();
+  return /24\s*小時|24\s*小时|一天|1\s*天/.test(text);
+}
+
+function handleNewsQuestion_(event, conversationId, userPrompt) {
+  const queryOptions = parseNewsQuestionOptions_(userPrompt);
+  if (!queryOptions.question) {
+    return getBotTextNewsQuestionNeedQuestion_();
+  }
+
+  const items = getRecentNewsInboxItems_(conversationId, queryOptions.days);
+  const filteredItems = filterWeeklyNewsItems_(items, queryOptions);
+  if (!filteredItems.length) {
+    return getBotTextNewsQuestionNoData_(queryOptions);
+  }
+
+  const prompt = buildNewsQuestionPrompt_(conversationId, filteredItems, queryOptions);
+  const answerText = String(callDeepSeekDirect(prompt, 'news_question') || '').trim();
+  return answerText || getBotTextEmptyReply_();
+}
+
+function parseNewsQuestionOptions_(userPrompt) {
+  let text = String(userPrompt || '').replace(/\s+/g, ' ').trim();
+  const options = {
+    days: DEFAULT_WEEKLY_NEWS_DAYS,
+    onlyHighPotential: false,
+    categoryFilter: '',
+    question: '',
+    rawText: text
+  };
+
+  if (!text) return options;
+
+  if (text.indexOf('高潛力') >= 0) {
+    options.onlyHighPotential = true;
+    text = text.replace(/高潛力/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  const categoryResult = extractNewsQuestionCategory_(text);
+  if (categoryResult.categoryFilter) {
+    options.categoryFilter = categoryResult.categoryFilter;
+    text = categoryResult.questionText;
+  }
+
+  options.question = text.trim();
+  return options;
+}
+
+function extractNewsQuestionCategory_(text) {
+  const match = String(text || '').match(/^(.*?)分類\s+(.+)$/);
+  if (!match) {
+    return {
+      categoryFilter: '',
+      questionText: String(text || '').trim()
+    };
+  }
+
+  const beforeText = String(match[1] || '').trim();
+  const tailText = String(match[2] || '').trim();
+  const categories = getAllNewsCategoryValues_().slice().sort(function(a, b) {
+    return b.length - a.length;
+  });
+
+  for (let i = 0; i < categories.length; i++) {
+    const category = categories[i];
+    if (tailText === category || tailText.indexOf(category + ' ') === 0 || tailText.indexOf(category + '　') === 0) {
+      return {
+        categoryFilter: category,
+        questionText: [beforeText, tailText.slice(category.length).trim()].filter(function(part) {
+          return part !== '';
+        }).join(' ')
+      };
+    }
+  }
+
+  return {
+    categoryFilter: '',
+    questionText: String(text || '').trim()
+  };
+}
+
+function buildNewsQuestionPrompt_(conversationId, items, queryOptions) {
+  const options = queryOptions || {};
+  const archiveText = getRecentWeeklySummaryText(
+    conversationId,
+    DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT,
+    WEEKLY_ARCHIVE_TYPE_NEWS
+  );
+
+  return [
+    '請根據以下 NewsInbox 新聞素材，回答使用者的問題。',
+    '',
+    '使用者問題：',
+    options.question,
+    '',
+    '範圍：',
+    '最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天' +
+      (options.onlyHighPotential ? '、高潛力' : '') +
+      (options.categoryFilter ? '、分類「' + options.categoryFilter + '」' : ''),
+    '',
+    '回答規則：',
+    '1. 只能根據下方 NewsInbox 與新聞封存脈絡回答，不要補充外部資訊。',
+    '2. NewsInbox 是主要依據；新聞封存只能作為過去脈絡，不可當成本週新聞事實。',
+    '3. 如果資料不足，請明確說「目前素材池看不出來」。',
+    '4. 回答中的相關素材必須附完整原文網址，不可只寫網域。',
+    '5. 使用繁體中文，不要使用 Markdown 表格。',
+    '6. 請用以下格式：',
+    '簡答：',
+    '依據：',
+    '相關素材：',
+    '',
+    'NewsInbox 素材：',
+    formatNewsItemsForQuestion_(items),
+    '',
+    '過去新聞封存脈絡（可作輔助，不可取代 NewsInbox）：',
+    archiveText || '無'
+  ].join('\n');
+}
+
+function formatNewsItemsForQuestion_(items) {
+  return (items || []).slice()
+    .sort(function(a, b) {
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+      return (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+    })
+    .slice(0, MAX_NEWS_QUESTION_ITEMS)
+    .map(function(item, index) {
+      return [
+        '【素材 ' + (index + 1) + '】',
+        '分類：' + (item.category || '待分類'),
+        item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
+        item.matchedEntities && item.matchedEntities !== '無' ? '辨識實體：' + item.matchedEntities : '',
+        '標題：' + (item.title || '未取得標題'),
+        '簡介：' + (item.brief || '無'),
+        '大綱：' + (item.outline || '無'),
+        '切角：' + (item.angle || '無'),
+        '節目潛力：' + (item.topicPotential || '中'),
+        item.classificationWarning ? '分類警告：' + item.classificationWarning : '',
+        '原文網址：' + (item.url || '未記錄網址')
+      ].filter(function(line) {
+        return line !== '';
+      }).join('\n');
+    }).join('\n\n');
+}
+
 function parseWeeklyNewsQueryOptions_(userPrompt) {
   const text = String(userPrompt || '').replace(/\s+/g, ' ').trim();
   const options = {
@@ -897,10 +1051,6 @@ function parseWeeklyNewsQueryOptions_(userPrompt) {
   };
 
   if (!text) return options;
-
-  if (text.indexOf('24小時') >= 0 || text.indexOf('24 小時') >= 0 || text.indexOf('一天') >= 0 || text.indexOf('1天') >= 0) {
-    options.days = 1;
-  }
 
   if (text.indexOf('高潛力') >= 0) {
     options.onlyHighPotential = true;
@@ -925,9 +1075,6 @@ function parseWeeklyNewsQueryOptions_(userPrompt) {
       .replace(/詳細/g, '')
       .replace(/精簡/g, '')
       .replace(/診斷/g, '')
-      .replace(/24\s*小時/g, '')
-      .replace(/一天/g, '')
-      .replace(/1天/g, '')
       .trim();
     options.categoryFilter = normalizeWeeklyNewsCategoryFilter_(categoryText);
   }
@@ -1082,7 +1229,7 @@ function formatWeeklyNewsCompactDigest_(items, queryOptions) {
     groupedResult.grouped[category].forEach(function(item, index) {
       lines.push(
         (index + 1) + '. ' + (item.title || '未取得標題'),
-        '來源：' + getNewsSourceDomain_(item.url)
+        '來源：' + (item.url || '')
       );
     });
   });
@@ -1115,7 +1262,7 @@ function formatWeeklyNewsDiagnosticDigest_(items, queryOptions) {
       '',
       (index + 1) + '. ' + (item.title || '未取得標題'),
       '目前分類：' + (item.category || '待分類') + (item.specialTopic && item.specialTopic !== '無' ? ' / 特殊主題：' + item.specialTopic : ''),
-      '來源：' + getNewsSourceDomain_(item.url),
+      '來源：' + (item.url || ''),
       '問題：' + result.issues.join('；'),
       suggestion ? '建議：' + suggestion : ''
     );
@@ -1244,17 +1391,6 @@ function getNewsCategoryOrderIndex_(category) {
   return index >= 0 ? index : NEWS_CATEGORY_DISPLAY_ORDER.length;
 }
 
-function getNewsSourceDomain_(url) {
-  const raw = String(url || '').trim();
-  if (!raw) return '未記錄來源';
-
-  try {
-    return raw.replace(/^https?:\/\//i, '').split(/[/?#]/)[0] || raw;
-  } catch (error) {
-    return raw;
-  }
-}
-
 function buildWeeklyNewsDigestHeader_(queryOptions) {
   const options = queryOptions || {};
   const parts = [formatWeeklyNewsPeriodLabel_(options.days)];
@@ -1279,17 +1415,16 @@ function buildWeeklyNewsDigestHeader_(queryOptions) {
 }
 
 function formatWeeklyNewsPeriodLabel_(days) {
-  return Number(days) === 1 ? '最近 24 小時' : '最近 ' + (Number(days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天';
+  return '最近 ' + (Number(days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天';
 }
 
 function shouldBuildWeeklyNewsMemoryBridge_(queryOptions) {
   const options = queryOptions || {};
 
-  // 「高潛力 / 24 小時 / 分類 / 精簡 / 診斷」都屬於聚焦檢視；
+  // 「高潛力 / 分類 / 精簡 / 診斷」都屬於聚焦檢視；
   // 這些模式只輸出篩選後素材，避免額外補過去脈絡造成「只看」語意混淆。
   if (options.viewMode === 'compact' ||
       options.viewMode === 'diagnostic' ||
-      Number(options.days) === 1 ||
       options.onlyHighPotential ||
       options.categoryFilter) {
     return false;

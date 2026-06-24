@@ -2,7 +2,7 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.12.0 Silent URL Status & News Archive Edition
+// 小浣 LINE Bot v1.12.3 News QA Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
@@ -12,6 +12,7 @@
 // 5. v1.10.4 將資料清理統一交給 15_DataCleanup.gs，所有清理都需二段確認。
 // 6. v1.10.9 起，X / Twitter 非單篇 status 網址不入隊；Facebook / Threads 會先交給 Jina Reader。
 // 7. v1.12.0 起，群組非 trigger 網址不再回覆 Brief；失敗或不支援網址改由 PendingReplies 回報。
+// 8. v1.12.3 起，#新聞問答 由 13_NewsInbox.gs 回答近期新聞素材問題。
 // ======================================================
 
 function setupLogSheet() {
@@ -252,6 +253,9 @@ function handleLineEvent(event) {
 
     } else if (commandInfo.mode === 'weekly_news') {
       aiReply = handleWeeklyNewsDigest_(event, conversationId, commandInfo.userPrompt);
+
+    } else if (commandInfo.mode === 'news_question') {
+      aiReply = handleNewsQuestion_(event, conversationId, commandInfo.userPrompt);
 
     } else if (commandInfo.mode === 'news_status_report') {
       aiReply = handleNewsStatusReport_(event, conversationId);

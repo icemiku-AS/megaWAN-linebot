@@ -2,7 +2,7 @@
 // 09_DeepSeekService.gs
 // DeepSeek API 服務層。負責主模型呼叫、短期記憶組裝、長期封存記憶注入與模型參數控制。
 //
-// 小浣 LINE Bot v1.10.5 Reader Layer Edition
+// 小浣 LINE Bot v1.12.3 News QA Edition
 //
 // 設計說明：
 // 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持清楚分層。
@@ -10,6 +10,7 @@
 // 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
 // 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
 // 5. v1.10.5 的網址分析改由 16_ReaderLayer.gs 先讀取正文，再交給 DeepSeek 做節目話題分析。
+// 6. v1.12.3 起，news_question 模式使用低溫度與較長 token 上限，供 #新聞問答 整理 NewsInbox 素材。
 // ======================================================
 
 // ======================================================
@@ -206,7 +207,8 @@ function getTemperatureByMode(mode) {
     mode === 'archive_news' ||
     mode === 'web_read' ||
     mode === 'program_topic_analysis' ||
-    mode === 'integrate_topics'
+    mode === 'integrate_topics' ||
+    mode === 'news_question'
   ) {
     return 0.3;
   }
@@ -234,6 +236,10 @@ function getMaxTokensByMode(mode) {
 
   if (mode === 'archive_news') {
     return 2200;
+  }
+
+  if (mode === 'news_question') {
+    return 1800;
   }
 
   return 900;
