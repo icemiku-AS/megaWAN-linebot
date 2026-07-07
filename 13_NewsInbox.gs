@@ -31,8 +31,6 @@ const MAX_NEWS_QUEUE_RETRY_COUNT = 3;
 const DEFAULT_WEEKLY_NEWS_DAYS = 7;
 const DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT = 4;
 const MAX_NEWS_QUESTION_ITEMS = 30;
-const MAX_WEEKLY_NEWS_STORY_GROUPS = 20;
-const MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP = 5;
 const NEWS_STORY_FALLBACK_KEY = '未命名故事線';
 
 // NewsUrlQueue 永久性錯誤清單。
@@ -765,12 +763,22 @@ function normalizeClassificationWarning_(value) {
 }
 
 function normalizeStoryKey_(value, itemOrAnalysis) {
-  const rawStoryKey = normalizeStoryKeyText_(value);
-  if (isMeaningfulStoryKey_(rawStoryKey)) return rawStoryKey;
-
   const item = itemOrAnalysis || {};
+  const rawStoryKey = normalizeStoryKeyText_(value);
+  const inferredStoryKey = inferStoryKeyFromNewsItem_(item);
+
+  if (isMeaningfulStoryKey_(rawStoryKey) && !isGenericEntityStoryKey_(rawStoryKey)) {
+    return rawStoryKey;
+  }
+
+  if (inferredStoryKey) return inferredStoryKey;
+
   const specialTopic = normalizeStoryKeyText_(item.specialTopic);
-  if (isMeaningfulStoryKey_(specialTopic)) return specialTopic;
+  if (isMeaningfulStoryKey_(specialTopic) &&
+      isEventLikeStoryKey_(specialTopic) &&
+      !isGenericEntityStoryKey_(specialTopic)) {
+    return specialTopic;
+  }
 
   const matchedEntities = normalizeTextListField_(item.matchedEntities)
     .split(/[、,，/／;；]/)
@@ -779,14 +787,23 @@ function normalizeStoryKey_(value, itemOrAnalysis) {
     })
     .filter(function(entity) {
       return isMeaningfulStoryKey_(entity);
-    });
+  });
 
-  if (matchedEntities.length) {
-    return matchedEntities.slice(0, 2).join('、');
+  const eventLikeEntities = matchedEntities.filter(function(entity) {
+    return isEventLikeStoryKey_(entity) && !isGenericEntityStoryKey_(entity);
+  });
+  if (eventLikeEntities.length) {
+    return eventLikeEntities.slice(0, 2).join('、');
   }
 
   const titleKey = normalizeStoryKeyFromTitle_(item.title);
-  if (titleKey) return titleKey;
+  if (isMeaningfulStoryKey_(titleKey)) return titleKey;
+
+  // 單純人物、公司或平台名容易把同事件拆成 Sony / 索尼 / PlayStation 等碎片；
+  // 只有真的沒有事件線索時，才用實體名當最後前的 fallback。
+  if (matchedEntities.length) {
+    return matchedEntities.slice(0, 2).join('、');
+  }
 
   const categoryKey = normalizeStoryKeyText_(item.category);
   if (isMeaningfulStoryKey_(categoryKey) && categoryKey !== '待分類') return categoryKey;
@@ -818,6 +835,95 @@ function isMeaningfulStoryKey_(value) {
     lowered !== 'none' &&
     lowered !== 'null' &&
     lowered !== 'undefined';
+}
+
+function isEventLikeStoryKey_(value) {
+  const text = normalizeStoryKeyText_(value);
+  if (!isMeaningfulStoryKey_(text)) return false;
+
+  if (text.length >= 8) return true;
+
+  return containsAnyNewsKeyword_(text, [
+    '爭議', '改名', '短缺', '漲價', '裁罰', '訴訟', '反壟斷', '下架',
+    '關閉', '數位化', '取消', '政策', '熱浪', '抵制', '道歉', '判刑',
+    '無罪', '帳號', '實體版', '供應', '併購', '調查', '監管'
+  ]);
+}
+
+function isGenericEntityStoryKey_(value) {
+  const text = normalizeStoryKeyText_(value).replace(/\s+/g, '').toLowerCase();
+  if (!text) return false;
+
+  const genericEntities = [
+    'sony', '索尼', 'playstation', 'ps5', 'ps3', 'psvita', '任天堂', 'nintendo',
+    'xbox', 'google', 'meta', 'anthropic', 'openai', '教育部', '愛爾達',
+    '全家便利商店', '全家', '家樂福', '蔡阿嘎'
+  ];
+
+  return genericEntities.indexOf(text) >= 0;
+}
+
+function inferStoryKeyFromNewsItem_(item) {
+  const text = getNewsItemAuditText_({
+    storyKey: '',
+    title: item && item.title,
+    brief: item && item.brief,
+    outline: item && item.outline,
+    angle: item && item.angle,
+    url: item && item.url
+  });
+
+  if (containsAnyNewsKeyword_(text, ['Sony', '索尼', 'PlayStation', 'PS5', 'PS3', 'PS Vita', 'PSVita']) &&
+      containsAnyNewsKeyword_(text, ['實體', '光碟', '數位', '商店', '帳號', '刪除', '分享', '電影', '下架', '利潤', '用戶', '鑰匙卡', '任天堂'])) {
+    return 'PlayStation 數位化與用戶權益爭議';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['全家', '超商', '便利商店', '大夜', '拿鐵']) &&
+      containsAnyNewsKeyword_(text, ['判刑', '無罪', '高院', '法官', '檢察官', '雇主', '結帳'])) {
+    return '超商大夜拿鐵判決爭議';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['法國熱浪', '歐洲熱浪', '全球暖化', '冷氣']) &&
+      containsAnyNewsKeyword_(text, ['責任', '政治', '美國', '巴黎', '攻防', '千命'])) {
+    return '歐洲熱浪與全球暖化政治';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['Google', 'Android', '歐盟']) &&
+      containsAnyNewsKeyword_(text, ['裁罰', '壟斷', '反壟斷', '法院'])) {
+    return 'Google Android 反壟斷裁罰';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['Meta', 'Vistara', 'DDR4', 'DDR5', '記憶體']) &&
+      containsAnyNewsKeyword_(text, ['自研', '晶片', '回收', '省下'])) {
+    return 'Meta Vistara 記憶體再利用';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['生成式 AI', '生成AI', '遊戲']) &&
+      containsAnyNewsKeyword_(text, ['購買意願', '玩家', '好玩'])) {
+    return '遊戲生成式 AI 消費意願';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['佐藤二朗', '橋本愛']) &&
+      containsAnyNewsKeyword_(text, ['性騷擾', '文春', '富士電視台'])) {
+    return '佐藤二朗性騷擾爭議';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['教育部', '學生', '老師']) &&
+      containsAnyNewsKeyword_(text, ['遲到', '翹課', '警告', '管'])) {
+    return '學生遲到懲處規範爭議';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['蔡阿嘎']) &&
+      containsAnyNewsKeyword_(text, ['抵制', '道歉', '情緒控管'])) {
+    return '蔡阿嘎抵制道歉爭議';
+  }
+
+  if (containsAnyNewsKeyword_(text, ['原神', '鳴潮', '戀與深空']) &&
+      containsAnyNewsKeyword_(text, ['引流', '玩家', '姐妹'])) {
+    return '二遊玩家社群引流爭議';
+  }
+
+  return '';
 }
 
 function normalizeStoryKeyFromTitle_(title) {
@@ -1369,8 +1475,8 @@ function formatWeeklyNewsCompactDigest_(items, queryOptions) {
     '故事線概況：' + formatWeeklyNewsStoryCounts_(storyGroupedResult)
   ];
 
-  const groupsToShow = storyGroupedResult.groups.slice(0, MAX_WEEKLY_NEWS_STORY_GROUPS);
-  groupsToShow.forEach(function(group) {
+  // compact 模式仍完整列出所有故事線與素材；長度交給 LINE 分段層處理。
+  storyGroupedResult.groups.forEach(function(group) {
     const categoryText = formatCategoryListForStoryGroup_(group.items);
     const potentialText = getHighestTopicPotential_(group.items);
     const headerParts = [
@@ -1383,25 +1489,13 @@ function formatWeeklyNewsCompactDigest_(items, queryOptions) {
 
     lines.push('', headerParts.join('｜'));
 
-    group.items.slice(0, MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP).forEach(function(item, index) {
+    group.items.forEach(function(item, index) {
       lines.push(
         (index + 1) + '. ' + (item.title || '未取得標題'),
         '來源：' + (item.url || '')
       );
     });
-
-    if (group.items.length > MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP) {
-      lines.push('還有 ' + (group.items.length - MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP) + ' 則同故事線素材未列出。');
-    }
   });
-
-  if (storyGroupedResult.groups.length > MAX_WEEKLY_NEWS_STORY_GROUPS) {
-    lines.push(
-      '',
-      '還有 ' + (storyGroupedResult.groups.length - MAX_WEEKLY_NEWS_STORY_GROUPS) + ' 條故事線未列出。',
-      '可以用 #本週新聞 詳細、#本週新聞 分類 <分類名> 或 #新聞問答 <問題> 縮小範圍。'
-    );
-  }
 
   return lines.filter(function(line) { return line !== ''; }).join('\n');
 }
@@ -1425,7 +1519,7 @@ function formatWeeklyNewsDiagnosticDigest_(items, queryOptions) {
   const lines = [buildWeeklyNewsDigestHeader_(queryOptions)];
   lines.push('我找到 ' + diagnosticItems.length + ' 則可能需要人工看一下的分類：');
 
-  diagnosticItems.slice(0, 20).forEach(function(result, index) {
+  diagnosticItems.forEach(function(result, index) {
     const item = result.item;
     const suggestion = buildWeeklyNewsDiagnosticSuggestion_(item, result.issues);
     lines.push(
@@ -1438,10 +1532,6 @@ function formatWeeklyNewsDiagnosticDigest_(items, queryOptions) {
       suggestion ? '建議：' + suggestion : ''
     );
   });
-
-  if (diagnosticItems.length > 20) {
-    lines.push('', '還有 ' + (diagnosticItems.length - 20) + ' 則未列出，可縮小時間或分類再查。');
-  }
 
   return lines.filter(function(line) { return line !== ''; }).join('\n');
 }
@@ -1711,15 +1801,9 @@ function compareNewsItemsWithinStoryGroup_(a, b) {
 
 function formatWeeklyNewsStoryCounts_(groupedResult) {
   const groups = (groupedResult && groupedResult.groups) ? groupedResult.groups : [];
-  const visibleGroups = groups.slice(0, 10).map(function(group) {
+  return groups.map(function(group) {
     return group.storyKey + ' ' + group.items.length;
-  });
-
-  if (groups.length > visibleGroups.length) {
-    visibleGroups.push('另 ' + (groups.length - visibleGroups.length) + ' 條故事線');
-  }
-
-  return visibleGroups.join('、') || '無';
+  }).join('、') || '無';
 }
 
 function formatCategoryListForStoryGroup_(items) {
