@@ -2,7 +2,7 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.12.3 News QA Edition
+// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。

@@ -2,7 +2,7 @@
 // 10_TopicFeatures.gs
 // 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
 //
-// 小浣 LINE Bot v1.12.2 News Classification Audit Edition
+// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
 //
 // 設計說明：
 // 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
@@ -12,6 +12,7 @@
 // 5. v1.11.1 起，#統整話題會額外讀取 NewsInbox 的完整 Outline；舊資料沒有 Outline 時退回 Brief。
 // 6. v1.12.1 起，#封存本週新聞 的 prompt 改為週報索引取向，優先保留可回查的事件與名稱。
 // 7. v1.12.2 起，新聞封存會讀取 SpecialTopic / MatchedEntities，協助保留可回查的主角與事件名稱。
+// 8. v1.12.4 起，新聞封存素材文字會包含 StoryKey，協助長期記憶保留事件線。
 // ======================================================
 
 // ======================================================
@@ -339,6 +340,7 @@ function formatNewsInboxItemsForArchivePrompt_(items) {
   return items.map(function(item, index) {
     return [
       '【新聞 ' + (index + 1) + '】',
+      '故事線：' + normalizeStoryKey_(item.storyKey, item),
       '分類：' + (item.category || '待分類'),
       item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
       item.matchedEntities && item.matchedEntities !== '無' ? '辨識實體：' + item.matchedEntities : '',

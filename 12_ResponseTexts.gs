@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.12.3 News QA Edition
+// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -16,13 +16,26 @@
 // 9. v1.12.1 強化 #本週新聞 查詢模式，並讓 #help 聚焦核心新聞工作流。
 // 10. v1.12.2 強化 NewsInbox 分類稽核、#本週新聞 精簡分組與診斷檢視。
 // 11. v1.12.3 新增 #新聞問答，並移除低頻的 #本週新聞 24 小時檢視。
+// 12. v1.12.4 起，#本週新聞 預設按 StoryKey 精簡聚合，長回覆會自動分段。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.12.3 News QA Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-06-24';
+const BOT_CURRENT_VERSION = 'v1.12.4 Weekly News Compact & Story Grouping Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-07-07';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.12.4 Weekly News Compact & Story Grouping Edition',
+    date: '2026-07-07',
+    summary: '#本週新聞 預設改為按故事線精簡整理，NewsInbox 追加 StoryKey，長回覆會自動分段避免被硬裁切。',
+    changes: [
+      '#本週新聞 與 #本週新聞 精簡 預設按 StoryKey / 故事線聚合；#本週新聞 詳細 才展開完整大綱、切角、節目潛力與分類資訊。',
+      'LINE Reply API 長回覆會拆成最多 5 則 text message，同一則仍保留單次 reply API call。',
+      'NewsInbox 最右側追加 StoryKey，Gemini 新聞分析 prompt / schema 會產生 storyKey；舊資料缺欄時會用 SpecialTopic、實體、標題或網址 fallback。',
+      '#本週新聞 診斷 新增 StoryKey 空白、同 URL 重複、標題正規化重複、同故事線跨分類與分類 / 故事線疑似不一致提示。',
+      '本版不修改 Reader Layer、WebTaskQueue、#懶人包、網址版 #節目話題分析 或 NewsUrlQueue 基本背景收件架構。'
+    ]
+  },
   {
     version: 'v1.12.3 News QA Edition',
     date: '2026-06-24',
@@ -365,7 +378,7 @@ function getBotTextWeeklyNewsDiagnosticNoIssue_(queryOptions) {
     scopeParts.push('高潛力');
   }
 
-  return '我檢查了' + scopeParts.join('、') + '的新聞分類，目前沒有明顯的低信心、待分類或特殊主題誤判警告。';
+  return '我檢查了' + scopeParts.join('、') + '的新聞分類，目前沒有明顯的低信心、待分類、故事線異常、重複素材或特殊主題誤判警告。';
 }
 
 function getBotTextWeeklyNews24HourRemoved_() {
