@@ -1,6 +1,6 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.12.3 News QA Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
+// v1.12.4 Weekly News Compact & Story Grouping Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
@@ -14,6 +14,7 @@
 // 8.1 v1.12.1 起，#本週新聞 支援高潛力、詳細、精簡與分類篩選模式。
 // 8.2 v1.12.2 起，NewsInbox 分離主要分類與特殊主題，並追加分類稽核欄位供診斷。
 // 8.3 v1.12.3 起，移除 24 小時檢視，並新增 #新聞問答 以近期 NewsInbox 回答素材問題。
+// 8.4 v1.12.4 起，NewsInbox 追加 StoryKey，#本週新聞 預設改按故事線精簡聚合。
 // 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
 // 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
 // ======================================================
@@ -22,7 +23,7 @@ const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商
 const NEWS_PRIMARY_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '體育娛樂', '公共政策', '待分類'];
 const NEWS_LEGACY_PERSON_CATEGORIES = ['馬斯克', '川普'];
 const NEWS_CATEGORY_DISPLAY_ORDER = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '公共政策', '生活文化', '體育娛樂', '馬斯克', '川普', '待分類'];
-const NEWS_INBOX_AUDIT_HEADERS = ['Outline', 'SpecialTopic', 'CategoryReason', 'CategoryConfidence', 'MatchedEntities', 'ClassificationWarning'];
+const NEWS_INBOX_AUDIT_HEADERS = ['Outline', 'SpecialTopic', 'CategoryReason', 'CategoryConfidence', 'MatchedEntities', 'ClassificationWarning', 'StoryKey'];
 const NEWS_TOPIC_POTENTIAL_VALUES = ['低', '中', '高'];
 const MAX_NEWS_QUEUE_TASKS_PER_RUN = 2;
 const MAX_NEWS_URLS_PER_MESSAGE = 10;
@@ -30,6 +31,9 @@ const MAX_NEWS_QUEUE_RETRY_COUNT = 3;
 const DEFAULT_WEEKLY_NEWS_DAYS = 7;
 const DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT = 4;
 const MAX_NEWS_QUESTION_ITEMS = 30;
+const MAX_WEEKLY_NEWS_STORY_GROUPS = 20;
+const MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP = 5;
+const NEWS_STORY_FALLBACK_KEY = '未命名故事線';
 
 // NewsUrlQueue 永久性錯誤清單。
 //
@@ -194,7 +198,8 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText) {
       categoryReason: analysis.categoryReason,
       categoryConfidence: analysis.categoryConfidence,
       matchedEntities: analysis.matchedEntities,
-      classificationWarning: analysis.classificationWarning
+      classificationWarning: analysis.classificationWarning,
+      storyKey: analysis.storyKey
     });
   } catch (error) {
     console.error('Direct news NewsInbox write failed:', error && error.stack ? error.stack : error);
@@ -458,7 +463,8 @@ function processSingleNewsUrlTask_(task) {
       categoryReason: analysis.categoryReason,
       categoryConfidence: analysis.categoryConfidence,
       matchedEntities: analysis.matchedEntities,
-      classificationWarning: analysis.classificationWarning
+      classificationWarning: analysis.classificationWarning,
+      storyKey: analysis.storyKey
     });
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
@@ -535,6 +541,13 @@ function analyzeNewsUrlWithGemini_(url, webResult) {
     matchedEntities: normalizeMatchedEntities_(result.matchedEntities),
     classificationWarning: normalizeClassificationWarning_(result.classificationWarning)
   };
+  analysis.storyKey = normalizeStoryKey_(result.storyKey, {
+    title: analysis.title,
+    specialTopic: analysis.specialTopic,
+    matchedEntities: analysis.matchedEntities,
+    category: analysis.category,
+    url: url
+  });
 
   if (isLegacyPersonCategory_(rawCategory)) {
     analysis.classificationWarning = appendClassificationWarning_(
@@ -551,15 +564,34 @@ function buildNewsAnalysisPrompt_(url, webResult) {
     '請閱讀以下網頁資料，同時產生 LINE 回覆用短 Brief、NewsInbox 保存用完整 Outline，以及 Podcast「現正熱潮中」所需的分類資料。',
     '請只輸出 JSON，不要加解釋。',
     '',
-    '輸出欄位：title、outline、category、brief、angle、topicPotential、specialTopic、categoryReason、categoryConfidence、matchedEntities、classificationWarning。',
+    '輸出欄位：title、outline、category、brief、angle、topicPotential、specialTopic、categoryReason、categoryConfidence、matchedEntities、classificationWarning、storyKey。',
     'brief 請使用繁體中文，目標整理成 ' + NEWS_INBOX_BRIEF_TARGET_MIN_LENGTH + '～' + NEWS_INBOX_BRIEF_TARGET_MAX_LENGTH + ' 個中文字的自然短簡介，讓群組成員不用點開連結就知道事件核心。',
     '如果原文很短，例如 X / Twitter 貼文、公告或單句消息，brief 可以自然少於 ' + NEWS_INBOX_BRIEF_TARGET_MIN_LENGTH + ' 字，不要硬湊字數。',
     'brief 不要只是重寫標題，也不要使用「本文介紹」、「這篇文章」等空泛開頭。',
     'outline 請使用繁體中文，整理成一段 100～200 個中文字的完整內容大綱。',
     'outline 只描述網頁在講什麼，不要加入標題、條列、Markdown、前言、結語、立場評論或節目建議。',
     '主要分類 category 只能從以下清單選一個：' + NEWS_PRIMARY_CATEGORIES.join('、'),
+    'category 代表新聞最適合被節目拿來討論的核心主軸，不是文章中出現最多的名詞，也不是來源板名。',
+    '分類前請先判斷：「這則新聞最適合被節目拿來討論的核心主軸是什麼？」',
+    '若主軸是 AI、模型、半導體、晶片、硬體、軟體平台、作業系統、資安、科技產品、機器人，歸為「科技與 AI」。',
+    '若主軸是遊戲、動畫、漫畫、VTuber、影音娛樂、作品、主機遊戲、玩家文化、娛樂消費爭議，歸為「ACG娛樂」。',
+    '若主軸是網紅、炎上、社群抵制、輿論擴散、平台討論風向、網路迷因，歸為「社群輿論」。',
+    '若主軸是企業營收、財報、價格策略、供應鏈、投資、併購、市場競爭、品牌經營，歸為「商業財經」。',
+    '若主軸是政府、法律、法院、監管、公共治理、政策攻防、制度規範，歸為「公共政策」。',
+    '若主軸是國際關係、外交、戰爭、國家政治、跨國政治衝突，歸為「國際政治」。',
+    '若主軸是日常消費、生活方式、文化現象、天氣、旅遊、飲食、健康，歸為「生活文化」。',
+    '若主軸是職業運動、選手、球隊、賽事，歸為「體育娛樂」。',
+    '資訊不足或無法可靠判斷時，才歸為「待分類」。',
+    '不要因為來源是 PTT C_Chat 就自動歸為 ACG娛樂；不要因為來源是 PTT Stock 就自動歸為商業財經。',
+    '不要因為標題出現 Apple、Steam、Xbox、PS6、OpenAI、AMD、NVIDIA 等品牌就只看品牌分類；要判斷事件主軸。',
+    '同時符合多個分類時，選最適合節目討論切角的主分類；若分類有猶豫，請在 classificationWarning 寫出疑慮。',
     '不要把「馬斯克」或「川普」當作 category；若文章明確涉及這些人物，請放在 specialTopic。',
     'specialTopic 請填人物、公司、平台、政策、作品、產品或事件名稱；沒有明確特殊主題時請填「無」。',
+    'specialTopic 可以放人物、公司、作品、平台、產品、政策或事件，但不要取代 category。',
+    'storyKey 是同一新聞事件線 / 同一討論主題線的短名稱，不等於分類，也不等於人物標籤；請使用繁體中文，8～24 個中文字為佳。',
+    'storyKey 不要太籠統，例如不要只寫「AI新聞」、「遊戲新聞」、「商業新聞」；不要只寫單一公司名，除非事件本身就是該公司整體事件。',
+    '同一事件後續報導應盡量產生一致或高度接近的 storyKey，例如：全球記憶體短缺與價格上漲、Valve SteamOS 生態系擴張、家樂福台灣品牌改名、戀與深空辱華爭議。',
+    'storyKey 用來聚合同一事件線，不要和 category 混用。',
     'categoryReason 請用 30～60 個中文字說明為什麼選這個主要分類。',
     'categoryConfidence 請填 0 到 1 的數字，越高代表越有把握。',
     'matchedEntities 請列出你從文章中辨識到的主要人物、公司、平台、政策、作品、產品或事件名稱，可用頓號串接；沒有則填「無」。',
@@ -580,7 +612,8 @@ function buildNewsAnalysisPrompt_(url, webResult) {
     '  "categoryReason": "",',
     '  "categoryConfidence": 0.8,',
     '  "matchedEntities": "",',
-    '  "classificationWarning": ""',
+    '  "classificationWarning": "",',
+    '  "storyKey": ""',
     '}',
     '',
     'URL：' + url,
@@ -606,9 +639,10 @@ function buildNewsAnalysisSchema_() {
       categoryReason: { type: 'string' },
       categoryConfidence: { type: 'number' },
       matchedEntities: { type: 'string' },
-      classificationWarning: { type: 'string' }
+      classificationWarning: { type: 'string' },
+      storyKey: { type: 'string' }
     },
-    required: ['title', 'outline', 'category', 'brief', 'angle', 'topicPotential', 'specialTopic', 'categoryReason', 'categoryConfidence', 'matchedEntities', 'classificationWarning']
+    required: ['title', 'outline', 'category', 'brief', 'angle', 'topicPotential', 'specialTopic', 'categoryReason', 'categoryConfidence', 'matchedEntities', 'classificationWarning', 'storyKey']
   };
 }
 
@@ -730,6 +764,97 @@ function normalizeClassificationWarning_(value) {
   return normalizeTextListField_(value).trim();
 }
 
+function normalizeStoryKey_(value, itemOrAnalysis) {
+  const rawStoryKey = normalizeStoryKeyText_(value);
+  if (isMeaningfulStoryKey_(rawStoryKey)) return rawStoryKey;
+
+  const item = itemOrAnalysis || {};
+  const specialTopic = normalizeStoryKeyText_(item.specialTopic);
+  if (isMeaningfulStoryKey_(specialTopic)) return specialTopic;
+
+  const matchedEntities = normalizeTextListField_(item.matchedEntities)
+    .split(/[、,，/／;；]/)
+    .map(function(entity) {
+      return normalizeStoryKeyText_(entity);
+    })
+    .filter(function(entity) {
+      return isMeaningfulStoryKey_(entity);
+    });
+
+  if (matchedEntities.length) {
+    return matchedEntities.slice(0, 2).join('、');
+  }
+
+  const titleKey = normalizeStoryKeyFromTitle_(item.title);
+  if (titleKey) return titleKey;
+
+  const categoryKey = normalizeStoryKeyText_(item.category);
+  if (isMeaningfulStoryKey_(categoryKey) && categoryKey !== '待分類') return categoryKey;
+
+  const urlKey = normalizeStoryKeyFromUrl_(item.url);
+  if (urlKey) return urlKey;
+
+  return NEWS_STORY_FALLBACK_KEY;
+}
+
+function normalizeStoryKeyText_(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/^故事線[：:]/, '')
+    .replace(/^StoryKey[：:]/i, '')
+    .replace(/^["'「『]+|["'」』]+$/g, '')
+    .trim()
+    .slice(0, 40);
+}
+
+function isMeaningfulStoryKey_(value) {
+  const text = normalizeStoryKeyText_(value);
+  const lowered = text.toLowerCase();
+  return !!text &&
+    text !== '無' &&
+    text !== '沒有' &&
+    text !== '待分類' &&
+    text !== NEWS_STORY_FALLBACK_KEY &&
+    lowered !== 'none' &&
+    lowered !== 'null' &&
+    lowered !== 'undefined';
+}
+
+function normalizeStoryKeyFromTitle_(title) {
+  const cleaned = String(title || '')
+    .replace(/^Re[：:]\s*/i, '')
+    .replace(/\[(新聞|閒聊|討論|情報|問卦|公告|心得)\]/g, '')
+    .replace(/【(新聞|閒聊|討論|情報|問卦|公告|心得)】/g, '')
+    .replace(/[「」『』"'“”]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!cleaned || /^https?:\/\//i.test(cleaned)) return '';
+  return cleaned.slice(0, 24);
+}
+
+function normalizeStoryKeyFromUrl_(url) {
+  const match = String(url || '').match(/^https?:\/\/([^\/?#]+)(\/[^?#]*)?/i);
+  if (!match) return '';
+
+  const host = String(match[1] || '').replace(/^www\./i, '').toLowerCase();
+  const path = String(match[2] || '')
+    .split('/')
+    .map(function(part) {
+      try {
+        return decodeURIComponent(part);
+      } catch (error) {
+        return part;
+      }
+    })
+    .filter(function(part) {
+      return part && !/^\d+$/.test(part);
+    });
+
+  const pathKey = path.length ? path[0].replace(/[-_]+/g, ' ').trim().slice(0, 20) : '';
+  return (host + (pathKey ? ' / ' + pathKey : '')).slice(0, 40);
+}
+
 function normalizeTextListField_(value) {
   if (Array.isArray(value)) {
     return value.map(function(item) { return String(item || '').trim(); })
@@ -761,7 +886,8 @@ function auditNewsClassification_(analysis, webResult, url) {
     categoryReason: analysis.categoryReason || '',
     categoryConfidence: analysis.categoryConfidence,
     matchedEntities: analysis.matchedEntities || '無',
-    classificationWarning: analysis.classificationWarning || ''
+    classificationWarning: analysis.classificationWarning || '',
+    storyKey: normalizeStoryKey_(analysis.storyKey, analysis)
   };
 
   const auditText = [
@@ -778,6 +904,9 @@ function auditNewsClassification_(analysis, webResult, url) {
   if (containsAnyNewsKeyword_(topicText, ['馬斯克', 'Musk', 'Elon', 'Tesla', '特斯拉', 'SpaceX']) &&
       !containsAnyNewsKeyword_(auditText, ['馬斯克', 'Musk', 'Elon', 'Tesla', '特斯拉', 'SpaceX', 'X 平台', 'x.com'])) {
     audited.specialTopic = removeSpecialTopicTerms_(audited.specialTopic, ['馬斯克', 'Musk', 'Elon', 'Tesla', '特斯拉', 'SpaceX']);
+    if (containsAnyNewsKeyword_(audited.storyKey, ['馬斯克', 'Musk', 'Elon', 'Tesla', '特斯拉', 'SpaceX'])) {
+      audited.storyKey = normalizeStoryKey_('', audited);
+    }
     if (audited.category === '馬斯克') audited.category = '待分類';
     audited.classificationWarning = appendClassificationWarning_(audited.classificationWarning, '特殊主題疑似誤判：內容未出現馬斯克相關關鍵字');
   }
@@ -785,6 +914,9 @@ function auditNewsClassification_(analysis, webResult, url) {
   if (containsAnyNewsKeyword_(topicText, ['川普', 'Trump', 'Donald Trump', 'MAGA']) &&
       !containsAnyNewsKeyword_(auditText, ['川普', 'Trump', 'Donald Trump', '白宮', 'MAGA', '共和黨'])) {
     audited.specialTopic = removeSpecialTopicTerms_(audited.specialTopic, ['川普', 'Trump', 'Donald Trump', 'MAGA']);
+    if (containsAnyNewsKeyword_(audited.storyKey, ['川普', 'Trump', 'Donald Trump', 'MAGA'])) {
+      audited.storyKey = normalizeStoryKey_('', audited);
+    }
     if (audited.category === '川普') audited.category = '待分類';
     audited.classificationWarning = appendClassificationWarning_(audited.classificationWarning, '特殊主題疑似誤判：內容未出現川普相關關鍵字');
   }
@@ -846,7 +978,8 @@ function appendNewsInboxRow_(item) {
     CategoryReason: truncateForSheet(item.categoryReason || ''),
     CategoryConfidence: item.categoryConfidence === '' || typeof item.categoryConfidence === 'undefined' ? '' : item.categoryConfidence,
     MatchedEntities: truncateForSheet(item.matchedEntities || '無'),
-    ClassificationWarning: truncateForSheet(item.classificationWarning || '')
+    ClassificationWarning: truncateForSheet(item.classificationWarning || ''),
+    StoryKey: truncateForSheet(normalizeStoryKey_(item.storyKey, item))
   };
 
   // 依實際表頭對位，避免舊 Sheet 補上 Outline 後因欄位位置不同而寫錯資料。
@@ -1024,6 +1157,7 @@ function formatNewsItemsForQuestion_(items) {
     .map(function(item, index) {
       return [
         '【素材 ' + (index + 1) + '】',
+        '故事線：' + normalizeStoryKey_(item.storyKey, item),
         '分類：' + (item.category || '待分類'),
         item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
         item.matchedEntities && item.matchedEntities !== '無' ? '辨識實體：' + item.matchedEntities : '',
@@ -1044,7 +1178,7 @@ function parseWeeklyNewsQueryOptions_(userPrompt) {
   const text = String(userPrompt || '').replace(/\s+/g, ' ').trim();
   const options = {
     days: DEFAULT_WEEKLY_NEWS_DAYS,
-    viewMode: 'default',
+    viewMode: 'compact',
     onlyHighPotential: false,
     categoryFilter: '',
     rawText: text
@@ -1133,7 +1267,8 @@ function getRecentNewsInboxItems_(conversationId, days) {
   const cutoffTime = new Date().getTime() - days * 24 * 60 * 60 * 1000;
 
   return values.map(function(row) {
-    return {
+    const rawStoryKey = getRowValueByHeader_(row, headerMap, 'StoryKey');
+    const item = {
       createdAt: getRowValueByHeader_(row, headerMap, 'CreatedAt'),
       conversationId: getRowValueByHeader_(row, headerMap, 'ConversationId'),
       url: getRowValueByHeader_(row, headerMap, 'Url'),
@@ -1148,8 +1283,12 @@ function getRecentNewsInboxItems_(conversationId, days) {
       categoryConfidence: getRowValueByHeader_(row, headerMap, 'CategoryConfidence'),
       matchedEntities: getRowValueByHeader_(row, headerMap, 'MatchedEntities'),
       classificationWarning: getRowValueByHeader_(row, headerMap, 'ClassificationWarning'),
+      storyKeyRaw: rawStoryKey,
+      storyKeyWasMissing: !String(rawStoryKey || '').trim(),
       status: getRowValueByHeader_(row, headerMap, 'Status')
     };
+    item.storyKey = normalizeStoryKey_(rawStoryKey, item);
+    return item;
   }).filter(function(item) {
     const createdAtTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
     return item.conversationId === conversationId &&
@@ -1206,6 +1345,8 @@ function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
       lines.push(
         (index + 1) + '. ' + (item.title || '未取得標題'),
         '來源：' + (item.url || ''),
+        '故事線：' + normalizeStoryKey_(item.storyKey, item),
+        '主分類：' + (item.category || '待分類'),
         '內容大綱：' + (item.outline || item.brief || '無'),
         item.angle ? '切角：' + item.angle : '',
         '節目潛力：' + (item.topicPotential || '中'),
@@ -1218,31 +1359,60 @@ function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
 }
 
 function formatWeeklyNewsCompactDigest_(items, queryOptions) {
-  const groupedResult = groupNewsItemsByCategory_(items);
+  const categoryGroupedResult = groupNewsItemsByCategory_(items);
+  const storyGroupedResult = groupNewsItemsByStoryKey_(items);
   const lines = [
     buildWeeklyNewsDigestHeader_(queryOptions),
-    '分類概況：' + formatWeeklyNewsCategoryCounts_(groupedResult)
+    '',
+    '素材概況：共 ' + (items || []).length + ' 則',
+    '分類概況：' + formatWeeklyNewsCategoryCounts_(categoryGroupedResult),
+    '故事線概況：' + formatWeeklyNewsStoryCounts_(storyGroupedResult)
   ];
 
-  groupedResult.categories.forEach(function(category) {
-    lines.push('', '【' + category + '】' + groupedResult.grouped[category].length + ' 則');
-    groupedResult.grouped[category].forEach(function(item, index) {
+  const groupsToShow = storyGroupedResult.groups.slice(0, MAX_WEEKLY_NEWS_STORY_GROUPS);
+  groupsToShow.forEach(function(group) {
+    const categoryText = formatCategoryListForStoryGroup_(group.items);
+    const potentialText = getHighestTopicPotential_(group.items);
+    const headerParts = [
+      '【' + group.storyKey + '】' + group.items.length + ' 則',
+      potentialText ? '最高潛力：' + potentialText : '',
+      categoryText
+    ].filter(function(part) {
+      return String(part || '').trim() !== '';
+    });
+
+    lines.push('', headerParts.join('｜'));
+
+    group.items.slice(0, MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP).forEach(function(item, index) {
       lines.push(
         (index + 1) + '. ' + (item.title || '未取得標題'),
         '來源：' + (item.url || '')
       );
     });
+
+    if (group.items.length > MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP) {
+      lines.push('還有 ' + (group.items.length - MAX_WEEKLY_NEWS_ITEMS_PER_STORY_GROUP) + ' 則同故事線素材未列出。');
+    }
   });
+
+  if (storyGroupedResult.groups.length > MAX_WEEKLY_NEWS_STORY_GROUPS) {
+    lines.push(
+      '',
+      '還有 ' + (storyGroupedResult.groups.length - MAX_WEEKLY_NEWS_STORY_GROUPS) + ' 條故事線未列出。',
+      '可以用 #本週新聞 詳細、#本週新聞 分類 <分類名> 或 #新聞問答 <問題> 縮小範圍。'
+    );
+  }
 
   return lines.filter(function(line) { return line !== ''; }).join('\n');
 }
 
 function formatWeeklyNewsDiagnosticDigest_(items, queryOptions) {
   // 診斷模式只讀 NewsInbox 現有欄位，不呼叫 LLM；用來快速找出需要人工檢查的分類結果。
+  const diagnosticContext = buildWeeklyNewsDiagnosticContext_(items);
   const diagnosticItems = (items || []).map(function(item) {
     return {
       item: item,
-      issues: getWeeklyNewsDiagnosticIssues_(item)
+      issues: getWeeklyNewsDiagnosticIssues_(item, diagnosticContext)
     };
   }).filter(function(result) {
     return result.issues.length > 0;
@@ -1261,6 +1431,7 @@ function formatWeeklyNewsDiagnosticDigest_(items, queryOptions) {
     lines.push(
       '',
       (index + 1) + '. ' + (item.title || '未取得標題'),
+      '故事線：' + normalizeStoryKey_(item.storyKey, item),
       '目前分類：' + (item.category || '待分類') + (item.specialTopic && item.specialTopic !== '無' ? ' / 特殊主題：' + item.specialTopic : ''),
       '來源：' + (item.url || ''),
       '問題：' + result.issues.join('；'),
@@ -1275,16 +1446,67 @@ function formatWeeklyNewsDiagnosticDigest_(items, queryOptions) {
   return lines.filter(function(line) { return line !== ''; }).join('\n');
 }
 
-function getWeeklyNewsDiagnosticIssues_(item) {
+function buildWeeklyNewsDiagnosticContext_(items) {
+  const context = {
+    urlCounts: {},
+    titleCounts: {},
+    storyCategoryMap: {}
+  };
+
+  (items || []).forEach(function(item) {
+    const normalizedUrl = normalizeNewsUrlForDuplicateCheck_(item.url);
+    if (normalizedUrl) {
+      context.urlCounts[normalizedUrl] = (context.urlCounts[normalizedUrl] || 0) + 1;
+    }
+
+    const normalizedTitle = normalizeNewsTitleForDuplicateCheck_(item.title);
+    if (normalizedTitle) {
+      context.titleCounts[normalizedTitle] = (context.titleCounts[normalizedTitle] || 0) + 1;
+    }
+
+    const storyKey = normalizeStoryKey_(item.storyKey, item);
+    if (!context.storyCategoryMap[storyKey]) {
+      context.storyCategoryMap[storyKey] = {};
+    }
+    context.storyCategoryMap[storyKey][item.category || '待分類'] = true;
+  });
+
+  return context;
+}
+
+function getWeeklyNewsDiagnosticIssues_(item, diagnosticContext) {
   const issues = [];
+  const context = diagnosticContext || buildWeeklyNewsDiagnosticContext_([item]);
   const category = String(item.category || '').trim() || '待分類';
   const confidence = normalizeCategoryConfidence_(item.categoryConfidence);
   const warning = String(item.classificationWarning || '').trim();
   const auditText = getNewsItemAuditText_(item);
-  const topicText = [category, item.specialTopic || '', item.matchedEntities || ''].join(' ');
+  const storyKey = normalizeStoryKey_(item.storyKey, item);
+  const topicText = [category, item.specialTopic || '', item.matchedEntities || '', storyKey].join(' ');
+  const normalizedUrl = normalizeNewsUrlForDuplicateCheck_(item.url);
+  const normalizedTitle = normalizeNewsTitleForDuplicateCheck_(item.title);
+  const storyCategories = context.storyCategoryMap[storyKey]
+    ? Object.keys(context.storyCategoryMap[storyKey])
+    : [];
 
   if (!item.title || (!item.brief && !item.outline)) {
     issues.push('標題或內容摘要不足');
+  }
+
+  if (item.storyKeyWasMissing || storyKey === NEWS_STORY_FALLBACK_KEY) {
+    issues.push('StoryKey 空白或使用舊資料 fallback');
+  }
+
+  if (normalizedUrl && context.urlCounts[normalizedUrl] > 1) {
+    issues.push('同 URL 重複入庫');
+  }
+
+  if (normalizedTitle && context.titleCounts[normalizedTitle] > 1) {
+    issues.push('標題正規化後重複，疑似重複素材');
+  }
+
+  if (storyCategories.length > 1) {
+    issues.push('同故事線跨多個分類，請確認是否合理：' + storyCategories.join(' / '));
   }
 
   if (category === '待分類') {
@@ -1297,6 +1519,18 @@ function getWeeklyNewsDiagnosticIssues_(item) {
 
   if (warning) {
     issues.push('分類警告：' + warning);
+  }
+
+  const storyGuessedCategory = guessNewsCategoryByKeywords_({
+    title: storyKey,
+    brief: '',
+    outline: '',
+    angle: '',
+    url: ''
+  });
+
+  if (storyGuessedCategory && storyGuessedCategory !== category) {
+    issues.push('category 和 StoryKey 可能不一致，請確認是否應為「' + storyGuessedCategory + '」');
   }
 
   if (containsAnyNewsKeyword_(topicText, ['馬斯克', 'Musk', 'Elon', 'Tesla', '特斯拉', 'SpaceX']) &&
@@ -1328,30 +1562,69 @@ function buildWeeklyNewsDiagnosticSuggestion_(item, issues) {
     suggestions.push('可確認 SpecialTopic / MatchedEntities 是否誤帶人物或公司名稱');
   }
 
+  if (issues.join('；').indexOf('StoryKey') >= 0 || issues.join('；').indexOf('故事線') >= 0) {
+    suggestions.push('可補上更穩定的故事線名稱，避免同事件被拆散');
+  }
+
   return suggestions.join('；');
 }
 
 function guessNewsCategoryByKeywords_(item) {
   const text = getNewsItemAuditText_(item);
-  if (containsAnyNewsKeyword_(text, ['AI', '人工智慧', '模型', 'OpenAI', 'Gemini', '晶片', '半導體', '機器人'])) return '科技與 AI';
-  if (containsAnyNewsKeyword_(text, ['社群', '平台', 'YouTube', 'TikTok', 'Instagram', 'Threads', 'X 平台', '網紅', '炎上'])) return '社群輿論';
-  if (containsAnyNewsKeyword_(text, ['動畫', '漫畫', '遊戲', '電影', '影集', 'ACG', 'VTuber', '作品'])) return 'ACG娛樂';
-  if (containsAnyNewsKeyword_(text, ['股價', '財報', '投資', '併購', '營收', '商業', '市場'])) return '商業財經';
+  if (containsAnyNewsKeyword_(text, ['法院', '訴訟', '反壟斷', '調查', '監管', '政策', '法案', '政府', '規範', '個資'])) return '公共政策';
+  if (containsAnyNewsKeyword_(text, ['AI', '人工智慧', '模型', 'OpenAI', 'Gemini', '晶片', '半導體', '機器人', 'RAM', 'DRAM', 'HBM', 'NAND', '記憶體', '美光', '海力士', '三星', 'Micron', 'AMD', 'NVIDIA'])) return '科技與 AI';
+  if (containsAnyNewsKeyword_(text, ['炎上', '抵制', '道歉', '網友', '社群熱議', '社群', 'YouTube', 'TikTok', 'Instagram', 'Threads', 'X 平台', '網紅', '迷因'])) return '社群輿論';
+  if (containsAnyNewsKeyword_(text, ['Steam', 'SteamOS', 'Valve', 'Xbox', 'PS6', 'PlayStation', 'GTA', '遊戲平台', '動畫', '漫畫', '遊戲', '電影', '影集', 'ACG', 'VTuber', '作品'])) return 'ACG娛樂';
+  if (containsAnyNewsKeyword_(text, ['家樂福', '量販', '超市', '通路', '品牌改名', '股價', '財報', '投資', '併購', '營收', '商業', '市場', '供應鏈', '價格'])) return '商業財經';
   if (containsAnyNewsKeyword_(text, ['川普', '白宮', '國會', '中國', '美國', '歐盟', '戰爭', '外交'])) return '國際政治';
-  if (containsAnyNewsKeyword_(text, ['政策', '法案', '監管', '政府', '法院', '規範', '個資'])) return '公共政策';
   if (containsAnyNewsKeyword_(text, ['體育', '棒球', '籃球', '足球', '賽事', '選手'])) return '體育娛樂';
-  if (containsAnyNewsKeyword_(text, ['生活', '文化', '消費', '旅遊', '美食', '健康'])) return '生活文化';
+  if (containsAnyNewsKeyword_(text, ['生活', '文化', '消費', '旅遊', '美食', '健康', '天氣', '熱浪', '冷氣'])) return '生活文化';
   return '';
 }
 
 function getNewsItemAuditText_(item) {
   return [
+    item.storyKey || '',
     item.title || '',
     item.brief || '',
     item.outline || '',
     item.angle || '',
     item.url || ''
   ].join('\n');
+}
+
+function normalizeNewsUrlForDuplicateCheck_(url) {
+  const raw = String(url || '')
+    .trim()
+    .toLowerCase()
+    .replace(/#.*$/, '');
+  if (!raw) return '';
+
+  const parts = raw.split('?');
+  const baseUrl = parts[0].replace(/\/$/, '');
+  const queryText = parts.slice(1).join('?');
+  if (!queryText) return baseUrl;
+
+  const keptParams = queryText.split('&').filter(function(param) {
+    const key = String(param || '').split('=')[0];
+    return key &&
+      key.indexOf('utm_') !== 0 &&
+      key !== 'fbclid' &&
+      key !== 'gclid';
+  });
+
+  return keptParams.length ? baseUrl + '?' + keptParams.sort().join('&') : baseUrl;
+}
+
+function normalizeNewsTitleForDuplicateCheck_(title) {
+  return String(title || '')
+    .replace(/^Re[：:]\s*/ig, '')
+    .replace(/\[(新聞|閒聊|討論|情報|問卦|公告|心得)\]/g, '')
+    .replace(/【(新聞|閒聊|討論|情報|問卦|公告|心得)】/g, '')
+    .replace(/[　\s]/g, '')
+    .replace(/[，,。．.！!？?：:；;、／/\\｜|()（）\[\]【】「」『』"'“”‘’\-＿_~～]/g, '')
+    .toLowerCase()
+    .trim();
 }
 
 function groupNewsItemsByCategory_(items) {
@@ -1375,6 +1648,100 @@ function formatWeeklyNewsCategoryCounts_(groupedResult) {
   return groupedResult.categories.map(function(category) {
     return category + ' ' + groupedResult.grouped[category].length;
   }).join('、');
+}
+
+function groupNewsItemsByStoryKey_(items) {
+  const grouped = {};
+
+  (items || []).slice().forEach(function(item) {
+    const storyKey = normalizeStoryKey_(item.storyKey, item);
+    if (!grouped[storyKey]) {
+      grouped[storyKey] = {
+        storyKey: storyKey,
+        items: [],
+        highPotentialCount: 0,
+        latestTime: 0
+      };
+    }
+
+    const group = grouped[storyKey];
+    group.items.push(item);
+    if (item.topicPotential === '高') group.highPotentialCount++;
+
+    const itemTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
+    if (!isNaN(itemTime)) group.latestTime = Math.max(group.latestTime, itemTime);
+  });
+
+  const groups = Object.keys(grouped).map(function(storyKey) {
+    const group = grouped[storyKey];
+    group.items = group.items.slice().sort(compareNewsItemsWithinStoryGroup_);
+    return group;
+  }).sort(compareNewsStoryGroupsForDisplay_);
+
+  return {
+    grouped: grouped,
+    groups: groups
+  };
+}
+
+function compareNewsStoryGroupsForDisplay_(a, b) {
+  const highPotentialCompare = (b.highPotentialCount || 0) - (a.highPotentialCount || 0);
+  if (highPotentialCompare !== 0) return highPotentialCompare;
+
+  const countCompare = (b.items ? b.items.length : 0) - (a.items ? a.items.length : 0);
+  if (countCompare !== 0) return countCompare;
+
+  const timeCompare = (b.latestTime || 0) - (a.latestTime || 0);
+  if (timeCompare !== 0) return timeCompare;
+
+  return String(a.storyKey || '').localeCompare(String(b.storyKey || ''), 'zh-Hant');
+}
+
+function compareNewsItemsWithinStoryGroup_(a, b) {
+  const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+  const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+  const timeCompare = (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
+  if (timeCompare !== 0) return timeCompare;
+
+  const categoryCompare = getNewsCategoryOrderIndex_(a.category) - getNewsCategoryOrderIndex_(b.category);
+  if (categoryCompare !== 0) return categoryCompare;
+
+  return String(a.title || '').localeCompare(String(b.title || ''), 'zh-Hant');
+}
+
+function formatWeeklyNewsStoryCounts_(groupedResult) {
+  const groups = (groupedResult && groupedResult.groups) ? groupedResult.groups : [];
+  const visibleGroups = groups.slice(0, 10).map(function(group) {
+    return group.storyKey + ' ' + group.items.length;
+  });
+
+  if (groups.length > visibleGroups.length) {
+    visibleGroups.push('另 ' + (groups.length - visibleGroups.length) + ' 條故事線');
+  }
+
+  return visibleGroups.join('、') || '無';
+}
+
+function formatCategoryListForStoryGroup_(items) {
+  const groupedResult = groupNewsItemsByCategory_(items || []);
+  return groupedResult.categories.join(' / ');
+}
+
+function getHighestTopicPotential_(items) {
+  const order = { '高': 3, '中': 2, '低': 1 };
+  let best = '';
+  let bestScore = 0;
+
+  (items || []).forEach(function(item) {
+    const value = item.topicPotential || '中';
+    const score = order[value] || 0;
+    if (score > bestScore) {
+      best = value;
+      bestScore = score;
+    }
+  });
+
+  return best;
 }
 
 function compareNewsItemsForDisplay_(a, b) {
@@ -1478,6 +1845,7 @@ function formatNewsItemsForMemoryBridge_(items) {
   return items.slice(0, 20).map(function(item, index) {
     return [
       '【本週新聞 ' + (index + 1) + '】',
+      '故事線：' + normalizeStoryKey_(item.storyKey, item),
       '分類：' + (item.category || '待分類'),
       item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
       '標題：' + (item.title || '未取得標題'),
@@ -1660,6 +2028,7 @@ function getRecentNewsInboxTextForTopics_(conversationId, days, limit) {
     return [
       '【NewsInbox ' + (index + 1) + '】',
       '標題：' + (item.title || '未取得標題'),
+      '故事線：' + normalizeStoryKey_(item.storyKey, item),
       '分類：' + (item.category || '待分類'),
       item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
       '網址：' + (item.url || ''),
@@ -1698,7 +2067,8 @@ function handleManualNewsSupplement_(event, conversationId, userText) {
     categoryReason: parsed.categoryReason || '',
     categoryConfidence: parsed.categoryConfidence,
     matchedEntities: parsed.matchedEntities || '無',
-    classificationWarning: parsed.classificationWarning || ''
+    classificationWarning: parsed.classificationWarning || '',
+    storyKey: parsed.storyKey
   });
 
   return getBotTextManualNewsSupplementSaved_(parsed);
@@ -1726,7 +2096,14 @@ function parseManualNewsSupplement_(userText) {
       categoryReason: normalizeCategoryReason_(result.categoryReason),
       categoryConfidence: normalizeCategoryConfidence_(result.categoryConfidence),
       matchedEntities: normalizeMatchedEntities_(result.matchedEntities),
-      classificationWarning: normalizeClassificationWarning_(result.classificationWarning)
+      classificationWarning: normalizeClassificationWarning_(result.classificationWarning),
+      storyKey: normalizeStoryKey_(result.storyKey, {
+        title: result.title,
+        specialTopic: result.specialTopic,
+        matchedEntities: result.matchedEntities,
+        category: result.category,
+        url: extractUrls(userText)[0] || ''
+      })
     };
   } catch (error) {
     console.error('parseManualNewsSupplement_ failed:', error && error.stack ? error.stack : error);
@@ -1740,7 +2117,12 @@ function parseManualNewsSupplement_(userText) {
       categoryReason: '',
       categoryConfidence: '',
       matchedEntities: '無',
-      classificationWarning: '人工補充未經完整分類稽核'
+      classificationWarning: '人工補充未經完整分類稽核',
+      storyKey: normalizeStoryKey_('', {
+        title: userText,
+        category: '待分類',
+        url: extractUrls(userText)[0] || ''
+      })
     };
   }
 }
@@ -1758,6 +2140,7 @@ function buildManualNewsSupplementPrompt_(userText) {
     'categoryConfidence 請填 0 到 1 的數字。',
     'matchedEntities 請列出主要人物、公司、平台、政策、作品、產品或事件名稱；沒有則填「無」。',
     'classificationWarning 正常請填空字串；若分類不確定、素材不足或疑似錯分，請寫簡短警告。',
+    'storyKey 請填同一新聞事件線 / 同一討論主題線的短名稱，使用繁體中文，8～24 個中文字為佳；不要只填分類或單一人物。',
     'brief 請以 30～50 個中文字整理成自然短簡介；如果素材本身很短，可以少於 30 字，不要硬湊字數。',
     '',
     '使用者輸入：',

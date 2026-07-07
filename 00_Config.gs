@@ -2,7 +2,7 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.12.3 News QA Edition
+// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
@@ -10,10 +10,16 @@
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複；若新增版本相容層，必須在註解中明確說明用途。
 // 4. v1.10.9 新增 FxTwitter API endpoint 設定，供 X / Twitter 單篇貼文 reader 使用。
 // 5. v1.12.3 新增 #新聞問答 trigger，讓使用者可直接詢問近期 NewsInbox 素材。
+// 6. v1.12.4 新增 LINE 長回覆分段常數，避免週新聞回覆被單則硬裁切。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
+
+// LINE text message 官方上限為 5000 字；程式端留 100 字安全空間。
+// Reply API 一次最多可送 5 則訊息，長回覆仍維持單次 reply API call。
+const LINE_TEXT_MESSAGE_MAX_LENGTH = 4900;
+const LINE_REPLY_MAX_MESSAGE_COUNT = 5;
 
 // FxTwitter API：v1.10.9 起用於讀取 X / Twitter 單篇 status 貼文。
 // 使用方式：FXTWITTER_API_STATUS_ENDPOINT_PREFIX + statusId

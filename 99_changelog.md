@@ -1,3 +1,14 @@
+2026-07-07
+v1.12.4 Weekly News Compact & Story Grouping Edition
+- #本週新聞 預設改為 compact，按 StoryKey / 故事線聚合同一事件線素材；#本週新聞 精簡 等同預設，#本週新聞 詳細 才展開完整大綱、切角、節目潛力與分類。
+- LINE 長回覆會在單次 Reply API call 內自動拆成最多 5 則 text message，每則使用 4900 字安全上限，避免週新聞被單則硬裁切。
+- NewsInbox 最右側追加 StoryKey；Gemini 新聞分析 prompt / schema 新增 storyKey，舊資料缺欄時會用 SpecialTopic、MatchedEntities、標題、分類或網址 fallback。
+- #本週新聞 診斷 新增 StoryKey 空白、同 URL 重複、標題正規化重複、同故事線跨分類與分類 / 故事線疑似不一致提示。
+- 強化分類 prompt 與診斷 keyword fallback；#新聞問答、#統整話題 與 #封存本週新聞 素材文字會帶入 StoryKey。
+- 本版不修改 Reader Layer、WebTaskQueue、#懶人包、網址版 #節目話題分析、NewsUrlQueue 基本背景收件架構，也不新增 Node.js / npm / 自架伺服器架構。
+
+// ==================================================
+
 2026-06-24
 v1.12.3 News QA Edition
 - 新增 #新聞問答 <問題>，可根據最近 7 天 NewsInbox 素材回答新聞問題，並附完整原文網址。

@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.12.3 News QA Edition
+// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
@@ -11,6 +11,7 @@
 // 4. v1.12.1 起，#help 聚焦核心新聞入口，低頻功能移到 #help 進階。
 // 5. v1.12.2 起，#help 進階列出 #本週新聞 診斷，用來檢查分類稽核欄位。
 // 6. v1.12.3 起，#新聞問答 讀取近期 NewsInbox 素材並回覆可追溯來源。
+// 7. v1.12.4 起，LINE 長回覆會在單次 Reply API payload 內自動拆成最多 5 則文字訊息。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -147,11 +148,17 @@ function getConversationId(event) {
 
 function replyToLine(replyToken, text) {
   const token = getRequiredScriptProperty_('LINE_CHANNEL_ACCESS_TOKEN');
-  const safeText = String(text || '').slice(0, 4500);
+  const messageTexts = splitTextForLineMessages_(text);
+  const safeMessageTexts = messageTexts.length ? messageTexts : [getBotTextEmptyReply_()];
 
   const payload = {
     replyToken: replyToken,
-    messages: [{ type: 'text', text: safeText || getBotTextEmptyReply_() }]
+    messages: safeMessageTexts.slice(0, LINE_REPLY_MAX_MESSAGE_COUNT).map(function(messageText) {
+      return {
+        type: 'text',
+        text: String(messageText || getBotTextEmptyReply_()).slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH)
+      };
+    })
   };
 
   const options = {
@@ -168,6 +175,92 @@ function replyToLine(replyToken, text) {
   if (statusCode < 200 || statusCode >= 300) {
     console.error('LINE Reply API error:', statusCode, response.getContentText());
   }
+}
+
+function splitTextForLineMessages_(text) {
+  const rawText = String(text || '').trim();
+  if (!rawText) return [];
+
+  const maxLength = LINE_TEXT_MESSAGE_MAX_LENGTH;
+  const maxCount = LINE_REPLY_MAX_MESSAGE_COUNT;
+  const omittedNotice = '內容太多，後面已省略。可以用 #本週新聞 分類 <分類名>、#本週新聞 詳細 或 #新聞問答 追問。';
+  const messages = [];
+  let remainingText = rawText;
+
+  while (remainingText && messages.length < maxCount) {
+    if (remainingText.length <= maxLength) {
+      messages.push(remainingText);
+      remainingText = '';
+      break;
+    }
+
+    const splitIndex = findLineMessageSplitIndex_(remainingText, maxLength);
+    const chunk = remainingText.slice(0, splitIndex).trim();
+    messages.push(chunk || remainingText.slice(0, maxLength).trim());
+    remainingText = remainingText.slice(splitIndex).trim();
+  }
+
+  const nonEmptyMessages = messages.filter(function(message) {
+    return String(message || '').trim() !== '';
+  });
+
+  if (remainingText && nonEmptyMessages.length) {
+    const lastIndex = nonEmptyMessages.length - 1;
+    const suffix = '\n\n' + omittedNotice;
+    let lastMessage = nonEmptyMessages[lastIndex];
+
+    // 第 5 則如果已接近上限，先裁出空間再補省略提示，避免 LINE payload 被拒。
+    if (lastMessage.length + suffix.length > maxLength) {
+      lastMessage = lastMessage.slice(0, Math.max(0, maxLength - suffix.length)).trim();
+    }
+
+    nonEmptyMessages[lastIndex] = (lastMessage ? lastMessage + suffix : omittedNotice).slice(0, maxLength);
+  }
+
+  return nonEmptyMessages.slice(0, maxCount);
+}
+
+function findLineMessageSplitIndex_(text, maxLength) {
+  const safeText = String(text || '');
+  const safeMax = Math.max(1, Number(maxLength) || LINE_TEXT_MESSAGE_MAX_LENGTH);
+  const minSemanticSplitIndex = Math.min(1200, Math.floor(safeMax * 0.35));
+
+  const semanticPatterns = [
+    /\n【[^】]+】/g,
+    /\n(?:科技與 AI|社群輿論|ACG娛樂|商業財經|國際政治|公共政策|生活文化|體育娛樂|待分類)[：:]/g,
+    /\n\d+\.\s/g
+  ];
+
+  for (let i = 0; i < semanticPatterns.length; i++) {
+    const index = findLastRegexIndexBefore_(safeText, semanticPatterns[i], safeMax, minSemanticSplitIndex);
+    if (index > 0) return index;
+  }
+
+  const paragraphIndex = safeText.lastIndexOf('\n\n', safeMax);
+  if (paragraphIndex >= minSemanticSplitIndex) return paragraphIndex;
+
+  const lineIndex = safeText.lastIndexOf('\n', safeMax);
+  if (lineIndex >= minSemanticSplitIndex) return lineIndex;
+
+  const spaceIndex = safeText.lastIndexOf(' ', safeMax);
+  if (spaceIndex >= minSemanticSplitIndex) return spaceIndex;
+
+  return safeMax;
+}
+
+function findLastRegexIndexBefore_(text, regex, maxIndex, minIndex) {
+  regex.lastIndex = 0;
+  let match = regex.exec(text);
+  let bestIndex = -1;
+
+  while (match) {
+    const index = match.index;
+    if (index > maxIndex) break;
+    if (index >= minIndex) bestIndex = index;
+    match = regex.exec(text);
+  }
+
+  return bestIndex;
 }
 
 function normalizeHelpCommandText_(text) {
@@ -203,7 +296,7 @@ function getHelpText() {
     '',
     '常用功能：',
     '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
-    '・#本週新聞：查看最近 7 天新聞素材。',
+    '・#本週新聞：查看最近 7 天新聞素材，預設按故事線精簡整理。',
     '・#本週新聞 高潛力：只看適合做節目的素材。',
     '・#新聞問答 <問題>：根據最近 7 天新聞素材回答並附原文網址。',
     '・#狀態回報：查看最近 7 天網址收件、入庫、佇列與失敗狀態。',
@@ -224,10 +317,10 @@ function getHelpAdvancedText_() {
     '進階功能：',
     '',
     '新聞檢視：',
-    '・#本週新聞 詳細：顯示較完整內容大綱、切角與節目潛力。',
-    '・#本週新聞 精簡：按分類分組，只列標題與原文網址。',
+    '・#本週新聞 詳細：展開完整大綱、切角、節目潛力與分類。',
+    '・#本週新聞 精簡：等同 #本週新聞，按故事線聚合。',
     '・#本週新聞 分類 <分類名>：只看指定分類。',
-    '・#本週新聞 診斷：檢查待分類、低信心與特殊主題疑似誤判素材。',
+    '・#本週新聞 診斷：檢查待分類、低信心、故事線異常與重複素材。',
     '',
     '素材整理：',
     '・#懶人包 網址：產生網址快讀摘要。',
@@ -279,7 +372,7 @@ function getHelpDataText_() {
     '・WebTaskQueue：#懶人包 與網址分析任務。',
     '・WebSummary：網址快讀摘要。',
     '・NewsUrlQueue：多網址或同步整理失敗時的待處理網址。',
-    '・NewsInbox：新聞素材池，保存短 Brief、完整 Outline、SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities 與 ClassificationWarning。',
+    '・NewsInbox：新聞素材池，保存短 Brief、完整 Outline、StoryKey、SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities 與 ClassificationWarning。',
     '・PendingReplies：背景任務完成後等待交付的回覆。'
   ].join('\n');
 }
