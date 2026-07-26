@@ -2,7 +2,7 @@
 // 09_DeepSeekService.gs
 // DeepSeek API 服務層。負責主模型呼叫、短期記憶組裝、長期封存記憶注入與模型參數控制。
 //
-// 小浣 LINE Bot v1.12.3 News QA Edition
+// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
 //
 // 設計說明：
 // 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持清楚分層。
@@ -11,6 +11,7 @@
 // 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
 // 5. v1.10.5 的網址分析改由 16_ReaderLayer.gs 先讀取正文，再交給 DeepSeek 做節目話題分析。
 // 6. v1.12.3 起，news_question 模式使用低溫度與較長 token 上限，供 #新聞問答 整理 NewsInbox 素材。
+// 7. v1.12.5 新增專用 JSON direct helper；舊呼叫不帶 options 時維持原 payload 與回傳型別。
 // ======================================================
 
 // ======================================================
@@ -132,12 +133,31 @@ function callDeepSeekDirect(userText, mode) {
   ], mode);
 }
 
+function callDeepSeekJsonDirect_(userText, mode) {
+  return callDeepSeekApi_([
+    {
+      role: 'system',
+      content: buildSystemPrompt(mode)
+    },
+    {
+      role: 'user',
+      content: userText
+    }
+  ], mode, {
+    responseFormat: { type: 'json_object' },
+    thinking: { type: 'disabled' },
+    requiredFinishReason: 'stop',
+    requireTrimmedContent: true
+  });
+}
+
 // ======================================================
 // DeepSeek API 底層呼叫
 // ======================================================
 
-function callDeepSeekApi_(messages, mode) {
+function callDeepSeekApi_(messages, mode, requestOptions) {
   const apiKey = getRequiredScriptProperty_('DEEPSEEK_API_KEY');
+  const safeRequestOptions = requestOptions || {};
 
   const payload = {
     model: DEEPSEEK_MODEL,
@@ -146,6 +166,16 @@ function callDeepSeekApi_(messages, mode) {
     max_tokens: getMaxTokensByMode(mode),
     stream: false
   };
+
+  // 選配欄位只給專用 JSON helper 使用。既有兩參數呼叫不會帶入，
+  // 因此舊 mode 送出的 DeepSeek payload 與回傳字串行為保持不變。
+  if (safeRequestOptions.responseFormat) {
+    payload.response_format = safeRequestOptions.responseFormat;
+  }
+
+  if (safeRequestOptions.thinking) {
+    payload.thinking = safeRequestOptions.thinking;
+  }
 
   const options = {
     method: 'post',
@@ -168,13 +198,22 @@ function callDeepSeekApi_(messages, mode) {
   const json = JSON.parse(responseText);
   logDeepSeekUsage(json);
 
-  const reply = json.choices &&
-                json.choices[0] &&
-                json.choices[0].message &&
-                json.choices[0].message.content;
+  const choice = json.choices && json.choices[0];
+  const reply = choice && choice.message && choice.message.content;
+
+  if (safeRequestOptions.requiredFinishReason) {
+    const finishReason = String(choice && choice.finish_reason || '');
+    if (finishReason !== safeRequestOptions.requiredFinishReason) {
+      throw new Error('Unexpected DeepSeek finish_reason: ' + (finishReason || 'missing'));
+    }
+  }
 
   if (!reply) {
     throw new Error('Invalid DeepSeek response: ' + responseText);
+  }
+
+  if (safeRequestOptions.requireTrimmedContent && !String(reply).trim()) {
+    throw new Error('DeepSeek returned empty JSON content');
   }
 
   return reply;
@@ -201,6 +240,10 @@ function logDeepSeekUsage(json) {
 }
 
 function getTemperatureByMode(mode) {
+  if (mode === WEEKLY_EDITORIAL_DIGEST_MODE) {
+    return 0.1;
+  }
+
   // 需要收束、判斷與整理的任務使用較低 temperature，減少發散。
   if (
     mode === 'archive' ||
@@ -218,6 +261,10 @@ function getTemperatureByMode(mode) {
 }
 
 function getMaxTokensByMode(mode) {
+  if (mode === WEEKLY_EDITORIAL_DIGEST_MODE) {
+    return 2800;
+  }
+
   if (mode === 'web_read') {
     return 1200;
   }

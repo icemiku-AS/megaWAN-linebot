@@ -446,6 +446,98 @@ function getRecentConversationItems(conversationId, limit, includeAssistant) {
   return matched;
 }
 
+// v1.12.5 週編輯台專用 reader。
+// 舊的 getRecentConversationItems() 維持「最近 N 筆、最多掃 500 列」語意；
+// 本函式改用表頭與真正七天 cutoff，並從 Sheet 尾端分批有限向前掃描。
+function isWeeklyEditorialConversationModeAllowed_(mode) {
+  const normalizedMode = String(mode || '').trim().toLowerCase();
+  return normalizedMode === 'input' || normalizedMode === 'news_inbox_url_message';
+}
+
+function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxScanRows) {
+  const sheet = ensureLogSheet_();
+  const lastRow = sheet.getLastRow();
+  if (lastRow <= 1) return [];
+
+  const headerMap = getHeaderMap_(sheet);
+  const requiredHeaders = ['Timestamp', 'ConversationId', 'Role', 'Mode', 'UserId', 'Text'];
+  requiredHeaders.forEach(function(header) {
+    if (!headerMap[header]) {
+      throw new Error('ConversationLog 缺少必要欄位：' + header);
+    }
+  });
+
+  const safeDays = Math.max(1, Number(days) || DEFAULT_WEEKLY_NEWS_DAYS);
+  const cutoffTime = new Date().getTime() - safeDays * 24 * 60 * 60 * 1000;
+  const requestedScanRows = Math.min(
+    MAX_WEEKLY_EDITORIAL_CONVERSATION_SCAN_ROWS,
+    Math.max(1, Number(maxScanRows) || MAX_WEEKLY_EDITORIAL_CONVERSATION_SCAN_ROWS)
+  );
+  const scanRowLimit = Math.min(lastRow - 1, requestedScanRows);
+  const batchSize = Math.max(1, Number(WEEKLY_EDITORIAL_CONVERSATION_SCAN_BATCH_SIZE) || 500);
+  const lastColumn = sheet.getLastColumn();
+  const matched = [];
+  let cursorRow = lastRow;
+  let scannedRows = 0;
+
+  while (cursorRow > 1 && scannedRows < scanRowLimit) {
+    const rowCount = Math.min(batchSize, cursorRow - 1, scanRowLimit - scannedRows);
+    const startRow = cursorRow - rowCount + 1;
+    const values = sheet.getRange(startRow, 1, rowCount, lastColumn).getValues();
+
+    for (let i = values.length - 1; i >= 0; i--) {
+      const row = values[i];
+      const sheetRowNumber = startRow + i;
+      const rawTimestamp = getRowValueByHeader_(row, headerMap, 'Timestamp');
+      const timestampTime = rawTimestamp instanceof Date
+        ? rawTimestamp.getTime()
+        : new Date(rawTimestamp).getTime();
+
+      if (!isFinite(timestampTime)) {
+        console.warn('Weekly editorial ConversationLog timestamp invalid at row ' + sheetRowNumber);
+        continue;
+      }
+
+      if (timestampTime < cutoffTime) continue;
+
+      const rowConversationId = String(getRowValueByHeader_(row, headerMap, 'ConversationId') || '');
+      const role = String(getRowValueByHeader_(row, headerMap, 'Role') || '').trim().toLowerCase();
+      const mode = String(getRowValueByHeader_(row, headerMap, 'Mode') || '');
+      const text = String(getRowValueByHeader_(row, headerMap, 'Text') || '').trim();
+
+      if (rowConversationId !== String(conversationId || '') ||
+          role !== 'user' ||
+          !isWeeklyEditorialConversationModeAllowed_(mode) ||
+          !text) {
+        continue;
+      }
+
+      matched.push({
+        timestamp: new Date(timestampTime),
+        userId: String(getRowValueByHeader_(row, headerMap, 'UserId') || ''),
+        mode: mode,
+        text: text,
+        rowNumber: sheetRowNumber
+      });
+    }
+
+    scannedRows += rowCount;
+    cursorRow = startRow - 1;
+
+  }
+
+  return matched.sort(function(a, b) {
+    return a.timestamp.getTime() - b.timestamp.getTime() || a.rowNumber - b.rowNumber;
+  }).map(function(item) {
+    return {
+      timestamp: item.timestamp,
+      userId: item.userId,
+      mode: item.mode,
+      text: item.text
+    };
+  });
+}
+
 function getRecentWebSummariesText(conversationId, limit) {
   try {
     const sheet = ensureWebSummarySheet_();

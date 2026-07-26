@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.12.4 Weekly News Compact & Story Grouping Edition`
-Previous stable baseline described in this file: `v1.12.3 News QA Edition`
+Version represented by this Git ref: `v1.12.5 Weekly Editorial Digest Edition`
+Previous stable baseline described in this file: `v1.12.4 Weekly News Compact & Story Grouping Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.12.3 News QA Edition`
 
 ## Active Runtime Source Files
 
-以下檔案代表 v1.12.4 Weekly News Compact & Story Grouping Edition 沿用的 GAS 程式結構：
+以下檔案代表 v1.12.5 Weekly Editorial Digest Edition 沿用的 GAS 程式結構：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -87,6 +87,7 @@ Previous stable baseline described in this file: `v1.12.3 News QA Edition`
 * `14_TopicHighlights.gs`
 * `15_DataCleanup.gs`
 * `16_ReaderLayer.gs`
+* `17_WeeklyEditorialDigest.gs`
 
 ---
 
@@ -100,6 +101,37 @@ Previous stable baseline described in this file: `v1.12.3 News QA Edition`
 * `99_changelog.md`：歷史版本紀錄。
 
 修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
+
+---
+
+## v1.12.5 Version Boundary
+
+v1.12.5 是 Weekly Editorial Digest Edition。
+
+本版把 StoryKey 從 compact 的最終聚合鍵改為「單篇新聞提供的候選事件提示」，並新增一次同步 DeepSeek 週編輯台：
+
+1. `#本週新聞` 與 `#本週新聞 精簡` 只有在 `viewMode=compact`、沒有高潛力 filter、沒有分類 filter 時啟用週編輯台。
+2. viewMode 優先順序固定為 `diagnostic > detailed > compact`；高潛力與分類維持獨立 filter。
+3. 同一次 `weekly_editorial_digest` DeepSeek JSON 呼叫處理新聞聚類、群組話題提煉，以及群組話題與新聞的重複判斷。
+4. DeepSeek 使用專用 direct JSON helper、低溫度、JSON object 格式、thinking disabled、`finish_reason` 驗證；webhook 內不 retry。
+5. GAS 為新聞建立 `N001` 類固定 ID，最多送模型 30 則；網址不送模型，最後由原始 NewsInbox item 取回。
+6. 至少兩則才成立焦點故事線；不確定或只有單篇的新聞回到其他新聞，並按主要分類精簡顯示。
+7. 模型 JSON 採保守部分採納：未知 ID 移除、同陣列去重、跨 cluster 或 cluster / ungrouped 衝突退回其他新聞、漏項由 GAS 補回。
+8. validator 完成後的 partition coverage 保證每則原始新聞恰好位於一個故事線或其他新聞；未送模型新聞也必定進入其他新聞。
+9. ConversationLog 使用表頭讀取真正最近七天、相同 conversationId、role=user 的資料；從尾端每批 500 列有限掃描，最多 2500 列。
+10. GAS 先移除指令、純網址、符號短語、完全重複與單純新聞標題轉貼；「實質評論＋網址」會保留移除網址後的評論。
+11. 有效對話最多 60 則、單則 240 字、總長約 6000 字；UserId 轉成本次查詢的匿名代號。
+12. 模型/API/JSON/頂層契約失敗時，直接回到已事先建立的分類 compact fallback；錯誤只寫 console log。
+13. LINE block fitter 先移除低順位群組話題，再省略完整低順位新聞 block；rendered coverage 與 partition coverage 分開驗證，省略新聞準確顯示「尚有 N 則未顯示」。
+14. 既有 `splitTextForLineMessages_(text)` 簽名、回傳型別與行為保持不變；metadata helper 只供週編輯台預演，通用 splitter 僅作最後防線。
+15. 通過 validator 的 normalized JSON 使用 10 分鐘 ScriptCache；key 包含版本、conversationId hash 與實際送模型的新聞/對話 hash。
+16. 詳細模式不顯示 StoryKey；診斷、`#新聞問答`、`#統整話題` 與 `#封存本週新聞` 仍可使用 StoryKey 候選提示。
+17. 聚類結果不回寫 NewsInbox，不建立永久故事線表，不修改舊資料。
+18. 本版新增 `17_WeeklyEditorialDigest.gs`，並更新 help、版本文字、README、CURRENT_VERSION 與 changelog。
+
+本版不修改 NewsInbox 或其他 Sheet schema，不需要 migration、setup、Trigger 或新增 Script Properties；不修改 Gemini 單篇新聞分析、Reader Layer、NewsUrlQueue、WebTaskQueue、`#新聞問答` 核心行為、WeeklySummary schema 或封存結構。
+
+部署到 Google Apps Script 後，維護者需手動同步本版修改的 `.gs` 檔。
 
 ---
 
@@ -308,13 +340,20 @@ v1.10.9 沒有修改 v1.10.4 的清理功能。
 
 ---
 
-## Explicitly Not Included in v1.12.4
+## Explicitly Not Included in v1.12.5
 
 以下功能不是本版內容，不要在讀取本版時誤判為已實作：
 
 * Apify actor 整合
 * ByCrawl 整合
 * Node.js / npm / 自架伺服器架構
+* NewsInbox 或其他 Sheet schema / migration
+* 新 Trigger 或新 Script Properties
+* 永久故事線資料表或將週編輯台聚類回寫 NewsInbox
+* 背景週編輯 queue 或拆成兩次同步模型呼叫
+* Gemini 單篇新聞分析核心行為調整
+* `#新聞問答` 核心行為調整
+* WeeklySummary schema 或封存資料結構調整
 * 重新導入 `#本週新聞 24小時` 或 `#本週新聞 24小時 診斷`
 * X / Twitter 個人頁、搜尋頁、列表頁自動擷取
 * Facebook 私人貼文、登入牆內容或留言串完整擷取保證
@@ -351,9 +390,9 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 
 ---
 
-## Suggested Smoke Tests for v1.12.4 Runtime
+## Suggested Smoke Tests for v1.12.5 Runtime
 
-本版會在 NewsInbox 最右側追加 `StoryKey` 欄位。若部署環境尚未套用 v1.12.2，仍需確認 NewsInbox 已具備 `SpecialTopic`、`CategoryReason`、`CategoryConfidence`、`MatchedEntities`、`ClassificationWarning`；若部署環境尚未套用 v1.12.0，仍需先確認 WeeklySummary 已具備 `ArchiveType`、`PeriodStart`、`PeriodEnd`、`SourceItemCount` 相容欄位。
+本版不修改任何 Sheet schema，不需要 migration、setup、Trigger 或新增 Script Properties。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
@@ -365,15 +404,16 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 * Reader 失敗、登入牆或不支援網址，確認 PendingReplies 會在下次訊息交付錯誤。
 * 已有 Pending Reply 時再貼新網址，確認先交付舊結果，新網址仍靜默進背景 queue。
 * 執行 `#狀態回報`，確認顯示最近 7 天收件、入庫、佇列與失敗統計。
-* 執行 `setupLogSheet()`，或觸發任何會呼叫 `ensureNewsInboxSheet_()` 的流程，確認 NewsInbox 最右側追加 `StoryKey`，且既有欄位未重排。
-* 執行 `#本週新聞`，確認顯示最近 7 天素材，預設按 StoryKey / 故事線聚合。
-* 執行 `#本週新聞 高潛力`，確認只顯示 `TopicPotential=高` 的素材。
-* 執行 `#本週新聞 詳細`，確認顯示 StoryKey、主分類、Outline / Brief、切角、節目潛力與完整原文網址。
-* 執行 `#本週新聞 精簡`，確認等同 `#本週新聞`，按故事線聚合。
-* 執行 `#本週新聞 分類 科技與 AI`，確認只顯示該分類素材，且仍以故事線聚合；可再換一個實際存在分類測試。
-* 執行 `#本週新聞 分類 科技與 AI 詳細`，確認指定分類 + 詳細模式可正常組合。
-* 執行 `#本週新聞 診斷`，確認會列出待分類、低信心、classificationWarning、StoryKey 空白、同 URL 重複、標題正規化重複、同 StoryKey 跨多 category 或 category / StoryKey 疑似不一致素材；若無異常，應回覆沒有明顯問題。
-* 準備長文字或大量新聞素材，確認 LINE 回覆會拆成最多 5 則 text message，每則不超過 4900 字；超過容量時最後一則尾端有省略提示。
+* 執行 `#本週新聞` 與 `#本週新聞 精簡`，確認啟用一次週編輯台；多篇同事件合併、同實體不同事件不合併、全部單篇時不顯示焦點故事線。
+* 測試漏 ID、同 cluster 重複、跨 cluster 重複、未知 ID、cluster / ungrouped 衝突、空標題與單篇 cluster，確認 partition coverage 仍讓每則原始新聞恰好位於一處。
+* 測試 ConversationLog 指令、純網址、短回覆、重複與標題轉貼排除；「評論＋網址」要保留評論，沒有有效對話時不顯示群組話題。
+* 測試 DeepSeek 非 2xx、空回覆、非 JSON、code fence、截斷 JSON 與 `finish_reason=length`，確認不 retry 且安全分類 fallback。
+* 新聞超過 30 則時，確認分類保留、潛力/StoryKey/時間選取規則可重現，未送模型新聞仍進其他新聞。
+* 對話超過 60 則或 6000 字時，確認裁切與匿名代號正確。
+* 準備超長輸出，確認先減少群組話題、再省略完整低順位新聞 block；保留 URL 不被切開，rendered 與 omitted 不重複，省略數準確。
+* 相同查詢確認 10 分鐘 cache hit；新增新聞或有效對話後確認 cache miss。
+* 執行高潛力、分類、詳細與診斷，確認不啟用週編輯台；詳細不顯示 StoryKey，診斷保留。
+* 測試診斷、詳細與精簡同時出現，確認 `diagnostic > detailed > compact`。
 * 執行 `#新聞問答 這週有哪些 AI 公司相關新聞？`，確認回答依據 NewsInbox 並附完整原文網址。
 * 執行 `#新聞問答 高潛力 有哪些適合做節目的社群平台新聞？`，確認只根據高潛力素材回答。
 * 執行 `#新聞問答 分類 科技與 AI 這週有什麼可追蹤？`，確認只根據指定分類素材回答。
@@ -395,7 +435,7 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.12.4 Weekly News Compact & Story Grouping Edition`
-Previous stable baseline described in this file: `v1.12.3 News QA Edition`
-Last Confirmed Date: `2026-07-07`
-Last Documentation Note: `#本週新聞` defaults to StoryKey compact grouping, LINE replies auto-split into up to 5 text messages, NewsInbox appends StoryKey, and diagnostic mode checks story lines plus duplicate素材 signals.
+Last Confirmed Version at this Git ref: `v1.12.5 Weekly Editorial Digest Edition`
+Previous stable baseline described in this file: `v1.12.4 Weekly News Compact & Story Grouping Edition`
+Last Confirmed Date: `2026-07-26`
+Last Documentation Note: plain compact weekly news uses one DeepSeek JSON editorial pass with conservative validation, classification fallback, block-level LINE fitting and a 10-minute input-sensitive cache; StoryKey remains a candidate hint and is not rewritten.

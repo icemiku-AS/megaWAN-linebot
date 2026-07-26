@@ -2,7 +2,7 @@
 // 00_Config.gs
 // 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
 //
-// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
+// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
@@ -11,6 +11,7 @@
 // 4. v1.10.9 新增 FxTwitter API endpoint 設定，供 X / Twitter 單篇貼文 reader 使用。
 // 5. v1.12.3 新增 #新聞問答 trigger，讓使用者可直接詢問近期 NewsInbox 素材。
 // 6. v1.12.4 新增 LINE 長回覆分段常數，避免週新聞回覆被單則硬裁切。
+// 7. v1.12.5 新增週編輯台的模型輸入、對話掃描、輸出驗證與快取上限。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -133,6 +134,37 @@ const MEMORY_TTL_SECONDS = 21600;
 // 保留最近幾輪短期對話
 // 一輪 = user + assistant
 const MAX_HISTORY_PAIRS = 6;
+
+
+// ======================================================
+// v1.12.5 本週編輯台設定
+// ======================================================
+
+const WEEKLY_EDITORIAL_DIGEST_MODE = 'weekly_editorial_digest';
+const WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.12.5';
+const WEEKLY_EDITORIAL_CACHE_TTL_SECONDS = 600;
+
+const MAX_WEEKLY_EDITORIAL_NEWS_ITEMS = 30;
+const MAX_WEEKLY_EDITORIAL_NEWS_PER_CATEGORY_RESERVE = 2;
+const MAX_WEEKLY_EDITORIAL_CLUSTER_COUNT = 8;
+const MAX_WEEKLY_EDITORIAL_CONVERSATION_TOPIC_COUNT = 3;
+
+const MAX_WEEKLY_EDITORIAL_TITLE_LENGTH = 100;
+const MAX_WEEKLY_EDITORIAL_BRIEF_LENGTH = 80;
+const MAX_WEEKLY_EDITORIAL_OUTLINE_LENGTH = 160;
+const MAX_WEEKLY_EDITORIAL_STORY_KEY_LENGTH = 40;
+const MAX_WEEKLY_EDITORIAL_SPECIAL_TOPIC_LENGTH = 80;
+const MAX_WEEKLY_EDITORIAL_MATCHED_ENTITIES_LENGTH = 100;
+const MAX_WEEKLY_EDITORIAL_CLUSTER_TITLE_LENGTH = 40;
+const MAX_WEEKLY_EDITORIAL_CONVERSATION_TITLE_LENGTH = 60;
+const MAX_WEEKLY_EDITORIAL_CONVERSATION_SUMMARY_LENGTH = 160;
+const MAX_WEEKLY_EDITORIAL_TALKING_POINT_LENGTH = 100;
+
+const WEEKLY_EDITORIAL_CONVERSATION_SCAN_BATCH_SIZE = 500;
+const MAX_WEEKLY_EDITORIAL_CONVERSATION_SCAN_ROWS = 2500;
+const MAX_WEEKLY_EDITORIAL_CONVERSATION_ITEMS = 60;
+const MAX_WEEKLY_EDITORIAL_CONVERSATION_ITEM_LENGTH = 240;
+const MAX_WEEKLY_EDITORIAL_CONVERSATION_TOTAL_LENGTH = 6000;
 
 
 // ======================================================

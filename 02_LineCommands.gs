@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
 //
-// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
+// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
 //
 // 維護原則：
 // 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
@@ -12,6 +12,7 @@
 // 5. v1.12.2 起，#help 進階列出 #本週新聞 診斷，用來檢查分類稽核欄位。
 // 6. v1.12.3 起，#新聞問答 讀取近期 NewsInbox 素材並回覆可追溯來源。
 // 7. v1.12.4 起，LINE 長回覆會在單次 Reply API payload 內自動拆成最多 5 則文字訊息。
+// 8. v1.12.5 新增 splitter metadata，既有 splitTextForLineMessages_(text) 行為維持不變。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -178,14 +179,30 @@ function replyToLine(replyToken, text) {
 }
 
 function splitTextForLineMessages_(text) {
+  return splitTextForLineMessagesWithMeta_(text).messages;
+}
+
+// 保留 splitTextForLineMessages_(text) 的既有簽名、回傳型別與分段行為。
+// 週編輯台額外讀取截斷狀態、切點與各訊息長度，判斷 block fitter
+// 是否還要先省略完整區塊；其他既有呼叫者不需要修改。
+function splitTextForLineMessagesWithMeta_(text) {
   const rawText = String(text || '').trim();
-  if (!rawText) return [];
+  if (!rawText) {
+    return {
+      messages: [],
+      wasTruncated: false,
+      splitIndexes: [],
+      messageLengths: []
+    };
+  }
 
   const maxLength = LINE_TEXT_MESSAGE_MAX_LENGTH;
   const maxCount = LINE_REPLY_MAX_MESSAGE_COUNT;
   const omittedNotice = '內容太多，後面已省略。可以用 #本週新聞 分類 <分類名>、#本週新聞 詳細 或 #新聞問答 追問。';
   const messages = [];
+  const splitIndexes = [];
   let remainingText = rawText;
+  let remainingOffset = 0;
 
   while (remainingText && messages.length < maxCount) {
     if (remainingText.length <= maxLength) {
@@ -197,14 +214,22 @@ function splitTextForLineMessages_(text) {
     const splitIndex = findLineMessageSplitIndex_(remainingText, maxLength);
     const chunk = remainingText.slice(0, splitIndex).trim();
     messages.push(chunk || remainingText.slice(0, maxLength).trim());
-    remainingText = remainingText.slice(splitIndex).trim();
+    splitIndexes.push(remainingOffset + splitIndex);
+
+    const nextRemainingText = remainingText.slice(splitIndex);
+    const trimmedNextRemainingText = nextRemainingText.trim();
+    const leadingTrimLength = nextRemainingText.length - nextRemainingText.replace(/^\s+/, '').length;
+    remainingOffset += splitIndex + leadingTrimLength;
+    remainingText = trimmedNextRemainingText;
   }
 
   const nonEmptyMessages = messages.filter(function(message) {
     return String(message || '').trim() !== '';
   });
 
-  if (remainingText && nonEmptyMessages.length) {
+  const wasTruncated = !!remainingText;
+
+  if (wasTruncated && nonEmptyMessages.length) {
     const lastIndex = nonEmptyMessages.length - 1;
     const suffix = '\n\n' + omittedNotice;
     let lastMessage = nonEmptyMessages[lastIndex];
@@ -217,7 +242,14 @@ function splitTextForLineMessages_(text) {
     nonEmptyMessages[lastIndex] = (lastMessage ? lastMessage + suffix : omittedNotice).slice(0, maxLength);
   }
 
-  return nonEmptyMessages.slice(0, maxCount);
+  return {
+    messages: nonEmptyMessages.slice(0, maxCount),
+    wasTruncated: wasTruncated,
+    splitIndexes: splitIndexes,
+    messageLengths: nonEmptyMessages.slice(0, maxCount).map(function(message) {
+      return message.length;
+    })
+  };
 }
 
 function findLineMessageSplitIndex_(text, maxLength) {
@@ -296,8 +328,8 @@ function getHelpText() {
     '',
     '常用功能：',
     '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
-    '・#本週新聞：查看最近 7 天新聞素材，預設按故事線精簡整理。',
-    '・#本週新聞 高潛力：只看適合做節目的素材。',
+    '・#本週新聞：整合最近 7 天群組話題、焦點故事線與其他分類新聞。',
+    '・#本週新聞 高潛力：只看高潛力素材，依分類精簡顯示。',
     '・#新聞問答 <問題>：根據最近 7 天新聞素材回答並附原文網址。',
     '・#狀態回報：查看最近 7 天網址收件、入庫、佇列與失敗狀態。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
@@ -317,10 +349,10 @@ function getHelpAdvancedText_() {
     '進階功能：',
     '',
     '新聞檢視：',
-    '・#本週新聞 詳細：展開完整大綱、切角、節目潛力與分類。',
-    '・#本週新聞 精簡：等同 #本週新聞，按故事線聚合。',
-    '・#本週新聞 分類 <分類名>：只看指定分類。',
-    '・#本週新聞 診斷：檢查待分類、低信心、故事線異常與重複素材。',
+    '・#本週新聞 詳細：依分類展開完整大綱、切角、節目潛力與分類。',
+    '・#本週新聞 精簡：等同 #本週新聞，使用週編輯台整理群組話題與多篇故事線。',
+    '・#本週新聞 分類 <分類名>：只看指定分類，依分類精簡顯示。',
+    '・#本週新聞 診斷：保留 StoryKey，檢查分類異常、故事線與重複素材。',
     '',
     '素材整理：',
     '・#懶人包 網址：產生網址快讀摘要。',
@@ -372,7 +404,7 @@ function getHelpDataText_() {
     '・WebTaskQueue：#懶人包 與網址分析任務。',
     '・WebSummary：網址快讀摘要。',
     '・NewsUrlQueue：多網址或同步整理失敗時的待處理網址。',
-    '・NewsInbox：新聞素材池，保存短 Brief、完整 Outline、StoryKey、SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities 與 ClassificationWarning。',
+    '・NewsInbox：新聞素材池，保存短 Brief、完整 Outline、候選事件提示 StoryKey、SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities 與 ClassificationWarning。',
     '・PendingReplies：背景任務完成後等待交付的回覆。'
   ].join('\n');
 }

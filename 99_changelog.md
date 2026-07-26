@@ -1,3 +1,15 @@
+2026-07-26
+v1.12.5 Weekly Editorial Digest Edition
+- #本週新聞 與 #本週新聞 精簡以一次 DeepSeek JSON 呼叫整理本週群組話題與真正的多篇焦點故事線。
+- StoryKey 保留為單篇候選事件提示；至少兩篇才成立故事線，聚類結果不回寫 NewsInbox。
+- 新增真正七天、同 conversationId、user-only 的 ConversationLog 讀取與機械噪音過濾；含網址但有實質評論的訊息會保留評論。
+- 新增專用 JSON helper、finish_reason 檢查、保守 validator、分類 fallback 與 10 分鐘 ScriptCache。
+- 新增完整新聞 block 容量控制；partition coverage 與 rendered coverage 分開驗證，省略新聞準確顯示「尚有 N 則未顯示」。
+- 高潛力、分類、詳細與診斷不啟用週編輯台；詳細不顯示 StoryKey，診斷保留。
+- 本版不修改 Sheet schema、Trigger、Script Properties、Reader Layer、新聞入庫核心或封存結構。
+
+// ==================================================
+
 2026-07-07
 v1.12.4 Weekly News Compact & Story Grouping Edition
 - #本週新聞 預設改為 compact，按 StoryKey / 故事線聚合同一事件線素材；#本週新聞 精簡 等同預設，#本週新聞 詳細 才展開完整大綱、切角、節目潛力與分類。

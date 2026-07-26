@@ -1,6 +1,6 @@
 // ======================================================
 // 13_NewsInbox.gs
-// v1.12.4 Weekly News Compact & Story Grouping Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
+// v1.12.5 Weekly Editorial Digest Edition：新聞素材池、靜默網址收件、狀態回報、新聞封存脈絡。
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
@@ -15,6 +15,7 @@
 // 8.2 v1.12.2 起，NewsInbox 分離主要分類與特殊主題，並追加分類稽核欄位供診斷。
 // 8.3 v1.12.3 起，移除 24 小時檢視，並新增 #新聞問答 以近期 NewsInbox 回答素材問題。
 // 8.4 v1.12.4 起，NewsInbox 追加 StoryKey，#本週新聞 預設改按故事線精簡聚合。
+// 8.5 v1.12.5 起，預設與精簡模式改由本週編輯台批次聚類；StoryKey 保留為候選提示。
 // 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
 // 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
 // ======================================================
@@ -1121,7 +1122,15 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
 
   if (!filteredItems.length) return getBotTextWeeklyNewsNoData_(queryOptions);
 
-  const digestText = formatWeeklyNewsDigest_(filteredItems, queryOptions);
+  let digestText = '';
+  if (shouldUseWeeklyEditorialDigest_(queryOptions)) {
+    // 模型呼叫前先建立一定可用的分類 fallback；任何 API、JSON 或 validator
+    // 錯誤都直接使用這份結果，不在 webhook 內 retry，也不把技術錯誤回群組。
+    const fallbackText = formatWeeklyNewsCompactDigest_(filteredItems, queryOptions);
+    digestText = tryBuildWeeklyEditorialDigest_(conversationId, filteredItems, queryOptions) || fallbackText;
+  } else {
+    digestText = formatWeeklyNewsDigest_(filteredItems, queryOptions);
+  }
   const memoryBridgeText = shouldBuildWeeklyNewsMemoryBridge_(queryOptions)
     ? buildWeeklyNewsMemoryBridge_(conversationId, filteredItems)
     : '';
@@ -1296,16 +1305,14 @@ function parseWeeklyNewsQueryOptions_(userPrompt) {
     options.onlyHighPotential = true;
   }
 
-  if (text.indexOf('詳細') >= 0) {
-    options.viewMode = 'detailed';
-  }
-
-  if (text.indexOf('精簡') >= 0) {
-    options.viewMode = 'compact';
-  }
-
+  // viewMode 優先順序固定為 diagnostic > detailed > compact。
+  // 「精簡」只是 compact 的明示別名，不得覆蓋同一指令中的詳細或診斷。
   if (text.indexOf('診斷') >= 0) {
     options.viewMode = 'diagnostic';
+  } else if (text.indexOf('詳細') >= 0) {
+    options.viewMode = 'detailed';
+  } else {
+    options.viewMode = 'compact';
   }
 
   const categoryMatch = text.match(/(?:^|\s)分類\s+(.+)$/);
@@ -1451,7 +1458,6 @@ function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
       lines.push(
         (index + 1) + '. ' + (item.title || '未取得標題'),
         '來源：' + (item.url || ''),
-        '故事線：' + normalizeStoryKey_(item.storyKey, item),
         '主分類：' + (item.category || '待分類'),
         '內容大綱：' + (item.outline || item.brief || '無'),
         item.angle ? '切角：' + item.angle : '',
@@ -1465,39 +1471,9 @@ function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
 }
 
 function formatWeeklyNewsCompactDigest_(items, queryOptions) {
-  const categoryGroupedResult = groupNewsItemsByCategory_(items);
-  const storyGroupedResult = groupNewsItemsByStoryKey_(items);
-  const lines = [
-    buildWeeklyNewsDigestHeader_(queryOptions),
-    '',
-    '素材概況：共 ' + (items || []).length + ' 則',
-    '分類概況：' + formatWeeklyNewsCategoryCounts_(categoryGroupedResult),
-    '故事線概況：' + formatWeeklyNewsStoryCounts_(storyGroupedResult)
-  ];
-
-  // compact 模式仍完整列出所有故事線與素材；長度交給 LINE 分段層處理。
-  storyGroupedResult.groups.forEach(function(group) {
-    const categoryText = formatCategoryListForStoryGroup_(group.items);
-    const potentialText = getHighestTopicPotential_(group.items);
-    const headerParts = [
-      '【' + group.storyKey + '】' + group.items.length + ' 則',
-      potentialText ? '最高潛力：' + potentialText : '',
-      categoryText
-    ].filter(function(part) {
-      return String(part || '').trim() !== '';
-    });
-
-    lines.push('', headerParts.join('｜'));
-
-    group.items.forEach(function(item, index) {
-      lines.push(
-        (index + 1) + '. ' + (item.title || '未取得標題'),
-        '來源：' + (item.url || '')
-      );
-    });
-  });
-
-  return lines.filter(function(line) { return line !== ''; }).join('\n');
+  // compact 的 deterministic fallback 一律依分類顯示，不再把單篇 StoryKey
+  // 當成最終故事線。高潛力與分類篩選也共用同一套固定排版與 block fitter。
+  return formatWeeklyEditorialFallbackDigest_(items, queryOptions);
 }
 
 function formatWeeklyNewsDiagnosticDigest_(items, queryOptions) {
