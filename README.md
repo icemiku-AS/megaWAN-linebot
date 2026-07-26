@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
+# 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -42,22 +42,24 @@ v1.12.3 新增 `#新聞問答`，讓小浣可以根據最近 7 天 NewsInbox 素
 
 v1.12.4 將 `#本週新聞` 預設改為精簡模式，按 StoryKey / 故事線聚合同一事件線的素材；`#本週新聞 詳細` 才展開完整大綱、切角、節目潛力與分類資訊。NewsInbox 追加 `StoryKey` 欄位，Gemini 新聞分析會產生 storyKey；LINE 長回覆會自動分段成最多 5 則 text message，避免被單則硬裁切。診斷模式新增故事線、跨分類與重複素材檢查。
 
+v1.12.5 將 StoryKey 重新定位為單篇新聞的候選事件提示。`#本週新聞` 與 `#本週新聞 精簡` 會以一次 DeepSeek JSON 呼叫批次判斷真正的多篇焦點故事線，並從最近七天、同 conversationId、user-only 的 ConversationLog 補充群組話題；網址、排序、完整性、LINE 排版與 fallback 仍由 GAS 固定控制。
+
 ---
 
-## 2. v1.12.4 本版重點
+## 2. v1.12.5 本版重點
 
-v1.12.4 是 Weekly News Compact & Story Grouping Edition。
+v1.12.5 是 Weekly Editorial Digest Edition。
 
 主要調整如下：
 
-- `#本週新聞` 預設改為 compact，按 StoryKey / 故事線聚合同一事件線素材。
-- `#本週新聞 精簡` 等同 `#本週新聞`；`#本週新聞 詳細` 才展開完整 Outline / Brief、切角、節目潛力、分類與 StoryKey。
-- LINE 長回覆會在單次 Reply API call 內自動拆成最多 5 則 text message，避免 4500 字硬裁切。
-- NewsInbox 最右側追加 `StoryKey` 欄位；舊資料缺欄或空白時，會以 SpecialTopic、MatchedEntities、標題、分類或網址產生 fallback 故事線。
-- Gemini 新聞分析 prompt / JSON schema 新增 `storyKey`，並強化分類主軸、防錯規則與分類稽核文字。
-- `#本週新聞 診斷` 新增 StoryKey 空白、同 URL 重複、標題正規化重複、同故事線跨分類，以及分類 / 故事線疑似不一致提示。
-- `#新聞問答`、`#統整話題` 與新聞封存素材文字會帶入 StoryKey，方便後續整理引用事件線。
-- 本版不修改 Reader Layer、WebTaskQueue、`#懶人包`、網址版 `#節目話題分析` 或 NewsUrlQueue 基本背景收件架構。
+- `#本週新聞` 與 `#本週新聞 精簡` 以一次 DeepSeek JSON 呼叫，同時進行新聞聚類、群組話題提煉與重複判斷。
+- 至少兩則新聞才成立焦點故事線；未聚類或未送模型的新聞仍依主要分類顯示。
+- GAS 建立固定 itemId、驗證完整 partition、取回原始網址、排序並產生最終 LINE 文字；模型不生成網址或完整回覆。
+- ConversationLog 使用真正七天、相同 conversationId、user-only、表頭式與有限分批掃描，送模型前先移除指令、純網址、無意義短語、重複與單純標題轉貼。
+- 模型/API/JSON/頂層契約失敗時，安全回到依分類排列的 compact fallback，不在 webhook 內 retry。
+- LINE 容量控制先捨棄低順位話題，再省略完整新聞 block，並以「尚有 N 則未顯示」準確回報；通用 splitter 僅作最後防線。
+- 通過 validator 的 normalized JSON 使用 10 分鐘 ScriptCache；新聞或有效對話變更時自然 cache miss。
+- StoryKey 繼續保存並供診斷、問答、統整與封存使用，但不回寫新的聚類結果；本版不需要 Sheet migration、Trigger 或 Script Properties 變更。
 
 ---
 
@@ -75,16 +77,18 @@ v1.10.5 起，網址流程會先透過 Reader Layer 讀取網頁內容。v1.10.6
 
 ### 本週新聞
 
-查看最近 7 天收集到的 NewsInbox 新聞素材。預設使用精簡模式，按 StoryKey / 故事線聚合同一事件線，顯示故事線名稱、則數、涉及分類、標題與完整來源網址。
+查看最近 7 天收集到的 NewsInbox 新聞素材。預設與精簡模式會使用一次週編輯台呼叫，顯示有效群組話題、真正的多篇焦點故事線，以及依分類排列的其他新聞。每則新聞預設只顯示潛力、標題與完整來源網址。
 
 常用檢視模式：
 
-- `#本週新聞`：最近 7 天素材，預設按故事線精簡整理。
-- `#本週新聞 高潛力`：只看適合做節目的素材，仍以故事線聚合。
-- `#本週新聞 詳細`：顯示完整內容大綱、切角、節目潛力、主分類與 StoryKey。
-- `#本週新聞 精簡`：等同 `#本週新聞`，按故事線聚合。
-- `#本週新聞 分類 <分類名>`：只看指定分類，例如 `#本週新聞 分類 科技與 AI`。
-- `#本週新聞 診斷`：檢查待分類、低信心、分類警告、故事線異常與重複素材。
+- `#本週新聞`：啟用週編輯台，整理群組話題、多篇焦點故事線與其他分類新聞。
+- `#本週新聞 精簡`：等同 `#本週新聞`，啟用週編輯台。
+- `#本週新聞 高潛力`：不啟用週編輯台，只顯示高潛力新聞並依分類精簡排列。
+- `#本週新聞 詳細`：不啟用週編輯台，依分類顯示完整內容大綱、切角、節目潛力與主分類；不主動顯示 StoryKey。
+- `#本週新聞 分類 <分類名>`：不啟用週編輯台，只看指定分類並精簡排列，例如 `#本週新聞 分類 科技與 AI`。
+- `#本週新聞 診斷`：不啟用週編輯台，保留 StoryKey 並檢查待分類、低信心、分類警告、故事線異常與重複素材。
+
+viewMode 的優先順序固定為 `diagnostic > detailed > compact`；高潛力與分類是獨立 filter。只有 compact 且沒有高潛力、沒有分類 filter 時才會啟用週編輯台。
 
 如果 WeeklySummary 內已有 `ArchiveType=news` 的新聞封存，`#本週新聞 詳細` 在沒有高潛力或分類篩選時會嘗試比對本週新聞與過去新聞記憶，補充簡短的過去脈絡；精簡、分類、高潛力與診斷模式只顯示當次查詢結果。
 
@@ -214,7 +218,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 - WebTaskQueue：保存網址快讀與網址版節目分析的背景任務。
 - WebSummary：保存網址快讀摘要。
 - NewsUrlQueue：保存多網址、同步處理過慢或失敗時的新聞網址待處理佇列。
-- NewsInbox：新聞素材池；Brief 供 LINE 快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 供 `#本週新聞` 精簡模式聚合同一事件線，SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。
+- NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.12.5 不新增欄位，也不回寫週編輯台聚類。
 - PendingReplies：背景任務完成後，等待下次訊息交付的回覆。
 
 ---
@@ -240,6 +244,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 - 14_TopicHighlights.gs：人工重點資料層。
 - 15_DataCleanup.gs：資料清理層。
 - 16_ReaderLayer.gs：Jina Reader、PTT over18、FxTwitter API、legacy fallback wrapper 與 reader 統一資料契約。
+- 17_WeeklyEditorialDigest.gs：週編輯台 orchestration、模型輸入、ConversationLog 去噪、validator、cache、固定排版與 LINE block fitting。
 
 ---
 
@@ -255,9 +260,9 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 
 ---
 
-## 10. v1.12.4 建議測試流程
+## 10. v1.12.5 建議測試流程
 
-本版會在 NewsInbox 最右側追加 `StoryKey` 欄位，不重排舊欄位。部署到 GAS 後，執行 `setupLogSheet()` 或任何會呼叫 `ensureNewsInboxSheet_()` 的流程即可自動補欄；若部署環境尚未套用 v1.12.2，仍需確認 NewsInbox 已具備 `SpecialTopic`、`CategoryReason`、`CategoryConfidence`、`MatchedEntities`、`ClassificationWarning`；若部署環境尚未套用 v1.12.0，仍需先確認 WeeklySummary 已具備 `ArchiveType`、`PeriodStart`、`PeriodEnd`、`SourceItemCount` 相容欄位。
+本版不修改任何 Sheet schema，不需要 migration、setup、Trigger 或新增 Script Properties。將修改的 `.gs` 手動同步至 Apps Script 後再進行 LINE / GAS 測試。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
@@ -268,13 +273,17 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 - 一次貼兩個以上網址，確認多筆靜默進 NewsUrlQueue。
 - 測試不支援或讀取失敗網址，確認 PendingReplies 會在下次訊息交付錯誤。
 - 執行 `#狀態回報`，確認顯示最近 7 天收件、入庫、佇列與失敗統計。
-- 執行 `#本週新聞`，確認顯示最近 7 天素材，預設按 StoryKey / 故事線聚合。
-- 執行 `#本週新聞 高潛力`，確認只顯示 `TopicPotential=高` 的素材。
-- 執行 `#本週新聞 詳細`，確認顯示 StoryKey、主分類、Outline / Brief、切角與節目潛力。
-- 執行 `#本週新聞 精簡`，確認等同 `#本週新聞`，按故事線聚合。
-- 執行 `#本週新聞 分類 科技與 AI`，確認只顯示該分類素材，且仍以故事線聚合；可再換一個實際存在分類測試。
-- 執行 `#本週新聞 診斷`，確認會列出待分類、低信心、分類警告、StoryKey 空白、重複 URL、正規化標題重複或同故事線跨分類提示；若無異常，應回覆沒有明顯問題。
-- 準備長文字或大量新聞素材，確認 LINE 回覆會拆成最多 5 則 text message，每則不超過 4900 字，超過容量時最後有省略提示。
+- 執行 `#本週新聞` 與 `#本週新聞 精簡`，確認啟用週編輯台；多篇同事件合併、同實體不同事件不合併、全部單篇時省略焦點故事線。
+- 測試漏 itemId、重複 itemId、未知 itemId、cluster / ungrouped 衝突、空標題與單篇 cluster，確認資料 partition 讓每則原始新聞恰好位於一個故事線或其他新聞集合。
+- 測試 ConversationLog 的指令、純網址、短回覆與重複排除；「評論文字＋網址」應保留評論，沒有有效對話時省略群組話題。
+- 測試 DeepSeek 非 2xx、空回覆、非 JSON、code fence、截斷 JSON 與 `finish_reason=length`，確認不 retry 且依分類 fallback。
+- 準備超過 30 則新聞與超過對話上限的資料，確認未送模型新聞仍進其他新聞，模型 payload 遵守裁切上限。
+- 準備超長回覆，確認先減少群組話題、再省略完整低順位新聞 block；每則保留新聞恰好顯示一次、被省略新聞完全不顯示、網址不被切斷，並準確顯示「尚有 N 則未顯示」。
+- 重複執行相同查詢確認 10 分鐘 cache hit；新增新聞或有效對話後確認 cache miss。
+- 執行 `#本週新聞 高潛力` 與分類篩選，確認只依分類精簡顯示且不啟用週編輯台。
+- 執行 `#本週新聞 詳細`，確認不啟用週編輯台、顯示主分類、Outline / Brief、切角與節目潛力，但不顯示 StoryKey。
+- 執行 `#本週新聞 診斷`，確認不啟用週編輯台，並保留 StoryKey、重複素材與跨分類診斷。
+- 測試同時帶診斷、詳細與精簡文字，確認 `diagnostic > detailed > compact`。
 - 執行 `#新聞問答 這週有哪些 AI 公司相關新聞？`，確認回答依據 NewsInbox 並附完整原文網址。
 - 執行 `#新聞問答 高潛力 有哪些適合做節目的社群平台新聞？`，確認只根據高潛力素材回答。
 - 執行 `#新聞問答 分類 科技與 AI 這週有什麼可追蹤？`，確認只根據指定分類素材回答。

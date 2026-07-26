@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
+// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -17,13 +17,26 @@
 // 10. v1.12.2 強化 NewsInbox 分類稽核、#本週新聞 精簡分組與診斷檢視。
 // 11. v1.12.3 新增 #新聞問答，並移除低頻的 #本週新聞 24 小時檢視。
 // 12. v1.12.4 起，#本週新聞 預設按 StoryKey 精簡聚合，長回覆會自動分段。
+// 13. v1.12.5 起，預設與精簡週新聞使用一次 DeepSeek 編輯台；StoryKey 保留為候選提示。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.12.4 Weekly News Compact & Story Grouping Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-07-07';
+const BOT_CURRENT_VERSION = 'v1.12.5 Weekly Editorial Digest Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-07-26';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.12.5 Weekly Editorial Digest Edition',
+    date: '2026-07-26',
+    summary: '#本週新聞新增週編輯台，整合群組話題與真正的多篇焦點故事線；模型失敗時依分類安全回退。',
+    changes: [
+      '#本週新聞 與 #本週新聞 精簡 以一次 DeepSeek JSON 呼叫完成新聞聚類與群組話題提煉。',
+      '至少兩篇才成立焦點故事線；StoryKey 僅作候選提示，網址、排序、完整性與 LINE 排版由 GAS 控制。',
+      '高潛力、分類、詳細與診斷不啟用週編輯台；詳細不顯示 StoryKey，診斷仍保留。',
+      '新增七天 ConversationLog reader、保守 validator、分類 fallback、完整新聞 block 容量控制與 10 分鐘快取。',
+      '本版不修改 Sheet schema、Trigger、Script Properties、Reader Layer 或新聞入庫核心。'
+    ]
+  },
   {
     version: 'v1.12.4 Weekly News Compact & Story Grouping Edition',
     date: '2026-07-07',
@@ -480,7 +493,7 @@ function getBotTextArchiveDone_(archiveJson, recentCount) {
 }
 
 function getBotTextNewsArchiveDone_(archiveJson, recentCount) {
-  return ['本週新聞我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名新聞主軸'), '', '摘要：', archiveJson.summary || '已建立新聞摘要，但內容比較短。', '', '這次封存參考了 ' + recentCount + ' 則 NewsInbox 素材。', '之後 #本週新聞 就可以拿這份新聞記憶比對過去脈絡。'].join('\n');
+  return ['本週新聞我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名新聞主軸'), '', '摘要：', archiveJson.summary || '已建立新聞摘要，但內容比較短。', '', '這次封存參考了 ' + recentCount + ' 則 NewsInbox 素材。', '之後用 #本週新聞 詳細，就可以拿這份新聞記憶比對過去脈絡。'].join('\n');
 }
 
 // ======================================================
