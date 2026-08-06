@@ -1,19 +1,21 @@
 // ======================================================
 // 11_Prompts.gs
-// 集中管理小浣人格、模式提示詞與任務提示詞。
+// 集中管理小浣人格、共用 system prompt 與跨功能模式提示詞。
 //
-// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
+// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
 //
 // 維護原則：
-// 1. 本檔只管理 DeepSeek system prompt，不直接呼叫模型。
+// 1. 本檔只管理 provider-neutral 的共用 system prompt，不直接呼叫模型。
 // 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
 // 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複。
 // 4. v1.10.2 移除 #摘要 / #摘要最近 / #回顧最近 / #標題 專用 prompt，保留節目素材秘書核心任務。
 // 5. v1.12.3 起，news_question system prompt 限制只能根據 NewsInbox 與新聞封存脈絡回答。
 // 6. v1.12.5 新增 weekly_editorial_digest，模型只做批次編輯判斷並回傳固定 JSON。
+// 7. v1.13.0 起，功能專屬 Prompt 留在最理解契約的功能檔；本檔不集中 NewsInbox、快讀或正文抽取 Prompt。
+// 8. buildSystemPrompt() 只保留為 compatibility wrapper；正式 runtime 使用 buildAiSystemPrompt_()。
 // ======================================================
 
-function buildSystemPrompt(mode) {
+function buildAiSystemPrompt_(task) {
   const basePrompt = [
     '你是放在聊天群組中的繁體中文 AI 小助手，小名叫「小浣」，正式名稱是「MEGA浣」',
     '你的主要使用者是 Podcast「現正熱潮中」主持人。你是固定群組中的常駐小幫手，不要用「新朋友」、「朋友」、「親愛的」等客服式稱呼',
@@ -30,7 +32,7 @@ function buildSystemPrompt(mode) {
     '你具備多輪對話能力，請根據前面的對話脈絡接續回答，不要每次重新介紹背景'
   ].join('\n');
 
-  if (mode === 'program_topic_analysis') {
+  if (task === 'program_topic_analysis') {
     return [
       basePrompt,
       '',
@@ -51,7 +53,7 @@ function buildSystemPrompt(mode) {
     ].join('\n');
   }
 
-  if (mode === 'integrate_topics') {
+  if (task === 'integrate_topics') {
     return [
       basePrompt,
       '',
@@ -66,17 +68,7 @@ function buildSystemPrompt(mode) {
     ].join('\n');
   }
 
-  if (mode === 'web_read') {
-    return [
-      basePrompt,
-      '',
-      '目前任務：網址快讀。',
-      '這個模式只做輕量摘要與素材整理，不做深度節目分析。',
-      '如果使用者想要深度分析，應提醒可以使用 #節目話題分析。'
-    ].join('\n');
-  }
-
-  if (mode === 'news_question') {
+  if (task === 'news_question') {
     return [
       basePrompt,
       '',
@@ -89,7 +81,7 @@ function buildSystemPrompt(mode) {
     ].join('\n');
   }
 
-  if (mode === WEEKLY_EDITORIAL_DIGEST_MODE) {
+  if (task === 'weekly_editorial_digest') {
     return [
       basePrompt,
       '',
@@ -104,17 +96,35 @@ function buildSystemPrompt(mode) {
     ].join('\n');
   }
 
-  if (mode === 'archive' || mode === 'archive_news') {
+  if (task === 'archive_topics' || task === 'archive_news') {
     return [
       basePrompt,
       '',
       '目前任務：封存長期記憶。',
       '呼叫端可能要求封存 ConversationLog 對話，也可能要求封存 NewsInbox 新聞摘要；請以使用者 prompt 內的資料來源與 JSON 格式為準。',
       '重點不是逐字摘要，而是保留未來可以重用的脈絡、觀點、切角、爭議點與追蹤問題。',
-      mode === 'archive_news' ? '新聞封存請務必精簡，不要逐條列出每一則新聞，避免 JSON 過長而被截斷。' : '',
+      task === 'archive_news' ? '新聞封存請務必精簡，不要逐條列出每一則新聞，避免 JSON 過長而被截斷。' : '',
       '請務必按照使用者要求的 JSON 格式輸出。',
       '不要輸出 JSON 以外的文字。'
     ].filter(function(line) { return line !== ''; }).join('\n');
+  }
+
+  if (task === 'news_memory_bridge') {
+    return [
+      basePrompt,
+      '',
+      '目前任務：比對本週新聞與過去新聞封存脈絡。',
+      '只根據 Prompt 提供的兩組素材判斷延續、反轉或同題材累積，不補充外部資訊。',
+      '沒有明確關聯時輸出空字串。'
+    ].join('\n');
+  }
+
+  if (task === 'manual_news_supplement') {
+    return [
+      '你是新聞素材 JSON 整理器。',
+      '只根據使用者提供的補充文字輸出一個合法 JSON object，不要輸出 Markdown、code fence 或解釋。',
+      '若資料不足，使用 Prompt 指定的預設語意，不要補充外部資訊。'
+    ].join('\n');
   }
 
   return [
@@ -125,4 +135,13 @@ function buildSystemPrompt(mode) {
     '如果過去封存記憶與目前問題有關，可以簡短提醒「之前有討論過類似方向」。',
     '如果無關，請不要硬提過去記憶。'
   ].join('\n');
+}
+
+/**
+ * v1.13.0 compatibility wrapper：正式 runtime 已改呼叫 buildAiSystemPrompt_()。
+ * 保留原名稱是為了避免 GAS 手動診斷或外部腳本立刻失效；它不含 provider-specific 行為。
+ * 待至少一個正式版本確認部署端無 caller 後，可評估移除。
+ */
+function buildSystemPrompt(mode) {
+  return buildAiSystemPrompt_(resolveLegacyAiTask_(mode));
 }

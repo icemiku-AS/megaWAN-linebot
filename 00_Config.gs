@@ -1,8 +1,8 @@
 // ======================================================
 // 00_Config.gs
-// 集中管理 API endpoint、模型名稱、Sheet 名稱、指令前綴與各種系統常數。
+// 集中管理 LINE/Reader endpoint、Sheet 名稱、指令前綴與各種非 AI 路由常數。
 //
-// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
+// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
 //
 // 維護原則：
 // 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
@@ -12,32 +12,32 @@
 // 5. v1.12.3 新增 #新聞問答 trigger，讓使用者可直接詢問近期 NewsInbox 素材。
 // 6. v1.12.4 新增 LINE 長回覆分段常數，避免週新聞回覆被單則硬裁切。
 // 7. v1.12.5 新增週編輯台的模型輸入、對話掃描、輸出驗證與快取上限。
+// 8. v1.13.0 起，AI provider endpoint 放在各 adapter，model/profile/task route 集中於 19_AiProfiles.gs。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
-const DEEPSEEK_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 
 // LINE text message 官方上限為 5000 字；程式端留 100 字安全空間。
 // Reply API 一次最多可送 5 則訊息，長回覆仍維持單次 reply API call。
 const LINE_TEXT_MESSAGE_MAX_LENGTH = 4900;
 const LINE_REPLY_MAX_MESSAGE_COUNT = 5;
 
+// LINE webhook 的同步工作共用同一個 deadline。40 秒刻意保留 reply API、Sheet 寫入與排版餘裕；
+// profile timeout 是任務最大預算，單次同步 AI 最多 30 秒，且只能由 caller 再縮短。
+// 輔助型 memory bridge 至少要剩 20 秒才執行，避免拖垮主要回覆。
+const LINE_WEBHOOK_SYNC_WORK_BUDGET_MS = 40000;
+const LINE_WEBHOOK_SYNC_AI_TIMEOUT_CAP_SECONDS = 30;
+const LINE_WEBHOOK_SYNC_AI_MIN_REQUEST_SECONDS = 8;
+const LINE_WEBHOOK_SYNC_AUXILIARY_AI_MIN_REQUEST_SECONDS = 20;
+
+// Google Apps Script UrlFetchApp 的預設 timeout 可長達 360 秒；同步 Reader 另套 12 秒上限。
+// 背景 WebTaskQueue / NewsUrlQueue 不帶 execution context，維持既有 Reader 預設行為。
+const LINE_WEBHOOK_SYNC_READER_TIMEOUT_CAP_SECONDS = 12;
+
 // FxTwitter API：v1.10.9 起用於讀取 X / Twitter 單篇 status 貼文。
 // 使用方式：FXTWITTER_API_STATUS_ENDPOINT_PREFIX + statusId
 // 例：https://api.fxtwitter.com/2/status/1234567890123456789
 const FXTWITTER_API_STATUS_ENDPOINT_PREFIX = 'https://api.fxtwitter.com/2/status/';
-
-// DeepSeek 主模型
-const DEEPSEEK_MODEL = 'deepseek-v4-flash';
-
-// Gemini 模型
-// v1.12.0 中 Gemini 負責：
-// 1. 快讀摘要：#懶人包 指令使用
-// 2. 正文抽取：legacy fallback 使用
-// 3. 新聞素材整理：產生 NewsInbox 短 Brief、長 Outline 與分類資料
-const GEMINI_MODEL = 'gemini-3.1-flash-lite';
-const GEMINI_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
-
 
 // ======================================================
 // Google Sheet 設定
@@ -80,10 +80,10 @@ const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
 // WebTaskQueue TaskType
 // ======================================================
 
-// #懶人包：做 Gemini 快讀摘要，不做 DeepSeek 深度分析
+// #懶人包：做 provider-neutral 快讀摘要，不做深度節目分析
 const TASK_TYPE_WEB_LAZY_SUMMARY = 'web_lazy_summary';
 
-// #節目話題分析 + 網址：做 Gemini 抽取 + DeepSeek 深度節目分析
+// #節目話題分析 + 網址：Reader 取得正文後，由 AI task 做深度節目分析
 const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 
 
@@ -94,7 +94,7 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 群組中只有這些開頭才會觸發一般 Bot 回覆。
 // 例外：
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會靜默進入 NewsUrlQueue 背景收件流程，不回覆群組。
-// 2. 個人聊天室直接貼網址仍保留同步回覆路徑，方便維護者測試 Reader / Gemini 行為。
+// 2. 個人聊天室直接貼網址仍保留同步回覆路徑，方便維護者測試 Reader / AI 行為。
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
 // 4. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
 // 5. v1.10.4 新增多資料表清理指令，所有清理都只作用於目前 conversationId。
@@ -140,8 +140,7 @@ const MAX_HISTORY_PAIRS = 6;
 // v1.12.5 本週編輯台設定
 // ======================================================
 
-const WEEKLY_EDITORIAL_DIGEST_MODE = 'weekly_editorial_digest';
-const WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.12.5';
+const WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.13.0';
 const WEEKLY_EDITORIAL_CACHE_TTL_SECONDS = 600;
 
 const MAX_WEEKLY_EDITORIAL_NEWS_ITEMS = 30;
@@ -178,19 +177,20 @@ const MAX_URLS_PER_MESSAGE = 3;
 // 這裡仍只給舊 WebTaskQueue 使用；NewsUrlQueue 有自己的每批處理量。
 const MAX_WEB_TASKS_PER_RUN = 1;
 
-// 送給 Gemini 的 HTML 最大長度
-const MAX_HTML_FOR_GEMINI = 180000;
+// legacy raw HTML 送入正文抽取 AI task 前的最大字元數。
+// 過長 HTML 會先移除 script/style 等噪音再截斷，避免輸入擠壓 mainText 輸出空間。
+const MAX_HTML_FOR_AI_EXTRACTION = 180000;
 
-// Gemini 抽出的正文送給 DeepSeek 前的最大長度
-const MAX_EXTRACTED_TEXT_FOR_DEEPSEEK = 12000;
+// Reader 正文送入後續 AI 分析 Prompt 前的最大字元數。
+const MAX_EXTRACTED_TEXT_FOR_AI_PROMPT = 12000;
 
-// 直接貼單一網址時，Reader 完成後若已超過此時間，就不再追加 Gemini 同步分析，
-// 而是改放入 NewsUrlQueue，避免 LINE replyToken 等待時間過長。
+// 直接貼單一網址時，Reader 完成後若已超過此時間，就不再追加 AI 同步分析；
+// 同時還會依 webhook 共用 deadline 計算剩餘 AI 預算，任一條件不足都改放 NewsUrlQueue。
 const DIRECT_NEWS_SYNC_READER_MAX_MS = 15000;
 
-// 同步 Brief、Outline 與 NewsInbox 分類共用同一次 Gemini 呼叫。
+// 同步 Brief、Outline 與 NewsInbox 分類共用同一次 news_analysis task。
 // 只送入正文前 12000 字，兼顧新聞內容完整度、模型速度與 API 成本。
-const DIRECT_NEWS_GEMINI_TEXT_LIMIT = 12000;
+const DIRECT_NEWS_AI_TEXT_LIMIT = 12000;
 
 // Brief 用於直接網址 LINE 回覆與 #本週新聞。
 // 30～50 字是 prompt 目標區間，不是正常流程的硬裁切；短內容可自然低於 30 字。
@@ -201,7 +201,7 @@ const NEWS_INBOX_BRIEF_TARGET_MAX_LENGTH = 50;
 const NEWS_INBOX_BRIEF_HARD_MAX_LENGTH = 120;
 
 // Outline 保存於 NewsInbox，供 #統整話題讀取。
-// Prompt 目標是 100～200 字；程式端接受稍寬範圍，過長時直接裁切，避免再次呼叫 Gemini。
+// Prompt 目標是 100～200 字；程式端接受稍寬範圍，過長時直接裁切，避免再次呼叫 AI。
 const DIRECT_NEWS_OUTLINE_MIN_LENGTH = 80;
 const DIRECT_NEWS_OUTLINE_MAX_LENGTH = 240;
 

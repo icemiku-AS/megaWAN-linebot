@@ -1,12 +1,15 @@
 // ======================================================
 // 17_WeeklyEditorialDigest.gs
-// v1.12.5 Weekly Editorial Digest Edition：本週編輯台。
+// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 本週編輯台：模型輸入、itemId 安全邊界、partition validator、render coverage、cache 與 fallback。
 //
 // 責任邊界：
 // 1. GAS 建立固定 itemId、裁切模型輸入、保存原始 NewsInbox item 與網址。
-// 2. DeepSeek 只回傳新聞聚類、未分組 ID 與群組對話話題 JSON。
+// 2. AI weekly_editorial_digest task 只回傳新聞聚類、未分組 ID 與群組對話話題 JSON。
 // 3. 本檔保守正規化模型結果，分開驗證資料 partition 與 LINE rendered coverage。
 // 4. 模型結果只用於當次顯示與 10 分鐘快取，不回寫 NewsInbox。
+// 5. 本檔不組 provider payload；fast_json profile 失敗、JSON/partition 違規都使用既有分類 fallback。
+// 6. webhook execution context 只負責同步時間上限；預算不足或逾時仍走相同程式端 fallback。
 // ======================================================
 
 function shouldUseWeeklyEditorialDigest_(queryOptions) {
@@ -16,7 +19,7 @@ function shouldUseWeeklyEditorialDigest_(queryOptions) {
     !String(options.categoryFilter || '').trim();
 }
 
-function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions) {
+function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiExecutionContext) {
   try {
     const identifiedItems = assignWeeklyEditorialItemIds_(items);
     const selection = selectWeeklyEditorialNewsItems_(identifiedItems);
@@ -80,9 +83,15 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions) {
 
     if (!cacheHit) {
       const prompt = buildWeeklyEditorialDigestPrompt_(newsPayload, conversationPayload);
-      const responseText = callDeepSeekJsonDirect_(prompt, WEEKLY_EDITORIAL_DIGEST_MODE);
+      // itemId、partition 與 rendered coverage 已有保守 validator；本版先使用 non-thinking fast_json，
+      // 不把週編輯台升級為高成本 thinking，也不在 webhook 內 retry。
+      const responseJson = requireAiJson_(runAiJsonTask(
+        'weekly_editorial_digest',
+        prompt,
+        requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+      ));
       const apiValidation = normalizeAndValidateWeeklyEditorialResult_(
-        responseText,
+        JSON.stringify(responseJson),
         modelItemIds,
         identifiedItems,
         conversationPayload.length > 0

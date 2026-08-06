@@ -2,7 +2,7 @@
 // 10_TopicFeatures.gs
 // 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
 //
-// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
+// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
 //
 // 設計說明：
 // 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
@@ -13,13 +13,15 @@
 // 6. v1.12.1 起，#封存本週新聞 的 prompt 改為週報索引取向，優先保留可回查的事件與名稱。
 // 7. v1.12.2 起，新聞封存會讀取 SpecialTopic / MatchedEntities，協助保留可回查的主角與事件名稱。
 // 8. v1.12.4 起，新聞封存素材文字會包含 StoryKey，協助長期記憶保留事件線。
+// 9. v1.13.0 起，本檔只選 AI task 與擁有功能 Prompt/schema；provider/profile/payload 由 AiService/AiProfiles 管理。
+// 10. LINE webhook 會傳入可選 execution context；它只縮短同步 timeout，背景或手動 caller 不傳時仍用完整 profile。
 // ======================================================
 
 // ======================================================
 // #節目話題分析：無網址時從近期脈絡判斷主題
 // ======================================================
 
-function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt) {
+function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt, aiExecutionContext) {
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
@@ -85,19 +87,21 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt)
     '不要使用 Markdown 語法。不要用表格。請用純文字、短段落、簡單編號和換行整理。'
   ].join('\n');
 
-  return callDeepSeekWithMemoryPayload(
+  // 跨近期多層素材判斷節目價值，固定使用 program_topic_analysis 的 thinking_high profile。
+  return requireAiText_(runAiMemoryTask(
+    'program_topic_analysis',
     conversationId,
     '#節目話題分析',
     prompt,
-    'program_topic_analysis'
-  );
+    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+  ));
 }
 
 // ======================================================
 // #統整話題：整合近期素材成節目話題地圖
 // ======================================================
 
-function integrateRecentTopics(event, conversationId, userPrompt) {
+function integrateRecentTopics(event, conversationId, userPrompt, aiExecutionContext) {
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
@@ -172,19 +176,21 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
     '不要使用 Markdown 語法。不要用表格。請用純文字、短段落、簡單編號和換行整理。'
   ].join('\n');
 
-  return callDeepSeekWithMemoryPayload(
+  // 統整跨 ConversationLog / Highlights / NewsInbox / WebSummary / 封存記憶，固定 thinking_high。
+  return requireAiText_(runAiMemoryTask(
+    'integrate_topics',
     conversationId,
     '#統整話題 ' + (userPrompt || ''),
     prompt,
-    'integrate_topics'
-  );
+    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+  ));
 }
 
 // ======================================================
 // #封存本週話題：寫入 WeeklySummary 長期記憶
 // ======================================================
 
-function archiveWeeklyTopics(event, conversationId) {
+function archiveWeeklyTopics(event, conversationId, aiExecutionContext) {
   const recentCount = 200;
   const recentItems = getRecentConversationItems(conversationId, recentCount, false);
 
@@ -231,8 +237,14 @@ function archiveWeeklyTopics(event, conversationId) {
     recentText || '無'
   ].join('\n');
 
-  const archiveText = callDeepSeekDirect(prompt, 'archive');
-  const archiveJson = parseArchiveJson(archiveText);
+  const archiveJson = validateArchiveJsonContract_(
+    requireAiJson_(runAiJsonTask(
+      'archive_topics',
+      prompt,
+      requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+    )),
+    'topic_archive'
+  );
 
   const source = event.source || {};
   appendWeeklySummaryRow_({
@@ -260,7 +272,7 @@ function archiveWeeklyTopics(event, conversationId) {
 // #封存本週新聞：將 NewsInbox 週摘要寫入 WeeklySummary
 // ======================================================
 
-function archiveWeeklyNews(event, conversationId) {
+function archiveWeeklyNews(event, conversationId, aiExecutionContext) {
   const items = getRecentNewsInboxItems_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
 
   if (!items.length) {
@@ -311,8 +323,14 @@ function archiveWeeklyNews(event, conversationId) {
     newsText
   ].join('\n');
 
-  const archiveText = callDeepSeekDirect(prompt, 'archive_news');
-  const archiveJson = parseArchiveJsonStrict_(archiveText, 'news_archive');
+  const archiveJson = validateArchiveJsonContract_(
+    requireAiJson_(runAiJsonTask(
+      'archive_news',
+      prompt,
+      requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+    )),
+    'news_archive'
+  );
   const source = event.source || {};
 
   appendWeeklySummaryRow_({
@@ -372,6 +390,11 @@ function formatArchiveDate_(date) {
   }
 }
 
+/**
+ * v1.13.0 compatibility parser：正式封存 runtime 已改由 runAiJsonTask() 與
+ * validateArchiveJsonContract_() 處理，不再呼叫本函式。
+ * 保留原名稱一版是為了 GAS 手動診斷相容；確認部署端無 caller 後可和 strict 版本一起移除。
+ */
 function parseArchiveJson(text) {
   const raw = String(text || '').trim();
   const parsed = parseJsonObjectLoose(raw);
@@ -380,7 +403,7 @@ function parseArchiveJson(text) {
     return parsed;
   }
 
-  console.error('parseArchiveJson error:', raw);
+  console.error('parseArchiveJson error: invalid legacy archive JSON; length=' + raw.length);
 
   return {
     topicTitle: '未能解析的封存摘要',
@@ -391,6 +414,10 @@ function parseArchiveJson(text) {
   };
 }
 
+/**
+ * v1.13.0 compatibility strict parser：repo 正式 runtime 已無 caller。
+ * 不記錄模型原文，避免舊手動測試把 response text 寫進 console；未來移除條件同 parseArchiveJson()。
+ */
 function parseArchiveJsonStrict_(text, sourceLabel) {
   const raw = String(text || '').trim();
   const parsed = parseJsonObjectLoose(raw);
@@ -399,8 +426,31 @@ function parseArchiveJsonStrict_(text, sourceLabel) {
     return parsed;
   }
 
-  // #封存本週新聞 若 DeepSeek JSON 被 max_tokens 截斷，不能把半截 JSON 當摘要寫入 WeeklySummary。
+  // #封存本週新聞 若 AI JSON 被 max_tokens 截斷，不能把半截 JSON 當摘要寫入 WeeklySummary。
   // 直接丟錯讓 01_Main.gs 回 getBotTextNewsArchiveError_()，維護者可重試，不會污染長期記憶。
-  console.error('parseArchiveJsonStrict_ failed:', sourceLabel || '', raw);
-  throw new Error('archive_json_parse_failed: DeepSeek returned invalid or truncated JSON');
+  console.error('parseArchiveJsonStrict_ failed:', sourceLabel || '', 'length=' + raw.length);
+  throw createAiValidationError_('archive_json_parse_failed: AI returned invalid or truncated JSON', false);
+}
+
+/**
+ * 兩種封存共用的功能契約 validator。
+ * AiService 只檢查合法 JSON object；本函式負責必要欄位與陣列型別，避免不完整長期記憶寫入 WeeklySummary。
+ * 封存驗證失敗不自動 retry，讓維護者稍後重試並保留可觀察的錯誤邊界。
+ */
+function validateArchiveJsonContract_(parsed, sourceLabel) {
+  const value = parsed || {};
+  const required = ['topicTitle', 'keywords', 'summary', 'reusableAngles', 'followUpQuestions'];
+  const missingFields = required.filter(function(field) {
+    return !Object.prototype.hasOwnProperty.call(value, field);
+  });
+  if (missingFields.length || !String(value.summary || '').trim()) {
+    throw createAiValidationError_(
+      String(sourceLabel || 'archive') + ' missing required fields or summary: ' + missingFields.join(', '),
+      false
+    );
+  }
+  if (!Array.isArray(value.keywords) || !Array.isArray(value.reusableAngles) || !Array.isArray(value.followUpQuestions)) {
+    throw createAiValidationError_(String(sourceLabel || 'archive') + ' array contract is invalid.', false);
+  }
+  return value;
 }
