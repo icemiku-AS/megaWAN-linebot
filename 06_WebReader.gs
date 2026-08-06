@@ -117,11 +117,15 @@ function isSafePublicUrl(url) {
 // UrlFetchApp 網頁抓取
 // ======================================================
 
-function fetchRawWebPage(url) {
+function fetchRawWebPage(url, executionContext) {
   if (!isSafePublicUrl(url)) {
     return {
       ok: false,
       url: url,
+      readerRoute: 'legacy_raw_html_ai',
+      errorType: 'unsafe_url',
+      retryable: false,
+      httpStatus: 0,
       error: '網址安全檢查未通過。可能原因：網址格式解析失敗、非 HTTP/HTTPS、localhost、內網 IP，或網址尾端含有特殊符號。'
     };
   }
@@ -135,6 +139,7 @@ function fetchRawWebPage(url) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.0; LINE Web Reader)'
     }
   };
+  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
 
   try {
     const response = UrlFetchApp.fetch(url, options);
@@ -146,6 +151,10 @@ function fetchRawWebPage(url) {
       return {
         ok: false,
         url: url,
+        readerRoute: 'legacy_raw_html_ai',
+        errorType: 'raw_html_fetch_failed',
+        retryable: statusCode === 408 || statusCode === 429 || statusCode >= 500,
+        httpStatus: statusCode,
         statusCode: statusCode,
         contentType: contentType,
         error: '讀取失敗，HTTP 狀態碼：' + statusCode
@@ -163,6 +172,10 @@ function fetchRawWebPage(url) {
       return {
         ok: false,
         url: url,
+        readerRoute: 'legacy_raw_html_ai',
+        errorType: 'unsupported_content_type',
+        retryable: false,
+        httpStatus: statusCode,
         statusCode: statusCode,
         contentType: contentType,
         error: '目前只支援一般網頁與純文字內容，這個網址的 Content-Type 是：' + contentType
@@ -172,6 +185,7 @@ function fetchRawWebPage(url) {
     return {
       ok: true,
       url: url,
+      readerRoute: 'legacy_raw_html_ai',
       statusCode: statusCode,
       contentType: contentType,
       rawHtml: response.getContentText()
@@ -181,7 +195,11 @@ function fetchRawWebPage(url) {
     return {
       ok: false,
       url: url,
-      error: '讀取網址時發生錯誤：' + error.message
+      readerRoute: 'legacy_raw_html_ai',
+      errorType: 'raw_html_fetch_exception',
+      retryable: true,
+      httpStatus: 0,
+      error: '讀取網址時發生錯誤：' + String(error && error.message ? error.message : error).slice(0, 300)
     };
   }
 }
@@ -284,11 +302,15 @@ function buildRawHtmlExtractionPrompt_(url, rawHtml, contentType) {
  * 回傳沿用既有 webResult 欄位；AI JSON 缺欄或格式錯誤會丟 typed error，
  * 由 fetchAndExtractWebPage() 轉成安全 reader failure，不把半截 mainText 傳給下游。
  */
-function extractRawHtmlWithAi_(url, rawHtml, contentType) {
+function extractRawHtmlWithAi_(url, rawHtml, contentType, aiExecutionContext) {
+  const aiOptions = requireAiCallOptionsForExecutionContext_(
+    aiExecutionContext,
+    { systemPrompt: buildRawHtmlExtractionSystemPrompt_() }
+  );
   const aiResult = runAiJsonTask(
     'raw_html_extraction',
     buildRawHtmlExtractionPrompt_(url, rawHtml, contentType),
-    { systemPrompt: buildRawHtmlExtractionSystemPrompt_() }
+    aiOptions
   );
   const parsed = requireAiJson_(aiResult);
   return normalizeRawHtmlExtractionResult_(url, parsed);
@@ -330,20 +352,25 @@ function normalizeRawHtmlExtractionResult_(url, parsed) {
 // 網頁正文抽取流程輔助
 // ======================================================
 
-function fetchAndExtractWebPage(url) {
-  const rawPage = fetchRawWebPage(url);
+function fetchAndExtractWebPage(url, aiExecutionContext) {
+  const rawPage = fetchRawWebPage(url, aiExecutionContext);
 
   if (!rawPage.ok) {
+    rawPage.readerRoute = rawPage.readerRoute || 'legacy_raw_html_ai';
     return rawPage;
   }
 
   try {
-    const extracted = extractRawHtmlWithAi_(url, rawPage.rawHtml, rawPage.contentType);
+    const extracted = extractRawHtmlWithAi_(url, rawPage.rawHtml, rawPage.contentType, aiExecutionContext);
 
     if (!extracted.ok) {
       return {
         ok: false,
         url: url,
+        readerRoute: 'legacy_raw_html_ai',
+        errorType: extracted.errorType || 'ai_invalid_provider_response',
+        retryable: typeof extracted.retryable === 'boolean' ? extracted.retryable : true,
+        httpStatus: Number(extracted.httpStatus || 0),
         statusCode: rawPage.statusCode,
         contentType: rawPage.contentType,
         error: extracted.error || 'AI 正文抽取失敗'
@@ -354,6 +381,10 @@ function fetchAndExtractWebPage(url) {
       return {
         ok: false,
         url: url,
+        readerRoute: 'legacy_raw_html_ai',
+        errorType: 'ai_validation_error',
+        retryable: true,
+        httpStatus: 0,
         statusCode: rawPage.statusCode,
         contentType: rawPage.contentType,
         title: extracted.title || '',
@@ -367,6 +398,7 @@ function fetchAndExtractWebPage(url) {
     return {
       ok: true,
       url: url,
+      readerRoute: 'legacy_raw_html_ai',
       statusCode: rawPage.statusCode,
       contentType: rawPage.contentType,
       title: extracted.title || '',
@@ -379,10 +411,19 @@ function fetchAndExtractWebPage(url) {
     };
 
   } catch (error) {
+    const errorType = String(error && error.errorType || '').trim();
+    const isTypedAiError = errorType.indexOf('ai_') === 0;
     return {
       ok: false,
       url: url,
-      error: '讀取網址或抽取正文時發生錯誤：' + error.message
+      readerRoute: 'legacy_raw_html_ai',
+      errorType: errorType || 'legacy_raw_html_extraction_error',
+      retryable: typeof (error && error.retryable) === 'boolean' ? error.retryable : true,
+      httpStatus: Number(error && error.httpStatus || 0),
+      // AI typed error 只公開穩定類型；不把 provider response、Prompt 或正文塞進 Reader result。
+      error: isTypedAiError
+        ? 'legacy raw HTML AI extraction failed (' + errorType + ').'
+        : '讀取網址或抽取正文時發生錯誤：' + String(error && error.message ? error.message : error).slice(0, 300)
     };
   }
 }

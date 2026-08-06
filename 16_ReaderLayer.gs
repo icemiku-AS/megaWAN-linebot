@@ -50,7 +50,7 @@ const MIN_PTT_MAIN_TEXT_LENGTH = 60;
 // 統一 reader 入口
 // ======================================================
 
-function fetchAndExtractWebPageByReaderLayer_(url) {
+function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
   const safeUrl = String(url || '').trim();
 
   if (!isSafePublicUrl(safeUrl)) {
@@ -60,7 +60,7 @@ function fetchAndExtractWebPageByReaderLayer_(url) {
   const route = detectWebReaderRoute_(safeUrl);
 
   if (route === WEB_READER_ROUTE_FXTWITTER_API) {
-    return fetchTwitterStatusWithFxTwitter_(safeUrl);
+    return fetchTwitterStatusWithFxTwitter_(safeUrl, executionContext);
   }
 
   if (route === WEB_READER_ROUTE_UNSUPPORTED_SOCIAL) {
@@ -73,10 +73,10 @@ function fetchAndExtractWebPageByReaderLayer_(url) {
   }
 
   if (route === WEB_READER_ROUTE_PTT_OVER18) {
-    return fetchPttPageWithOver18Cookie_(safeUrl);
+    return fetchPttPageWithOver18Cookie_(safeUrl, executionContext);
   }
 
-  const jinaResult = fetchReadablePageWithJina_(safeUrl);
+  const jinaResult = fetchReadablePageWithJina_(safeUrl, executionContext);
 
   if (jinaResult.ok) {
     return jinaResult;
@@ -84,7 +84,7 @@ function fetchAndExtractWebPageByReaderLayer_(url) {
 
   // Jina Reader 失敗時，保留舊流程作為 fallback。
   // 這是 Reader Layer 的安全閥：先把主路徑切到 Jina，但不因單一 reader 失敗而讓所有舊網站直接不能讀。
-  const legacyResult = fetchAndExtractWebPageLegacy_(safeUrl);
+  const legacyResult = fetchAndExtractWebPageLegacy_(safeUrl, executionContext);
 
   if (legacyResult && legacyResult.ok) {
     const warnings = legacyResult.warnings || [];
@@ -95,14 +95,26 @@ function fetchAndExtractWebPageByReaderLayer_(url) {
     return legacyResult;
   }
 
+  // legacy AI typed metadata 必須原樣穿越 Reader Layer，否則 NewsUrlQueue 會把缺 key、401/403
+  // 等永久錯誤壓成一般 reader failure 並無效重試。普通 Reader error 才使用組合型 errorType。
+  const hasLegacyAiError = isAiTypedReaderFailure_(legacyResult);
+  const combinedRetryable = hasLegacyAiError
+    ? resolveReaderFailureRetryable_(legacyResult)
+    : (resolveReaderFailureRetryable_(jinaResult) || resolveReaderFailureRetryable_(legacyResult));
   return buildReaderLayerErrorResult_(
     safeUrl,
-    WEB_READER_ROUTE_JINA,
-    'jina_and_legacy_failed',
+    legacyResult && legacyResult.readerRoute ? legacyResult.readerRoute : WEB_READER_ROUTE_LEGACY,
+    hasLegacyAiError ? legacyResult.errorType : 'jina_and_legacy_failed',
     'Jina Reader 讀取失敗；legacy fallback 也未取得可用正文。Jina 錯誤：' +
       (jinaResult.error || '未知錯誤') +
       '；legacy 錯誤：' +
-      (legacyResult && legacyResult.error ? legacyResult.error : '未知錯誤')
+      (legacyResult && legacyResult.error ? legacyResult.error : '未知錯誤'),
+    {
+      retryable: combinedRetryable,
+      httpStatus: hasLegacyAiError
+        ? Number(legacyResult && legacyResult.httpStatus || 0)
+        : Number(legacyResult && (legacyResult.httpStatus || legacyResult.statusCode) || jinaResult.httpStatus || 0)
+    }
   );
 }
 
@@ -178,10 +190,10 @@ function extractTwitterStatusIdFromUrl_(url) {
 // Legacy fallback：復用 06_WebReader.gs 舊流程
 // ======================================================
 
-function fetchAndExtractWebPageLegacy_(url) {
+function fetchAndExtractWebPageLegacy_(url, executionContext) {
   // 目前 06_WebReader.gs 的 fetchAndExtractWebPage(url) 代表 raw HTML + AI extraction 流程。
   // 若未來把 fetchAndExtractWebPage(url) 改成也走 Reader Layer，這裡必須同步重構，避免遞迴。
-  return fetchAndExtractWebPage(url);
+  return fetchAndExtractWebPage(url, executionContext);
 }
 
 /**
@@ -197,7 +209,7 @@ function isLegacyRawHtmlReaderRoute_(readerRoute) {
 // X / Twitter provider：FxTwitter API
 // ======================================================
 
-function fetchTwitterStatusWithFxTwitter_(url) {
+function fetchTwitterStatusWithFxTwitter_(url, executionContext) {
   const statusId = extractTwitterStatusIdFromUrl_(url);
 
   if (!statusId) {
@@ -219,6 +231,7 @@ function fetchTwitterStatusWithFxTwitter_(url) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; FxTwitter Reader)'
     }
   };
+  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
 
   try {
     const response = UrlFetchApp.fetch(apiUrl, options);
@@ -446,7 +459,7 @@ function normalizeFxTwitterString_(value) {
 // Jina Reader provider
 // ======================================================
 
-function fetchReadablePageWithJina_(url) {
+function fetchReadablePageWithJina_(url, executionContext) {
   const readerUrl = buildJinaReaderUrl_(url);
 
   const options = {
@@ -459,6 +472,7 @@ function fetchReadablePageWithJina_(url) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; Jina Reader Layer)'
     }
   };
+  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
 
   try {
     const response = UrlFetchApp.fetch(readerUrl, options);
@@ -590,7 +604,7 @@ function normalizeJinaReaderText_(url, readerText) {
 // PTT provider：GAS 原生 UrlFetchApp + over18 cookie
 // ======================================================
 
-function fetchPttPageWithOver18Cookie_(url) {
+function fetchPttPageWithOver18Cookie_(url, executionContext) {
   const options = {
     method: 'get',
     muteHttpExceptions: true,
@@ -602,6 +616,7 @@ function fetchPttPageWithOver18Cookie_(url) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; PTT Reader)'
     }
   };
+  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
 
   try {
     const response = UrlFetchApp.fetch(url, options);
@@ -753,14 +768,62 @@ function buildReaderLayerSuccessResult_(item) {
   };
 }
 
-function buildReaderLayerErrorResult_(url, readerRoute, errorType, errorMessage) {
-  return {
+function buildReaderLayerErrorResult_(url, readerRoute, errorType, errorMessage, metadata) {
+  const result = {
     ok: false,
     url: url || '',
     readerRoute: readerRoute || '',
     errorType: errorType || 'reader_error',
     error: errorMessage || 'reader failed'
   };
+  const safeMetadata = metadata || {};
+  if (typeof safeMetadata.retryable === 'boolean') result.retryable = safeMetadata.retryable;
+  if (Object.prototype.hasOwnProperty.call(safeMetadata, 'httpStatus')) {
+    result.httpStatus = Number(safeMetadata.httpStatus || 0);
+  }
+  return result;
+}
+
+function isAiTypedReaderFailure_(result) {
+  return !!result && String(result.errorType || '').indexOf('ai_') === 0;
+}
+
+/**
+ * Reader combination 的 retryable 後備判斷。typed metadata 優先；4xx（408/429 除外）
+ * 通常是永久失敗，5xx/timeout/未知 fetch exception 則允許既有 Queue 稍後再試。
+ */
+function resolveReaderFailureRetryable_(result) {
+  const safeResult = result || {};
+  if (typeof safeResult.retryable === 'boolean') return safeResult.retryable;
+  const type = String(safeResult.errorType || '').trim();
+  if (type === 'unsafe_url' || type === 'unsupported_social_platform' || type === 'x_twitter_url_without_status_id') {
+    return false;
+  }
+  if (type.indexOf('ai_') === 0) return isAiErrorTypeRetryable_(type);
+  const status = Number(safeResult.httpStatus || safeResult.statusCode || 0);
+  if (status === 408 || status === 429 || status >= 500) return true;
+  if (status >= 400) return false;
+  return true;
+}
+
+/**
+ * 同步 webhook Reader 套用短 timeout，且不得超過 event 剩餘 deadline。
+ * 背景 Queue 不傳 execution context，因此不新增全域 Reader 行為變更，仍沿用 GAS 預設 timeout。
+ */
+function applyReaderFetchTimeoutForExecutionContext_(options, executionContext) {
+  const safeOptions = options || {};
+  const context = executionContext || null;
+  if (!context) return safeOptions;
+
+  const deadlineAtMs = Number(context.deadlineAtMs);
+  const configuredCap = Number(context.readerTimeoutCapSeconds);
+  if (!isFinite(deadlineAtMs) || deadlineAtMs <= 0 || !isFinite(configuredCap) || configuredCap <= 0) {
+    return safeOptions;
+  }
+
+  const remainingSeconds = Math.max(1, Math.floor((deadlineAtMs - Date.now()) / 1000));
+  safeOptions.timeoutSeconds = Math.max(1, Math.floor(Math.min(configuredCap, remainingSeconds)));
+  return safeOptions;
 }
 
 function isReadableTextUsable_(text, minLength) {

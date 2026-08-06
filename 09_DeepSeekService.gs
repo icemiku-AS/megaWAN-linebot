@@ -113,15 +113,17 @@ function callDeepSeekProvider_(request) {
   } catch (error) {
     const message = String(error && error.message ? error.message : error || 'DeepSeek request failed.');
     const lower = message.toLowerCase();
-    let errorType = 'ai_unknown_error';
-    let retryable = true;
+    let errorType = String(error && error.errorType || '') || 'ai_unknown_error';
+    let retryable = error && typeof error.retryable === 'boolean' ? error.retryable : true;
 
-    if (lower.indexOf('missing deepseek_api_key') >= 0) {
-      errorType = 'ai_configuration_error';
-      retryable = false;
-    } else if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) {
-      errorType = 'ai_timeout';
-      retryable = true;
+    if (!error || !error.errorType) {
+      if (lower.indexOf('missing deepseek_api_key') >= 0) {
+        errorType = 'ai_configuration_error';
+        retryable = false;
+      } else if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) {
+        errorType = 'ai_timeout';
+        retryable = true;
+      }
     }
 
     return buildDeepSeekProviderFailure_(errorType, message, 0, retryable, Date.now() - startedAt);
@@ -146,7 +148,7 @@ function buildDeepSeekPayload_(request) {
   if (thinkingType === 'enabled') {
     const effort = String(request.reasoningEffort || '');
     if (effort !== 'high' && effort !== 'max') {
-      throw new Error('DeepSeek thinking request requires reasoning_effort high or max.');
+      throw createAiConfigurationError_('DeepSeek thinking request requires reasoning_effort high or max.');
     }
     payload.reasoning_effort = effort;
   } else if (request.allowSampling === true) {

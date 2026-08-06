@@ -7,6 +7,7 @@
 // 2. 負責短期及長期 memory orchestration、provider dispatch 與 normalized response。
 // 3. 統一檢查 finish reason、空回覆、JSON 基礎格式，並正規化 HTTP/provider error。
 // 4. 只記錄不含 Prompt、聊天全文、網頁正文與 secret 的 structured console metadata。
+// 5. 接受 provider-neutral timeout cap；profile timeout 是任務上限，caller 只能再縮短，不能放大。
 //
 // 明確不負責：
 // 1. 不擁有 NewsInbox、快讀、raw HTML、封存或週編輯台等功能 Prompt / schema / validator。
@@ -140,7 +141,7 @@ function runAiMessagesTask(task, messages, options) {
       topP: config.topP,
       outputMode: config.outputMode,
       maxOutputTokens: config.maxOutputTokens,
-      timeoutSeconds: config.timeoutSeconds
+      timeoutSeconds: resolveAiRequestTimeoutSeconds_(config.timeoutSeconds, options)
     };
     let providerResult = null;
 
@@ -218,16 +219,93 @@ function buildAiDirectMessages_(task, prompt, options) {
 
 function normalizeAiMessages_(messages) {
   if (!Array.isArray(messages) || !messages.length) {
-    throw new Error('AI messages must be a non-empty array.');
+    throw createAiConfigurationError_('AI messages must be a non-empty array.');
   }
 
   return messages.map(function(message) {
     const role = String(message && message.role || '').trim();
     if (['system', 'user', 'assistant'].indexOf(role) < 0) {
-      throw new Error('Unsupported AI message role: ' + role);
+      throw createAiConfigurationError_('Unsupported AI message role: ' + role);
     }
     return { role: role, content: String(message && message.content || '') };
   });
+}
+
+/**
+ * 套用 caller 的同步 timeout cap。profile/route timeout 是任務可用的最大預算；
+ * webhook caller 可因 reply token 再給更短上限，背景 Queue 不傳 cap 時則使用完整 profile 值。
+ * cap 只接受正數；0、負數、NaN 或非數字一律忽略，避免把有效 timeout 變成無效值。
+ */
+function resolveAiRequestTimeoutSeconds_(profileTimeoutSeconds, options) {
+  const profileTimeout = Number(profileTimeoutSeconds);
+  if (!isFinite(profileTimeout) || profileTimeout <= 0) {
+    throw createAiConfigurationError_('AI profile timeout must be positive.');
+  }
+
+  const safeOptions = options || {};
+  const cap = Number(safeOptions.timeoutCapSeconds);
+  let effectiveTimeout = isFinite(cap) && cap > 0
+    ? Math.min(profileTimeout, cap)
+    : profileTimeout;
+  const deadlineAtMs = Number(safeOptions.executionDeadlineAtMs);
+  if (isFinite(deadlineAtMs) && deadlineAtMs > 0) {
+    const remainingSeconds = Math.floor((deadlineAtMs - Date.now()) / 1000);
+    const minimumRequestSeconds = Number(safeOptions.minimumRequestSeconds);
+    const minimum = isFinite(minimumRequestSeconds) && minimumRequestSeconds > 0
+      ? minimumRequestSeconds
+      : 1;
+    if (!isFinite(remainingSeconds) || remainingSeconds < minimum) {
+      throw createAiExecutionBudgetError_('Synchronous AI execution budget is exhausted.');
+    }
+    effectiveTimeout = Math.min(effectiveTimeout, remainingSeconds);
+  }
+  return Math.max(1, Math.floor(effectiveTimeout));
+}
+
+/**
+ * 將 webhook execution context 換成本次 AI call options。
+ * 同一 event 的每次呼叫都重新計算 deadline，所以 Reader 或前一個 AI 已耗掉的時間不會重複使用。
+ * 回傳 null 代表剩餘時間低於安全門檻；主要 task 應改走既有 fallback，輔助 task 可直接跳過。
+ */
+function buildAiCallOptionsForExecutionContext_(executionContext, baseOptions, minimumRequestSeconds) {
+  const options = {};
+  Object.keys(baseOptions || {}).forEach(function(key) {
+    options[key] = baseOptions[key];
+  });
+
+  const context = executionContext || null;
+  if (!context) return options;
+
+  const deadlineAtMs = Number(context.deadlineAtMs);
+  const configuredCap = Number(context.aiTimeoutCapSeconds);
+  const contextMinimum = Number(context.aiMinimumRequestSeconds);
+  const requestedMinimum = Number(minimumRequestSeconds);
+  const minimum = isFinite(requestedMinimum) && requestedMinimum > 0
+    ? requestedMinimum
+    : (isFinite(contextMinimum) && contextMinimum > 0 ? contextMinimum : 1);
+
+  if (!isFinite(deadlineAtMs) || deadlineAtMs <= 0) return options;
+
+  const remainingSeconds = Math.floor((deadlineAtMs - Date.now()) / 1000);
+  if (!isFinite(remainingSeconds) || remainingSeconds < minimum) return null;
+
+  options.timeoutCapSeconds = isFinite(configuredCap) && configuredCap > 0
+    ? Math.min(configuredCap, remainingSeconds)
+    : remainingSeconds;
+  // 讓 memory lock、Sheet 讀取或其他前置工作耗時也會在真正 dispatch 前重新扣除。
+  options.executionDeadlineAtMs = deadlineAtMs;
+  options.minimumRequestSeconds = minimum;
+  return options;
+}
+
+/**
+ * 主要同步 task 在預算耗盡時使用此入口：不發 HTTP，回報可重試的 ai_timeout，
+ * 讓直接網址可轉入既有背景 Queue；這不是 provider failure，也不會洩漏 Prompt 或正文。
+ */
+function requireAiCallOptionsForExecutionContext_(executionContext, baseOptions, minimumRequestSeconds) {
+  const options = buildAiCallOptionsForExecutionContext_(executionContext, baseOptions, minimumRequestSeconds);
+  if (options) return options;
+  throw createAiExecutionBudgetError_('Synchronous AI execution budget is exhausted.');
 }
 
 /**
@@ -314,9 +392,13 @@ function buildAiFailureResponse_(config, errorType, errorMessage, httpStatus, re
 function buildAiFailureFromException_(config, task, error, elapsedMs) {
   const message = String(error && error.message ? error.message : error || 'Unknown AI error.');
   const lower = message.toLowerCase();
-  let errorType = error && error.errorType ? error.errorType : 'ai_unknown_error';
-  if (lower.indexOf('missing ') >= 0 && lower.indexOf('script properties') >= 0) errorType = 'ai_configuration_error';
-  if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) errorType = 'ai_timeout';
+  const typedErrorType = String(error && error.errorType || '').trim();
+  let errorType = typedErrorType || 'ai_unknown_error';
+  // typed error 是跨 Reader / Queue 的穩定契約；只有舊例外沒有 metadata 時才做文字後備分類。
+  if (!typedErrorType) {
+    if (lower.indexOf('missing ') >= 0 && lower.indexOf('script properties') >= 0) errorType = 'ai_configuration_error';
+    if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) errorType = 'ai_timeout';
+  }
 
   let safeConfig = config;
   if (!safeConfig) {
@@ -402,6 +484,27 @@ function createAiValidationError_(message, retryable) {
   return error;
 }
 
+/**
+ * route/profile/model 等程式設定錯誤永遠不可由 Queue 重試。
+ * 短訊息只描述設定邊界，不附 payload、Prompt、provider response 或 secret。
+ */
+function createAiConfigurationError_(message) {
+  const error = new Error(String(message || 'AI configuration is invalid.').slice(0, 500));
+  error.errorType = 'ai_configuration_error';
+  error.retryable = false;
+  error.httpStatus = 0;
+  return error;
+}
+
+function createAiExecutionBudgetError_(message) {
+  const error = new Error(String(message || 'AI execution budget is exhausted.').slice(0, 500));
+  error.errorType = 'ai_timeout';
+  // 同一 request 不應硬撐，但換到既有背景 Queue 後有完整時間預算，因此仍屬可重試。
+  error.retryable = true;
+  error.httpStatus = 0;
+  return error;
+}
+
 function isAiErrorRetryable_(error) {
   if (error && typeof error.retryable === 'boolean') return error.retryable;
   return isAiErrorTypeRetryable_(error && error.errorType);
@@ -433,6 +536,8 @@ function resolveLegacyAiTask_(mode) {
 
 /**
  * 安全的統一 AI metadata log。不記錄 messages、Prompt、conversationId、網址正文、response text 或 API key。
+ * `ok` 只代表 provider transport、finish/content 與 JSON 基礎格式通過；功能 schema/business
+ * validator 仍由 caller 執行，因此本 log 不宣稱整個業務 task 已成功。
  */
 function logAiCallMetadata_(result, config) {
   const safeResult = result || {};
@@ -452,6 +557,8 @@ function logAiCallMetadata_(result, config) {
     reasoningTokens: safeResult.usage ? safeResult.usage.reasoningTokens : null,
     totalTokens: safeResult.usage ? safeResult.usage.totalTokens : null,
     finishReason: safeResult.finishReason || '',
+    resultScope: 'provider_and_base_format',
+    businessValidation: safeConfig.outputMode === 'json' && safeResult.ok === true ? 'caller_owned_pending' : 'not_applicable',
     ok: safeResult.ok === true,
     errorType: safeResult.errorType || '',
     httpStatus: Number(safeResult.httpStatus || 0),

@@ -109,6 +109,10 @@ function handleLineEvent(event) {
     return;
   }
 
+  // 同一個 webhook 的 Reader 與所有 AI call 共用 deadline；功能層只收到 provider-neutral context，
+  // 不接觸 DeepSeek/Gemini payload。背景 Queue 不會經過此入口，因此仍使用完整 profile timeout。
+  const aiExecutionContext = createLineWebhookExecutionContext_(Date.now());
+
   const sourceType = event.source && event.source.type ? event.source.type : 'unknown';
   const isGroupLike = sourceType === 'group' || sourceType === 'room';
   const conversationId = getConversationId(event);
@@ -238,7 +242,7 @@ function handleLineEvent(event) {
   if (userText === '#封存本週話題') {
     let archiveReply = '';
     try {
-      archiveReply = archiveWeeklyTopics(event, conversationId);
+      archiveReply = archiveWeeklyTopics(event, conversationId, aiExecutionContext);
     } catch (error) {
       console.error('archiveWeeklyTopics error:', error && error.stack ? error.stack : error);
       archiveReply = getBotTextArchiveError_();
@@ -252,7 +256,7 @@ function handleLineEvent(event) {
   if (userText === '#封存本週新聞') {
     let archiveNewsReply = '';
     try {
-      archiveNewsReply = archiveWeeklyNews(event, conversationId);
+      archiveNewsReply = archiveWeeklyNews(event, conversationId, aiExecutionContext);
     } catch (error) {
       console.error('archiveWeeklyNews error:', error && error.stack ? error.stack : error);
       archiveNewsReply = getBotTextNewsArchiveError_();
@@ -269,22 +273,22 @@ function handleLineEvent(event) {
 
   try {
     if (commandInfo.mode === 'integrate_topics') {
-      aiReply = integrateRecentTopics(event, conversationId, commandInfo.userPrompt);
+      aiReply = integrateRecentTopics(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
 
     } else if (commandInfo.mode === 'weekly_news') {
-      aiReply = handleWeeklyNewsDigest_(event, conversationId, commandInfo.userPrompt);
+      aiReply = handleWeeklyNewsDigest_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
 
     } else if (commandInfo.mode === 'news_question') {
-      aiReply = handleNewsQuestion_(event, conversationId, commandInfo.userPrompt);
+      aiReply = handleNewsQuestion_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
 
     } else if (commandInfo.mode === 'news_status_report') {
       aiReply = handleNewsStatusReport_(event, conversationId);
 
     } else if (commandInfo.mode === 'manual_news_supplement') {
-      aiReply = handleManualNewsSupplement_(event, conversationId, userText);
+      aiReply = handleManualNewsSupplement_(event, conversationId, userText, aiExecutionContext);
 
     } else if (commandInfo.mode === 'archive_weekly_news') {
-      aiReply = archiveWeeklyNews(event, conversationId);
+      aiReply = archiveWeeklyNews(event, conversationId, aiExecutionContext);
 
     } else if (commandInfo.mode === 'program_topic_analysis') {
       const urls = extractUrls(commandInfo.userPrompt);
@@ -294,7 +298,7 @@ function handleLineEvent(event) {
           ? buildWebTaskAcceptedText_(TASK_TYPE_PROGRAM_TOPIC_ANALYSIS, enqueueResult.urls.length)
           : enqueueResult.error || getBotTextNoReadableUrl_();
       } else {
-        aiReply = analyzeProgramTopicFromRecentContext(event, conversationId, commandInfo.userPrompt);
+        aiReply = analyzeProgramTopicFromRecentContext(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
       }
 
     } else if (commandInfo.mode === 'web_read') {
@@ -305,7 +309,7 @@ function handleLineEvent(event) {
 
     } else {
       if (shouldUseWebReading(commandInfo.userPrompt)) {
-        const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt);
+        const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
         aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
         aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
       } else {
@@ -313,7 +317,8 @@ function handleLineEvent(event) {
           'general_chat',
           conversationId,
           commandInfo.userPrompt,
-          commandInfo.userPrompt
+          commandInfo.userPrompt,
+          requireAiCallOptionsForExecutionContext_(aiExecutionContext)
         ));
       }
     }
@@ -326,4 +331,19 @@ function handleLineEvent(event) {
 
   replyToLine(event.replyToken, aiReply);
   logAssistantReplyToSheet(event, conversationId, aiReply, aiReplyMode);
+}
+
+/**
+ * 建立單一 LINE event 共用的同步執行預算。
+ * deadline 防止同一 webhook 的兩次 AI call 各自取得完整 cap；Reader 也共用相同截止時間。
+ */
+function createLineWebhookExecutionContext_(startedAtMs) {
+  const safeStartedAtMs = Number(startedAtMs);
+  const baseTime = isFinite(safeStartedAtMs) && safeStartedAtMs > 0 ? safeStartedAtMs : Date.now();
+  return {
+    deadlineAtMs: baseTime + LINE_WEBHOOK_SYNC_WORK_BUDGET_MS,
+    aiTimeoutCapSeconds: LINE_WEBHOOK_SYNC_AI_TIMEOUT_CAP_SECONDS,
+    aiMinimumRequestSeconds: LINE_WEBHOOK_SYNC_AI_MIN_REQUEST_SECONDS,
+    readerTimeoutCapSeconds: LINE_WEBHOOK_SYNC_READER_TIMEOUT_CAP_SECONDS
+  };
 }

@@ -21,6 +21,8 @@
 // 4. v1.13.0 不綁定 thinking_max；它只保留給未來明確指定的高價值低頻任務。
 // 5. DeepSeek 最新官方規格只有 high / max 是正式 reasoning_effort；不要新增
 //    low / medium profile，因為供應商只會把它們相容映射為 high。
+// 6. profile/route timeout 是任務最大預算；LINE webhook 會在 AiService 再套較短同步 cap。
+// 7. retryPolicy 目前只是 caller-owned 描述資料，AiService 不會據此 sleep 或自動重試。
 // ======================================================
 
 const AI_PROVIDER_REGISTRY = {
@@ -60,7 +62,7 @@ const AI_RETRYABLE_ERROR_TYPES = [
 
 const AI_EXECUTION_PROFILES = {
   // 一般聊天與簡單文字整理：不需要額外推理，保留適度語氣彈性。
-  // 1200 tokens 足以涵蓋 LINE 日常回覆；45 秒避免 webhook 長時間等待。
+  // 1200 tokens 足以涵蓋 LINE 日常回覆；45 秒是任務上限，webhook 另有較短同步 cap。
   // 它不能與 thinking_high 合併，否則一般聊天會無謂增加 reasoning token 與延遲。
   fast_text: {
     thinking: { type: 'disabled' },
@@ -75,7 +77,7 @@ const AI_EXECUTION_PROFILES = {
   },
 
   // 固定結構 JSON：關閉 thinking 以提高格式穩定性，低溫度減少 enum 與欄位漂移。
-  // 4000 tokens 涵蓋一般結構化任務；60 秒容納 Queue 與文件摘要的正常延遲。
+  // 4000 tokens 涵蓋一般結構化任務；60 秒是背景 Queue 可用的完整任務上限。
   // 它不能與 long_extraction_json 合併，否則日常 JSON 會普遍取得過高輸出預算。
   fast_json: {
     thinking: { type: 'disabled' },
@@ -90,7 +92,7 @@ const AI_EXECUTION_PROFILES = {
   },
 
   // raw HTML 正文抽取：任務是保留原文而非推理，因此 thinking 關閉、溫度為 0。
-  // 24000 tokens 是為長文 mainText 留空間，90 秒則兼顧 UrlFetch 與 GAS 六分鐘上限。
+  // 24000 tokens 是為長文 mainText 留空間，90 秒是背景 extraction 的完整任務上限。
   // 它不能與 fast_json 合併，否則長文會被一般 4000-token 上限截斷。
   long_extraction_json: {
     thinking: { type: 'disabled' },
@@ -106,7 +108,7 @@ const AI_EXECUTION_PROFILES = {
 
   // 跨多筆素材的分析與統整：thinking 開啟並使用官方 high effort。
   // thinking 模式不得送 temperature / top_p 等無效採樣欄位；8000 tokens 同時涵蓋
-  // reasoning 與最終文字，120 秒提供複雜任務足夠時間。
+  // reasoning 與最終文字，120 秒提供背景或非 webhook caller 足夠時間；webhook 不會用滿。
   // 它不能與 fast_text 合併，因為兩者的成本、延遲與 payload 相容規則不同。
   thinking_high: {
     thinking: { type: 'enabled' },
@@ -213,44 +215,49 @@ function resolveAiTaskConfig_(task) {
   const taskName = String(task || '').trim();
   const route = AI_TASK_ROUTES[taskName];
   if (!route) {
-    throw new Error('Unknown AI task route: ' + taskName);
+    throw createAiConfigurationError_('Unknown AI task route: ' + taskName);
   }
 
   const provider = AI_PROVIDER_REGISTRY[route.provider];
   const modelEntry = AI_MODEL_REGISTRY[route.model];
   const profile = AI_EXECUTION_PROFILES[route.profile];
   // dormant 代表「目前沒有正式 route」，不是刪除 adapter；維護者明確切 route 即視為人工重新啟用。
-  if (!provider || !provider.adapter) throw new Error('AI provider is not registered: ' + route.provider);
-  if (!modelEntry || modelEntry.provider !== route.provider) throw new Error('AI model route mismatch: ' + route.model);
-  if (!profile) throw new Error('Unknown AI execution profile: ' + route.profile);
+  if (!provider || !provider.adapter) throw createAiConfigurationError_('AI provider is not registered: ' + route.provider);
+  if (!modelEntry || modelEntry.provider !== route.provider) throw createAiConfigurationError_('AI model route mismatch: ' + route.model);
+  if (!profile) throw createAiConfigurationError_('Unknown AI execution profile: ' + route.profile);
 
   const thinkingType = String(profile.thinking && profile.thinking.type || '');
   if (thinkingType !== 'enabled' && thinkingType !== 'disabled') {
-    throw new Error('AI profile must explicitly set thinking enabled or disabled: ' + route.profile);
+    throw createAiConfigurationError_('AI profile must explicitly set thinking enabled or disabled: ' + route.profile);
   }
   if (thinkingType !== route.expectedThinking) {
-    throw new Error('AI task thinking/profile mismatch: ' + taskName);
+    throw createAiConfigurationError_('AI task thinking/profile mismatch: ' + taskName);
   }
   if (['text', 'json'].indexOf(profile.outputMode) < 0) {
-    throw new Error('AI profile output mode must be text or json: ' + route.profile);
+    throw createAiConfigurationError_('AI profile output mode must be text or json: ' + route.profile);
   }
   if (thinkingType === 'enabled' && ['high', 'max'].indexOf(profile.reasoningEffort) < 0) {
-    throw new Error('Thinking profile requires reasoning effort high or max: ' + route.profile);
+    throw createAiConfigurationError_('Thinking profile requires reasoning effort high or max: ' + route.profile);
   }
   if (thinkingType === 'enabled' && profile.allowSampling === true) {
-    throw new Error('Thinking profile cannot enable sampling parameters: ' + route.profile);
+    throw createAiConfigurationError_('Thinking profile cannot enable sampling parameters: ' + route.profile);
   }
   if (thinkingType === 'disabled' && profile.reasoningEffort) {
-    throw new Error('Non-thinking profile must not set reasoning effort: ' + route.profile);
+    throw createAiConfigurationError_('Non-thinking profile must not set reasoning effort: ' + route.profile);
   }
 
-  const maxOutputTokens = Number(route.maxOutputTokens || profile.maxOutputTokens);
-  const timeoutSeconds = Number(route.timeoutSeconds || profile.timeoutSeconds);
+  // hasOwnProperty 可讓 0 / NaN route override 被驗證拒絕，不會因 `||` 靜默退回 profile。
+  const maxOutputTokens = Number(Object.prototype.hasOwnProperty.call(route, 'maxOutputTokens')
+    ? route.maxOutputTokens
+    : profile.maxOutputTokens);
+  const timeoutSeconds = Number(Object.prototype.hasOwnProperty.call(route, 'timeoutSeconds')
+    ? route.timeoutSeconds
+    : profile.timeoutSeconds);
   if (!isFinite(maxOutputTokens) || maxOutputTokens <= 0) {
-    throw new Error('AI task max output tokens must be positive: ' + taskName);
+    throw createAiConfigurationError_('AI task max output tokens must be positive: ' + taskName);
   }
   if (!isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
-    throw new Error('AI task timeout must be positive: ' + taskName);
+    throw createAiConfigurationError_('AI task timeout must be positive: ' + taskName);
   }
 
   return {
@@ -269,6 +276,7 @@ function resolveAiTaskConfig_(task) {
     maxOutputTokens: maxOutputTokens,
     timeoutSeconds: timeoutSeconds,
     requiredFinishReason: route.requiredFinishReason || profile.requiredFinishReason || 'stop',
+    // 僅提供 Queue/caller 判斷；AiService v1.13.0 不讀此欄位執行 retry。
     retryPolicy: route.retryPolicy || profile.retryPolicy || { strategy: 'caller_owned', maxAttemptsInService: 1 }
   };
 }

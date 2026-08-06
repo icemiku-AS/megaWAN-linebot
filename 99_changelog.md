@@ -8,6 +8,9 @@ v1.13.0 AI Routing & Project Architecture Edition
 - Prompt/schema/normalizer 回到功能模組：NewsInbox 留在 13、快讀留在 07、raw HTML extraction 留在 06、週編輯台留在 17；provider adapter 不再擁有業務 Prompt。
 - 新增 normalized AI response、typed error、Queue retryable 判斷與安全 console metadata；不新增 AI Log Sheet，不記錄完整 Prompt、聊天、正文、response text 或 secret。
 - 新 reader route 使用 legacy_raw_html_ai；歷史 legacy_raw_html_gemini 不 migration 且仍可辨識。WEEKLY_EDITORIAL_CACHE_VERSION 更新為 v1.13.0。
+- review fix：legacy Reader 保留 AI typed metadata 到 NewsUrlQueue，route/profile 設定錯誤固定為不可重試，X 非 status URL 加入永久錯誤防守。
+- review fix：LINE webhook 使用 40 秒共同 deadline、30 秒單次 AI cap 與 12 秒同步 Reader cap；直接網址會扣除 Reader/前一 AI 耗時，memory bridge 預算不足時跳過。
+- 明確定義 `AI_CALL_METADATA.ok` 只代表 provider 與基礎格式結果；功能 validator 與 Queue retry 仍由 caller 負責。
 - 保留公開 webhook/trigger、Sheet headers、LINE 指令與既有回覆格式；本版不需要 migration、setup、新 Trigger 或新增 Script Properties。
 
 // ==================================================

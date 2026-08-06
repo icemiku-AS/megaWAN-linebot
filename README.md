@@ -59,7 +59,9 @@ v1.13.0 是 AI Routing & Project Architecture Edition。
 - 正常 runtime 全部使用 `deepseek-v4-flash`；NewsInbox 分析、`#懶人包` 與 raw HTML extraction 不再讀取 Gemini key。
 - `08_GeminiService.gs` 保留 dormant transport。只有維護者明確把 route 切到 Gemini 才會讀 `GEMINI_API_KEY`；本版沒有自動跨 provider fallback。
 - 功能 Prompt/schema/normalizer 留在最理解契約的功能檔；provider adapter 只處理 API 協議。
-- AI metadata 只寫 console，不新增 AI Log Sheet，也不記錄完整 Prompt、聊天、正文、response text 或 secret。
+- legacy Reader 會把 AI `errorType/retryable/httpStatus` 保留到 NewsUrlQueue；configuration/auth/永久 4xx 不重試，timeout/429/5xx 才依 typed metadata 重試。
+- LINE webhook 共用 40 秒工作期限，單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒；背景 Queue 不傳 execution context，仍使用完整 profile timeout。
+- AI metadata 只寫 console；`AI_CALL_METADATA.ok` 代表 provider 與基礎格式通過，不代表功能 validator 已完成。不新增 AI Log Sheet，也不記錄完整 Prompt、聊天、正文、response text 或 secret。
 - 本版不改 Sheet schema、Trigger、LINE 指令、既有回覆格式、Reader 優先順序或歷史資料。
 
 ### AI call flow
@@ -84,6 +86,8 @@ v1.13.0 是 AI Routing & Project Architecture Edition。
 | `news_memory_bridge` | `thinking_high` | enabled / high | text | 5,000 / 90s | 本週新聞與過去封存脈絡比對 |
 
 `thinking_max` 只保留 profile，v1.13.0 沒有任何 runtime task 綁定。
+
+表中 timeout 是 profile/route 的任務最大值。由 LINE webhook 同步執行的 task 會再套 30 秒單次 cap，並受同一 event 的 40 秒共同 deadline 約束；背景 WebTaskQueue / NewsUrlQueue 使用表中的完整上限。`retryPolicy` 目前只是 caller-owned metadata，AiService 本身不執行 retry。
 
 ---
 
@@ -296,6 +300,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 - 在群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。
 - 確認該網址進入 NewsUrlQueue，背景 trigger 處理後寫入 NewsInbox。
 - 在個人聊天室直接貼一個一般新聞網址，確認仍可同步回覆短 Brief 並寫入 NewsInbox。
+- 模擬 Reader 已耗時、Jina 失敗後先做 legacy extraction，以及剩餘 AI 預算不足，確認直接網址會改進既有 NewsUrlQueue，而不是再等待完整 60/90 秒。
 - 測試 PTT、X / Twitter 單篇 status、Facebook / Threads 公開網址。
 - 準備一個 Jina 成功網址，確認不呼叫 raw_html_extraction；再模擬 Jina 失敗，確認依序進入 `legacy_raw_html_ai` 且正文 validator 生效。
 - 一次貼兩個以上網址，確認多筆靜默進 NewsUrlQueue。
@@ -305,6 +310,8 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 - 測試漏 itemId、重複 itemId、未知 itemId、cluster / ungrouped 衝突、空標題與單篇 cluster，確認資料 partition 讓每則原始新聞恰好位於一個故事線或其他新聞集合。
 - 測試 ConversationLog 的指令、純網址、短回覆與重複排除；「評論文字＋網址」應保留評論，沒有有效對話時省略群組話題。
 - 測試 DeepSeek 非 2xx、空回覆、非 JSON、缺欄、截斷 JSON 與 `finish_reason=length`，確認 typed error、Queue retry/fallback 與資料保護符合各 task 規則。
+- 模擬缺 `DEEPSEEK_API_KEY`、401/403、400、timeout、429、5xx，確認 legacy Reader 到 NewsUrlQueue 的 typed metadata 不遺失，且永久錯誤不重試。
+- 測試 X / Twitter 非 `/status/{id}` 網址即使繞過入隊前檢查，也會以 `x_twitter_url_without_status_id` 直接 failed。
 - 準備超過 30 則新聞與超過對話上限的資料，確認未送模型新聞仍進其他新聞，模型 payload 遵守裁切上限。
 - 準備超長回覆，確認先減少群組話題、再省略完整低順位新聞 block；每則保留新聞恰好顯示一次、被省略新聞完全不顯示、網址不被切斷，並準確顯示「尚有 N 則未顯示」。
 - 重複執行相同查詢確認 10 分鐘 cache hit；新增新聞或有效對話後確認 cache miss。
@@ -327,4 +334,4 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 - 回歸 `#懶人包`、網址版 `#節目話題分析`、`#新聞補充`、`#版本`、`#版本紀錄`。
 - 在 GAS 手動執行 `processWebTaskQueue` / `processNewsUrlQueue`，並確認既有 time-driven trigger handler 名稱未改變。
 - 暫時移除 `GEMINI_API_KEY` 後回歸上述所有正常功能，確認沒有啟動錯誤或 Gemini 呼叫。
-- 檢查 `AI_CALL_METADATA` 含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。
+- 檢查 `AI_CALL_METADATA` 含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。

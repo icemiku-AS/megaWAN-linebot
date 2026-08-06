@@ -20,6 +20,7 @@
 // 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
 // 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
 // 11. 本版不改 NewsInbox / NewsUrlQueue Sheet schema、欄序、Queue 次數或公開 trigger 名稱。
+// 12. webhook execution context 讓 Reader、legacy extraction 與 news_analysis 共用期限；背景 Queue 仍用完整 profile。
 // ======================================================
 
 const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '馬斯克', '川普', '待分類'];
@@ -42,7 +43,11 @@ const NEWS_STORY_FALLBACK_KEY = '未命名故事線';
 // 1. 這些錯誤不是暫時性網路錯誤，重試通常不會成功。
 // 2. 例如 unsupported_social_platform 代表平台目前尚未導入 Apify / ByCrawl / 官方 API。
 // 3. 這類錯誤應立即 failed 並通知使用者，不應浪費 3 次 trigger 重試。
-const NEWS_URL_PERMANENT_ERROR_TYPES = ['unsupported_social_platform', 'unsafe_url'];
+const NEWS_URL_PERMANENT_ERROR_TYPES = [
+  'unsupported_social_platform',
+  'x_twitter_url_without_status_id',
+  'unsafe_url'
+];
 
 function ensureNewsUrlQueueSheet_() {
   const headers = ['TaskId', 'CreatedAt', 'UpdatedAt', 'ConversationId', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'UserPrompt', 'Url', 'Status', 'RetryCount', 'NextRunAt', 'LastErrorType', 'LastErrorText', 'StartedAt', 'FinishedAt'];
@@ -71,7 +76,7 @@ function ensureNewsInboxSheet_() {
 // 直接貼網址：私訊 / 明確指令保留同步 Brief；群組一般網址另走靜默 queue
 // ======================================================
 
-function handleDirectNewsUrlMessage_(event, conversationId, userText) {
+function handleDirectNewsUrlMessage_(event, conversationId, userText, aiExecutionContext) {
   const urls = extractUrls(userText).slice(0, MAX_NEWS_URLS_PER_MESSAGE);
 
   if (!urls.length) {
@@ -102,7 +107,7 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText) {
   const readerStartedAt = Date.now();
   let webResult = null;
   try {
-    webResult = fetchAndExtractWebPageByReaderLayer_(url);
+    webResult = fetchAndExtractWebPageByReaderLayer_(url, aiExecutionContext);
   } catch (error) {
     console.error('Direct news Reader failed:', error && error.stack ? error.stack : error);
     return enqueueDirectNewsUrlsForBackground_(
@@ -117,8 +122,9 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText) {
   const readerElapsedMs = Date.now() - readerStartedAt;
 
   if (!webResult.ok) {
-    // unsafe_url 等永久性錯誤不應寫入 queue，否則背景 trigger 只會再次得到相同結果。
-    if (isPermanentNewsUrlError_(webResult.errorType, webResult.error)) {
+    // unsafe_url 與 AI auth/configuration 等永久性錯誤不應寫入 queue，否則背景 trigger
+    // 只會再次得到相同結果。legacy Reader 必須讓 retryable 穿越 Reader Layer 才能在此判斷。
+    if (isPermanentNewsUrlError_(webResult.errorType, webResult.error) || webResult.retryable === false) {
       return {
         ok: false,
         replyText: getBotTextDirectNewsSummaryFailed_(url, webResult.error),
@@ -147,15 +153,36 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText) {
     );
   }
 
+  // 不能只看 Reader 是否低於 15 秒；還要扣掉 event 前置處理及 legacy extraction 已用時間。
+  // 剩餘 AI 預算不足時直接沿用 NewsUrlQueue fallback，不發出注定趕不上 reply token 的 request。
+  const analysisAiOptions = buildAiCallOptionsForExecutionContext_(aiExecutionContext, {});
+  if (!analysisAiOptions) {
+    return enqueueDirectNewsUrlsForBackground_(
+      event,
+      conversationId,
+      userText,
+      true,
+      'sync_ai_budget_exhausted'
+    );
+  }
+
   let analysis = null;
   const aiStartedAt = Date.now();
   try {
-    analysis = analyzeNewsUrlWithAi_(url, webResult);
+    analysis = analyzeNewsUrlWithAi_(url, webResult, analysisAiOptions);
   } catch (error) {
     console.error(
       'Direct news AI analysis failed after ' + (Date.now() - aiStartedAt) + 'ms:',
       error && error.stack ? error.stack : error
     );
+    if (error && error.retryable === false) {
+      return {
+        ok: false,
+        queued: false,
+        replyText: getBotTextDirectNewsSummaryFailed_(url, error.message || getBotTextAiError_()),
+        replyMode: 'news_inbox_sync_failed'
+      };
+    }
     return enqueueDirectNewsUrlsForBackground_(
       event,
       conversationId,
@@ -435,10 +462,7 @@ function processSingleNewsUrlTask_(task) {
   try {
     const webResult = fetchAndExtractWebPageByReaderLayer_(task.url);
     if (!webResult.ok) {
-      const readerError = new Error(webResult.error || 'fetch failed');
-      readerError.errorType = webResult.errorType || 'reader_error';
-      readerError.readerRoute = webResult.readerRoute || '';
-      throw readerError;
+      throw createNewsUrlReaderError_(webResult);
     }
 
     const analysis = analyzeNewsUrlWithAi_(task.url, webResult);
@@ -482,7 +506,15 @@ function processSingleNewsUrlTask_(task) {
     const errorType = error && error.errorType ? error.errorType : classifyNewsUrlError_(errorText);
     const retryCount = Number(task.retryCount || 0) + 1;
     const retryableHint = error && typeof error.retryable === 'boolean' ? error.retryable : null;
-    const shouldRetry = shouldRetryNewsUrlError_(errorType, errorText, retryableHint);
+    const httpStatus = Number(error && error.httpStatus || 0);
+    const shouldRetry = shouldRetryNewsUrlError_(errorType, errorText, retryableHint, httpStatus);
+    console.log('NEWS_URL_TASK_ERROR_METADATA ' + JSON.stringify({
+      taskId: task.taskId || '',
+      errorType: errorType,
+      readerRoute: String(error && error.readerRoute || ''),
+      httpStatus: httpStatus,
+      retryable: shouldRetry
+    }));
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'RetryCount', retryCount);
@@ -508,14 +540,30 @@ function processSingleNewsUrlTask_(task) {
 }
 
 /**
- * NewsUrlQueue retry 判斷。優先採用 normalized error.retryable；舊 reader/errorType
- * 才退回永久錯誤清單與 typed error 清單，不再搜尋 Gemini/JSON 等 provider 字樣。
+ * 將 Reader failure 轉成 Queue 可使用的 Error，typed AI metadata 必須完整保留。
+ * 只傳穩定類型、retry hint、HTTP status 與安全文字，不夾帶正文或 provider response。
  */
-function shouldRetryNewsUrlError_(errorType, errorText, retryableHint) {
-  if (typeof retryableHint === 'boolean') return retryableHint;
+function createNewsUrlReaderError_(webResult) {
+  const result = webResult || {};
+  const error = new Error(result.error || 'fetch failed');
+  error.errorType = result.errorType || 'reader_error';
+  error.readerRoute = result.readerRoute || '';
+  if (typeof result.retryable === 'boolean') error.retryable = result.retryable;
+  error.httpStatus = Number(result.httpStatus || result.statusCode || 0);
+  return error;
+}
+
+/**
+ * NewsUrlQueue retry 判斷。永久類型與 400 類 HTTP 先拒絕，再採 normalized retryable；
+ * 舊 reader/errorType 才退回 typed error 清單，不再搜尋 Gemini/JSON 等 provider 字樣。
+ */
+function shouldRetryNewsUrlError_(errorType, errorText, retryableHint, httpStatus) {
   if (isPermanentNewsUrlError_(errorType, errorText)) {
     return false;
   }
+  const status = Number(httpStatus || 0);
+  if (status >= 400 && status < 500 && status !== 408 && status !== 429) return false;
+  if (typeof retryableHint === 'boolean') return retryableHint;
   if (String(errorType || '').indexOf('ai_') === 0) return isAiErrorTypeRetryable_(errorType);
   return true;
 }
@@ -530,6 +578,7 @@ function isPermanentNewsUrlError_(errorType, errorText) {
   // 後備防守：若舊資料或未帶 errorType 的錯誤訊息中仍包含明確永久錯誤訊號，也不要重試。
   const text = String(errorText || '').toLowerCase();
   return text.indexOf('unsupported_social_platform') >= 0 ||
+    text.indexOf('x_twitter_url_without_status_id') >= 0 ||
     text.indexOf('網址安全檢查未通過') >= 0;
 }
 
@@ -538,11 +587,12 @@ function isPermanentNewsUrlError_(errorType, errorText) {
  * AiService 只負責 news_analysis task 與合法 JSON 基礎檢查。
  * 缺欄視為可重試 validation error，避免半套分類寫入既有 NewsInbox schema。
  */
-function analyzeNewsUrlWithAi_(url, webResult) {
+function analyzeNewsUrlWithAi_(url, webResult, aiOptions) {
   const prompt = buildNewsAnalysisPrompt_(url, webResult);
-  const aiResult = runAiJsonTask('news_analysis', prompt, {
-    systemPrompt: buildNewsAnalysisSystemPrompt_()
-  });
+  const options = {};
+  Object.keys(aiOptions || {}).forEach(function(key) { options[key] = aiOptions[key]; });
+  options.systemPrompt = buildNewsAnalysisSystemPrompt_();
+  const aiResult = runAiJsonTask('news_analysis', prompt, options);
   const result = requireAiJson_(aiResult);
   validateNewsAnalysisContract_(result);
   const rawCategory = String(result.category || '').trim();
@@ -1144,16 +1194,16 @@ function appendNewsInboxRow_(item) {
 function classifyNewsUrlError_(errorText) {
   const text = String(errorText || '').toLowerCase();
   if (text.indexOf('unsupported_social_platform') >= 0) return 'unsupported_social_platform';
+  if (text.indexOf('x_twitter_url_without_status_id') >= 0) return 'x_twitter_url_without_status_id';
   if (text.indexOf('網址安全檢查未通過') >= 0) return 'unsafe_url';
   if (text.indexOf('fetch') >= 0 || text.indexOf('urlfetch') >= 0) return 'fetch_error';
   if (text.indexOf('missing ') >= 0 && text.indexOf('script properties') >= 0) return 'ai_configuration_error';
   if (text.indexOf('timeout') >= 0 || text.indexOf('timed out') >= 0) return 'ai_timeout';
-  if (text.indexOf('json') >= 0) return 'ai_invalid_json';
   if (text.indexOf('weak_auto_classification') >= 0) return 'ai_validation_error';
   return 'unknown_error';
 }
 
-function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
+function handleWeeklyNewsDigest_(event, conversationId, userPrompt, aiExecutionContext) {
   if (isRemovedWeeklyNews24HourQuery_(userPrompt)) {
     return getBotTextWeeklyNews24HourRemoved_();
   }
@@ -1169,12 +1219,12 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt) {
     // 模型呼叫前先建立一定可用的分類 fallback；任何 API、JSON 或 validator
     // 錯誤都直接使用這份結果，不在 webhook 內 retry，也不把技術錯誤回群組。
     const fallbackText = formatWeeklyNewsCompactDigest_(filteredItems, queryOptions);
-    digestText = tryBuildWeeklyEditorialDigest_(conversationId, filteredItems, queryOptions) || fallbackText;
+    digestText = tryBuildWeeklyEditorialDigest_(conversationId, filteredItems, queryOptions, aiExecutionContext) || fallbackText;
   } else {
     digestText = formatWeeklyNewsDigest_(filteredItems, queryOptions);
   }
   const memoryBridgeText = shouldBuildWeeklyNewsMemoryBridge_(queryOptions)
-    ? buildWeeklyNewsMemoryBridge_(conversationId, filteredItems)
+    ? buildWeeklyNewsMemoryBridge_(conversationId, filteredItems, aiExecutionContext)
     : '';
 
   return [digestText, memoryBridgeText].filter(function(block) {
@@ -1188,7 +1238,7 @@ function isRemovedWeeklyNews24HourQuery_(userPrompt) {
   return /24\s*小時|24\s*小时|一天|1\s*天/.test(text);
 }
 
-function handleNewsQuestion_(event, conversationId, userPrompt) {
+function handleNewsQuestion_(event, conversationId, userPrompt, aiExecutionContext) {
   const queryOptions = parseNewsQuestionOptions_(userPrompt);
   if (!queryOptions.question) {
     return getBotTextNewsQuestionNeedQuestion_();
@@ -1202,7 +1252,11 @@ function handleNewsQuestion_(event, conversationId, userPrompt) {
 
   const prompt = buildNewsQuestionPrompt_(conversationId, filteredItems, queryOptions);
   // 本版不另建問題複雜度分類器；跨多筆 NewsInbox 問答固定走 thinking_high 文字 task。
-  const answerText = String(requireAiText_(runAiTextTask('news_question', prompt)) || '').trim();
+  const answerText = String(requireAiText_(runAiTextTask(
+    'news_question',
+    prompt,
+    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+  )) || '').trim();
   return answerText || getBotTextEmptyReply_();
 }
 
@@ -1903,7 +1957,7 @@ function shouldBuildWeeklyNewsMemoryBridge_(queryOptions) {
   return true;
 }
 
-function buildWeeklyNewsMemoryBridge_(conversationId, items) {
+function buildWeeklyNewsMemoryBridge_(conversationId, items, aiExecutionContext) {
   const archiveText = getRecentWeeklySummaryText(
     conversationId,
     DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT,
@@ -1933,7 +1987,17 @@ function buildWeeklyNewsMemoryBridge_(conversationId, items) {
   ].join('\n');
 
   try {
-    const relationText = String(requireAiText_(runAiTextTask('news_memory_bridge', prompt)) || '').trim();
+    // memory bridge 只補充脈絡，不可拖垮主要 #本週新聞 回覆；剩餘少於 20 秒就安全跳過。
+    const aiOptions = buildAiCallOptionsForExecutionContext_(
+      aiExecutionContext,
+      {},
+      LINE_WEBHOOK_SYNC_AUXILIARY_AI_MIN_REQUEST_SECONDS
+    );
+    if (!aiOptions) {
+      console.log('news_memory_bridge skipped: insufficient synchronous AI budget');
+      return '';
+    }
+    const relationText = String(requireAiText_(runAiTextTask('news_memory_bridge', prompt, aiOptions)) || '').trim();
     if (relationText === '空字串' || relationText === '""') {
       return '';
     }
@@ -2143,11 +2207,11 @@ function getRecentNewsInboxTextForTopics_(conversationId, days, limit) {
   }).join('\n\n');
 }
 
-function handleManualNewsSupplement_(event, conversationId, userText) {
+function handleManualNewsSupplement_(event, conversationId, userText, aiExecutionContext) {
   const urls = extractUrls(userText);
   if (!urls.length) return getBotTextManualNewsSupplementNeedUrl_();
 
-  const parsed = parseManualNewsSupplement_(userText);
+  const parsed = parseManualNewsSupplement_(userText, aiExecutionContext);
   const source = event.source || {};
 
   appendNewsInboxRow_({
@@ -2177,12 +2241,16 @@ function handleManualNewsSupplement_(event, conversationId, userText) {
   return getBotTextManualNewsSupplementSaved_(parsed);
 }
 
-function parseManualNewsSupplement_(userText) {
+function parseManualNewsSupplement_(userText, aiExecutionContext) {
   const prompt = buildManualNewsSupplementPrompt_(userText);
   try {
     // v1.10.8 的 parser hotfix 歷史仍保留；v1.13.0 改由 AiService JSON 基礎檢查，
     // 功能 normalizer 繼續留在 NewsInbox，失敗仍走既有人工 fallback。
-    const result = requireAiJson_(runAiJsonTask('manual_news_supplement', prompt));
+    const result = requireAiJson_(runAiJsonTask(
+      'manual_news_supplement',
+      prompt,
+      requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+    ));
     validateManualNewsSupplementContract_(result);
 
     return {

@@ -132,6 +132,10 @@ v1.13.0 是 AI Routing & Project Architecture Edition。
 18. 保留一版 `callDeepSeek...`、`callGeminiWeb...` 與 `buildSystemPrompt` compatibility wrapper；正式 runtime 不使用舊 wrapper。
 19. `WEEKLY_EDITORIAL_CACHE_VERSION` 更新為 `v1.13.0`，避免舊 normalized cache 混入新 provider contract。
 20. 本版不修改任何 Sheet header/欄序、LINE 指令或既有回覆格式；不需要 migration、setup、新 Trigger 或新增 Script Properties。
+21. legacy Reader 會保留 AI `errorType/retryable/httpStatus` 到 ReaderLayer 與 NewsUrlQueue；configuration/auth/永久 4xx 不重試，timeout/429/5xx 才依 typed metadata 重試。
+22. LINE webhook 共用 40 秒工作期限，單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒；直接網址會用同一 deadline 扣除 Reader 與前一次 AI 耗時，預算不足即進既有 Queue。
+23. profile timeout 是任務最大值，背景 Queue 不傳同步 context 時仍使用完整上限；`retryPolicy` 只供 caller 描述與決策，AiService 不自動 retry。
+24. `AI_CALL_METADATA.ok` 只代表 provider transport、finish/content 與 JSON 基礎格式通過，不代表功能 schema/business validator 已完成。
 
 Task/profile 對照：
 
@@ -146,6 +150,8 @@ Task/profile 對照：
 * `weekly_editorial_digest` → `fast_json` → thinking disabled → JSON
 * `manual_news_supplement` → `fast_json` → thinking disabled → JSON
 * `news_memory_bridge` → `thinking_high` → thinking enabled/high → text
+
+以上 profile timeout 為任務最大值；所有由 `handleLineEvent()` 同步執行的 AI task 都另受 30 秒單次 cap 與 40 秒 event deadline 約束。`news_memory_bridge` 是輔助脈絡，剩餘少於 20 秒時直接跳過；週編輯台 compact route 與 memory bridge 依現行 query 條件互斥。
 
 Script Properties：正常 runtime 需要 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。`GEMINI_API_KEY` 只在 dormant Gemini route 被明確選中時需要；本版沒有新增 key。
 
@@ -454,6 +460,7 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 * 群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。
 * 確認該網址進入 NewsUrlQueue，背景 trigger 處理後寫入 NewsInbox。
 * 個人聊天室直接貼一個一般新聞網址，確認仍可同步回覆自然 Brief 並寫入 NewsInbox。
+* 模擬 Reader 已耗時、Jina 失敗後先做 legacy extraction，以及剩餘 AI 預算不足，確認直接網址改進既有 NewsUrlQueue，不等待完整 profile timeout。
 * PTT 文章、X / Twitter 單篇 status、Facebook / Threads 公開網址。
 * 準備一個 Jina 成功網址，確認不呼叫 raw_html_extraction；再模擬 Jina 失敗，確認依序進入 `legacy_raw_html_ai` 且正文 validator 生效。
 * 一次貼兩個以上網址，確認多筆靜默進 NewsUrlQueue。
@@ -464,6 +471,8 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 * 測試漏 ID、同 cluster 重複、跨 cluster 重複、未知 ID、cluster / ungrouped 衝突、空標題與單篇 cluster，確認 partition coverage 仍讓每則原始新聞恰好位於一處。
 * 測試 ConversationLog 指令、純網址、短回覆、重複與標題轉貼排除；「評論＋網址」要保留評論，沒有有效對話時不顯示群組話題。
 * 測試 DeepSeek 非 2xx、空回覆、非法 JSON、缺欄、截斷 JSON 與 `finish_reason=length`，確認 typed error、Queue retry/fallback 與資料保護符合 task 規則。
+* 模擬缺 `DEEPSEEK_API_KEY`、401/403、400、timeout、429、5xx，確認 legacy Reader 到 NewsUrlQueue 的 `errorType/retryable/httpStatus` 不遺失，且永久錯誤不重試。
+* 確認 X / Twitter 非 `/status/{id}` 網址即使繞過入隊前檢查，也不會進入 Queue retry。
 * 新聞超過 30 則時，確認分類保留、潛力/StoryKey/時間選取規則可重現，未送模型新聞仍進其他新聞。
 * 對話超過 60 則或 6000 字時，確認裁切與匿名代號正確。
 * 準備超長輸出，確認先減少群組話題、再省略完整低順位新聞 block；保留 URL 不被切開，rendered 與 omitted 不重複，省略數準確。
@@ -486,7 +495,7 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 * 回歸 `#懶人包`、網址版 `#節目話題分析`、`#新聞補充`、`#版本`、`#版本紀錄`。
 * 在 GAS 手動執行 `processWebTaskQueue` / `processNewsUrlQueue`，並確認既有 time-driven trigger handler 名稱未改變。
 * 移除 `GEMINI_API_KEY` 後回歸全部正常功能，確認 Gemini dormant provider 不影響啟動或 runtime。
-* 檢查 `AI_CALL_METADATA` 包含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。
+* 檢查 `AI_CALL_METADATA` 包含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。
 
 本版修改了 `.gs` runtime，因此需要由維護者手動同步至 Google Apps Script。
 

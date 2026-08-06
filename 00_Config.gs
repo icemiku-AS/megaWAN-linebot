@@ -22,6 +22,18 @@ const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
 const LINE_TEXT_MESSAGE_MAX_LENGTH = 4900;
 const LINE_REPLY_MAX_MESSAGE_COUNT = 5;
 
+// LINE webhook 的同步工作共用同一個 deadline。40 秒刻意保留 reply API、Sheet 寫入與排版餘裕；
+// profile timeout 是任務最大預算，單次同步 AI 最多 30 秒，且只能由 caller 再縮短。
+// 輔助型 memory bridge 至少要剩 20 秒才執行，避免拖垮主要回覆。
+const LINE_WEBHOOK_SYNC_WORK_BUDGET_MS = 40000;
+const LINE_WEBHOOK_SYNC_AI_TIMEOUT_CAP_SECONDS = 30;
+const LINE_WEBHOOK_SYNC_AI_MIN_REQUEST_SECONDS = 8;
+const LINE_WEBHOOK_SYNC_AUXILIARY_AI_MIN_REQUEST_SECONDS = 20;
+
+// Google Apps Script UrlFetchApp 的預設 timeout 可長達 360 秒；同步 Reader 另套 12 秒上限。
+// 背景 WebTaskQueue / NewsUrlQueue 不帶 execution context，維持既有 Reader 預設行為。
+const LINE_WEBHOOK_SYNC_READER_TIMEOUT_CAP_SECONDS = 12;
+
 // FxTwitter API：v1.10.9 起用於讀取 X / Twitter 單篇 status 貼文。
 // 使用方式：FXTWITTER_API_STATUS_ENDPOINT_PREFIX + statusId
 // 例：https://api.fxtwitter.com/2/status/1234567890123456789
@@ -172,8 +184,8 @@ const MAX_HTML_FOR_AI_EXTRACTION = 180000;
 // Reader 正文送入後續 AI 分析 Prompt 前的最大字元數。
 const MAX_EXTRACTED_TEXT_FOR_AI_PROMPT = 12000;
 
-// 直接貼單一網址時，Reader 完成後若已超過此時間，就不再追加 AI 同步分析，
-// 而是改放入 NewsUrlQueue，避免 LINE replyToken 等待時間過長。
+// 直接貼單一網址時，Reader 完成後若已超過此時間，就不再追加 AI 同步分析；
+// 同時還會依 webhook 共用 deadline 計算剩餘 AI 預算，任一條件不足都改放 NewsUrlQueue。
 const DIRECT_NEWS_SYNC_READER_MAX_MS = 15000;
 
 // 同步 Brief、Outline 與 NewsInbox 分類共用同一次 news_analysis task。

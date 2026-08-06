@@ -14,13 +14,14 @@
 // 7. v1.12.2 起，新聞封存會讀取 SpecialTopic / MatchedEntities，協助保留可回查的主角與事件名稱。
 // 8. v1.12.4 起，新聞封存素材文字會包含 StoryKey，協助長期記憶保留事件線。
 // 9. v1.13.0 起，本檔只選 AI task 與擁有功能 Prompt/schema；provider/profile/payload 由 AiService/AiProfiles 管理。
+// 10. LINE webhook 會傳入可選 execution context；它只縮短同步 timeout，背景或手動 caller 不傳時仍用完整 profile。
 // ======================================================
 
 // ======================================================
 // #節目話題分析：無網址時從近期脈絡判斷主題
 // ======================================================
 
-function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt) {
+function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt, aiExecutionContext) {
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
@@ -91,7 +92,8 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt)
     'program_topic_analysis',
     conversationId,
     '#節目話題分析',
-    prompt
+    prompt,
+    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
   ));
 }
 
@@ -99,7 +101,7 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt)
 // #統整話題：整合近期素材成節目話題地圖
 // ======================================================
 
-function integrateRecentTopics(event, conversationId, userPrompt) {
+function integrateRecentTopics(event, conversationId, userPrompt, aiExecutionContext) {
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
@@ -179,7 +181,8 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
     'integrate_topics',
     conversationId,
     '#統整話題 ' + (userPrompt || ''),
-    prompt
+    prompt,
+    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
   ));
 }
 
@@ -187,7 +190,7 @@ function integrateRecentTopics(event, conversationId, userPrompt) {
 // #封存本週話題：寫入 WeeklySummary 長期記憶
 // ======================================================
 
-function archiveWeeklyTopics(event, conversationId) {
+function archiveWeeklyTopics(event, conversationId, aiExecutionContext) {
   const recentCount = 200;
   const recentItems = getRecentConversationItems(conversationId, recentCount, false);
 
@@ -235,7 +238,11 @@ function archiveWeeklyTopics(event, conversationId) {
   ].join('\n');
 
   const archiveJson = validateArchiveJsonContract_(
-    requireAiJson_(runAiJsonTask('archive_topics', prompt)),
+    requireAiJson_(runAiJsonTask(
+      'archive_topics',
+      prompt,
+      requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+    )),
     'topic_archive'
   );
 
@@ -265,7 +272,7 @@ function archiveWeeklyTopics(event, conversationId) {
 // #封存本週新聞：將 NewsInbox 週摘要寫入 WeeklySummary
 // ======================================================
 
-function archiveWeeklyNews(event, conversationId) {
+function archiveWeeklyNews(event, conversationId, aiExecutionContext) {
   const items = getRecentNewsInboxItems_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
 
   if (!items.length) {
@@ -317,7 +324,11 @@ function archiveWeeklyNews(event, conversationId) {
   ].join('\n');
 
   const archiveJson = validateArchiveJsonContract_(
-    requireAiJson_(runAiJsonTask('archive_news', prompt)),
+    requireAiJson_(runAiJsonTask(
+      'archive_news',
+      prompt,
+      requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+    )),
     'news_archive'
   );
   const source = event.source || {};

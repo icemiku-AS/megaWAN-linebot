@@ -100,13 +100,15 @@ function callGeminiProvider_(request) {
   } catch (error) {
     const message = String(error && error.message ? error.message : error || 'Gemini request failed.');
     const lower = message.toLowerCase();
-    let errorType = 'ai_unknown_error';
-    let retryable = true;
-    if (lower.indexOf('missing gemini_api_key') >= 0) {
-      errorType = 'ai_configuration_error';
-      retryable = false;
-    } else if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) {
-      errorType = 'ai_timeout';
+    let errorType = String(error && error.errorType || '') || 'ai_unknown_error';
+    let retryable = error && typeof error.retryable === 'boolean' ? error.retryable : true;
+    if (!error || !error.errorType) {
+      if (lower.indexOf('missing gemini_api_key') >= 0) {
+        errorType = 'ai_configuration_error';
+        retryable = false;
+      } else if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) {
+        errorType = 'ai_timeout';
+      }
     }
     return buildGeminiProviderFailure_(errorType, message, 0, retryable, Date.now() - startedAt);
   }

@@ -9,6 +9,7 @@
 // 3. 本檔保守正規化模型結果，分開驗證資料 partition 與 LINE rendered coverage。
 // 4. 模型結果只用於當次顯示與 10 分鐘快取，不回寫 NewsInbox。
 // 5. 本檔不組 provider payload；fast_json profile 失敗、JSON/partition 違規都使用既有分類 fallback。
+// 6. webhook execution context 只負責同步時間上限；預算不足或逾時仍走相同程式端 fallback。
 // ======================================================
 
 function shouldUseWeeklyEditorialDigest_(queryOptions) {
@@ -18,7 +19,7 @@ function shouldUseWeeklyEditorialDigest_(queryOptions) {
     !String(options.categoryFilter || '').trim();
 }
 
-function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions) {
+function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiExecutionContext) {
   try {
     const identifiedItems = assignWeeklyEditorialItemIds_(items);
     const selection = selectWeeklyEditorialNewsItems_(identifiedItems);
@@ -84,7 +85,11 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions) {
       const prompt = buildWeeklyEditorialDigestPrompt_(newsPayload, conversationPayload);
       // itemId、partition 與 rendered coverage 已有保守 validator；本版先使用 non-thinking fast_json，
       // 不把週編輯台升級為高成本 thinking，也不在 webhook 內 retry。
-      const responseJson = requireAiJson_(runAiJsonTask('weekly_editorial_digest', prompt));
+      const responseJson = requireAiJson_(runAiJsonTask(
+        'weekly_editorial_digest',
+        prompt,
+        requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+      ));
       const apiValidation = normalizeAndValidateWeeklyEditorialResult_(
         JSON.stringify(responseJson),
         modelItemIds,
