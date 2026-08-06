@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
+# 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -44,22 +44,46 @@ v1.12.4 將 `#本週新聞` 預設改為精簡模式，按 StoryKey / 故事線�
 
 v1.12.5 將 StoryKey 重新定位為單篇新聞的候選事件提示。`#本週新聞` 與 `#本週新聞 精簡` 會以一次 DeepSeek JSON 呼叫批次判斷真正的多篇焦點故事線，並從最近七天、同 conversationId、user-only 的 ConversationLog 補充群組話題；網址、排序、完整性、LINE 排版與 fallback 仍由 GAS 固定控制。
 
+v1.13.0 建立 provider-neutral AiService/AiProfiles。正常 runtime 的所有 AI task 都明確指定 provider、model、execution profile 與 thinking；DeepSeek V4 Flash 接管 NewsInbox 分析、`#懶人包` 與 Jina 失敗後的 raw HTML extraction。Gemini transport 保留為 dormant provider，但不是 fallback，沒有 `GEMINI_API_KEY` 也不影響正常功能。
+
 ---
 
-## 2. v1.12.5 本版重點
+## 2. v1.13.0 本版重點
 
-v1.12.5 是 Weekly Editorial Digest Edition。
+v1.13.0 是 AI Routing & Project Architecture Edition。
 
 主要調整如下：
 
-- `#本週新聞` 與 `#本週新聞 精簡` 以一次 DeepSeek JSON 呼叫，同時進行新聞聚類、群組話題提煉與重複判斷。
-- 至少兩則新聞才成立焦點故事線；未聚類或未送模型的新聞仍依主要分類顯示。
-- GAS 建立固定 itemId、驗證完整 partition、取回原始網址、排序並產生最終 LINE 文字；模型不生成網址或完整回覆。
-- ConversationLog 使用真正七天、相同 conversationId、user-only、表頭式與有限分批掃描，送模型前先移除指令、純網址、無意義短語、重複與單純標題轉貼。
-- 模型/API/JSON/頂層契約失敗時，安全回到依分類排列的 compact fallback，不在 webhook 內 retry。
-- LINE 容量控制先捨棄低順位話題，再省略完整新聞 block，並以「尚有 N 則未顯示」準確回報；通用 splitter 僅作最後防線。
-- 通過 validator 的 normalized JSON 使用 10 分鐘 ScriptCache；新聞或有效對話變更時自然 cache miss。
-- StoryKey 繼續保存並供診斷、問答、統整與封存使用，但不回寫新的聚類結果；本版不需要 Sheet migration、Trigger 或 Script Properties 變更。
+- 新增 `18_AiService.gs`：統一 task route resolution、memory orchestration、provider dispatch、normalized response、finish reason/空回覆/JSON 基礎檢查、typed error 與安全 metadata log。
+- 新增 `19_AiProfiles.gs`：集中 provider/model registry、execution profiles、task routes、thinking、reasoning effort、token、timeout、sampling 與 caller-owned retry metadata。
+- 正常 runtime 全部使用 `deepseek-v4-flash`；NewsInbox 分析、`#懶人包` 與 raw HTML extraction 不再讀取 Gemini key。
+- `08_GeminiService.gs` 保留 dormant transport。只有維護者明確把 route 切到 Gemini 才會讀 `GEMINI_API_KEY`；本版沒有自動跨 provider fallback。
+- 功能 Prompt/schema/normalizer 留在最理解契約的功能檔；provider adapter 只處理 API 協議。
+- AI metadata 只寫 console，不新增 AI Log Sheet，也不記錄完整 Prompt、聊天、正文、response text 或 secret。
+- 本版不改 Sheet schema、Trigger、LINE 指令、既有回覆格式、Reader 優先順序或歷史資料。
+
+### AI call flow
+
+`AI Task → Task Route / Execution Profile → Provider Adapter → Normalized Response → 功能 validator / Sheet / LINE`
+
+### Task / profile 對照
+
+| Task | Profile | Thinking | Output | Max tokens / timeout | 主要用途 |
+| --- | --- | --- | --- | --- | --- |
+| `general_chat` | `fast_text` | disabled | text | 1,200 / 45s | 一般聊天與短期/長期記憶 |
+| `news_analysis` | `fast_json` | disabled | JSON | 3,200 / 60s | NewsInbox title/brief/outline/分類/StoryKey |
+| `web_lazy_summary` | `fast_json` | disabled | JSON | 4,000 / 60s | `#懶人包` |
+| `raw_html_extraction` | `long_extraction_json` | disabled | JSON | 24,000 / 90s | Jina 失敗後的大段正文抽取 |
+| `news_question` | `thinking_high` | enabled / high | text | 7,000 / 90s | 跨多筆 NewsInbox 問答 |
+| `program_topic_analysis` | `thinking_high` | enabled / high | text | 8,000 / 120s | 節目話題分析 |
+| `integrate_topics` | `thinking_high` | enabled / high | text | 9,000 / 120s | 跨資料層統整話題 |
+| `archive_topics` | `fast_json` | disabled | JSON | 1,800 / 60s | 封存本週話題 |
+| `archive_news` | `fast_json` | disabled | JSON | 2,600 / 60s | 封存本週新聞 |
+| `weekly_editorial_digest` | `fast_json` | disabled | JSON | 3,200 / 60s | 本週編輯台聚類與群組話題 |
+| `manual_news_supplement` | `fast_json` | disabled | JSON | 1,800 / 60s | `#新聞補充` |
+| `news_memory_bridge` | `thinking_high` | enabled / high | text | 5,000 / 90s | 本週新聞與過去封存脈絡比對 |
+
+`thinking_max` 只保留 profile，v1.13.0 沒有任何 runtime task 綁定。
 
 ---
 
@@ -71,7 +95,7 @@ v1.12.5 是 Weekly Editorial Digest Edition。
 
 如果網址不支援、入隊失敗或背景讀取失敗，錯誤會寫入 PendingReplies，等下次同聊天室有人發訊息時交付。
 
-個人聊天室直接貼網址，或在明確指令中附上網址時，仍保留同步回覆路徑，方便維護者測試 Reader / Gemini 行為。
+個人聊天室直接貼網址，或在明確指令中附上網址時，仍保留同步回覆路徑，方便維護者測試 Reader / AI 行為。
 
 v1.10.5 起，網址流程會先透過 Reader Layer 讀取網頁內容。v1.10.6 起，PTT 文章頁會套用更嚴格的 over18 gate 判斷，避免正常文章被誤判。v1.10.9 起，X / Twitter 單篇 status 會走 FxTwitter API；Facebook、fb.watch、Threads.com、Threads.net 會先走 Jina Reader。
 
@@ -195,7 +219,7 @@ viewMode 的優先順序固定為 `diagnostic > detailed > compact`；高潛力�
 
 ## 6. Reader Layer 概念
 
-Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，讓下游的 Gemini、DeepSeek、NewsInbox 盡量只吃穩定的 mainText、title、siteName、author、publishedAt、warnings 等欄位。
+Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開，讓 AiService、NewsInbox 與 WebSummary 只吃穩定的 mainText、title、siteName、author、publishedAt、warnings 等欄位。
 
 目前分流規則：
 
@@ -204,7 +228,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 - X / Twitter 單篇 status：使用 FxTwitter API。
 - X / Twitter 非單篇 status：不自動擷取，避免把個人頁、搜尋頁、列表頁或登入頁誤當正文。
 - Facebook、fb.watch、Threads.com、Threads.net：先交給 Jina Reader 嘗試讀取。
-- Jina Reader 失敗時：嘗試 legacy raw HTML + Gemini extractor fallback。
+- Jina Reader 失敗時：嘗試 legacy raw HTML + `raw_html_extraction` AI task；新 route 值為 `legacy_raw_html_ai`，歷史 `legacy_raw_html_gemini` 不 migration。
 
 ---
 
@@ -218,7 +242,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 - WebTaskQueue：保存網址快讀與網址版節目分析的背景任務。
 - WebSummary：保存網址快讀摘要。
 - NewsUrlQueue：保存多網址、同步處理過慢或失敗時的新聞網址待處理佇列。
-- NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.12.5 不新增欄位，也不回寫週編輯台聚類。
+- NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.13.0 不新增欄位，也不回寫週編輯台聚類。
 - PendingReplies：背景任務完成後，等待下次訊息交付的回覆。
 
 ---
@@ -227,24 +251,26 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 
 目前主要檔案如下：
 
-- 00_Config.gs：API endpoint、模型名稱、Sheet 名稱、指令前綴與系統常數。
+- 00_Config.gs：LINE/Reader endpoint、Sheet 名稱、指令前綴與非 AI 路由常數。
 - 01_Main.gs：LINE webhook 主流程。
 - 02_LineCommands.gs：指令解析、分層 help 與 LINE Reply API。
 - 03_Utils.gs：共用工具函式。
 - 04_Storage.gs：Google Sheet 與 Script Properties 入口。
 - 05_Memory.gs：短期對話記憶。
-- 06_WebReader.gs：網址擷取、legacy HTML 清理與網頁內容 prompt 組裝。
-- 07_WebTaskQueue.gs：背景處理懶人包與網址版節目話題分析。
-- 08_GeminiService.gs：Gemini API 相關流程。
-- 09_DeepSeekService.gs：DeepSeek API 相關流程。
+- 06_WebReader.gs：網址安全、legacy HTML 清理、raw extraction Prompt/schema/normalizer/validator 與網頁分析 Prompt。
+- 07_WebTaskQueue.gs：背景處理、快讀 Prompt/schema/normalizer/validator、網址版節目話題分析與 PendingReplies。
+- 08_GeminiService.gs：預設不啟用的 dormant Gemini provider adapter 與相容 wrapper。
+- 09_DeepSeekService.gs：DeepSeek provider adapter、payload、HTTP/error/usage normalization 與相容 wrapper。
 - 10_TopicFeatures.gs：節目話題分析、統整話題、封存本週話題、封存本週新聞。
-- 11_Prompts.gs：一般 prompt。
+- 11_Prompts.gs：小浣人格與 provider-neutral 共用 system prompt。
 - 12_ResponseTexts.gs：固定文案、版本資訊與非 LLM 系統回覆。
 - 13_NewsInbox.gs：新聞素材池、短 Brief、完整 Outline、NewsUrlQueue、`#本週新聞` 與 `#新聞問答` 處理。
 - 14_TopicHighlights.gs：人工重點資料層。
 - 15_DataCleanup.gs：資料清理層。
 - 16_ReaderLayer.gs：Jina Reader、PTT over18、FxTwitter API、legacy fallback wrapper 與 reader 統一資料契約。
 - 17_WeeklyEditorialDigest.gs：週編輯台 orchestration、模型輸入、ConversationLog 去噪、validator、cache、固定排版與 LINE block fitting。
+- 18_AiService.gs：AI task 正式入口、memory orchestration、provider dispatch、normalized response、typed error 與 console metadata。
+- 19_AiProfiles.gs：provider/model registry、execution profiles、task routes 與 retry policy metadata。
 
 ---
 
@@ -252,7 +278,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 
 1. 本專案目前是 Google Apps Script 專案，不要預設為 Node.js。
 2. GitHub 不應保存 API Key、LINE token、Sheet ID 等 secret value。
-3. Secret value 應放在 Apps Script 的 Script Properties。
+3. Secret value 應放在 Apps Script 的 Script Properties。正常 runtime 需要 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`；`GEMINI_API_KEY` 只供 dormant Gemini route，未設定不影響其他功能。
 4. 99_changelog.md 僅作為歷史紀錄。
 5. 若 README、CURRENT_VERSION、changelog 與實際 .gs 不一致，以 .gs 為準。
 6. PR 合併後，以 main branch 最新 commit 作為唯一現行程式碼來源。
@@ -260,23 +286,25 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 
 ---
 
-## 10. v1.12.5 建議測試流程
+## 10. v1.13.0 建議測試流程
 
-本版不修改任何 Sheet schema，不需要 migration、setup、Trigger 或新增 Script Properties。將修改的 `.gs` 手動同步至 Apps Script 後再進行 LINE / GAS 測試。
+本版不修改任何 Sheet schema，不需要 migration、setup、新 Trigger 或新增 Script Properties。將修改的 `.gs` 手動同步至 Apps Script 後再進行 LINE / GAS 測試。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
+- 在私訊與群組 `#小浣` 進行至少兩輪一般聊天，確認 general_chat 為 non-thinking，且短期/長期記憶仍可接續。
 - 在群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。
 - 確認該網址進入 NewsUrlQueue，背景 trigger 處理後寫入 NewsInbox。
 - 在個人聊天室直接貼一個一般新聞網址，確認仍可同步回覆短 Brief 並寫入 NewsInbox。
 - 測試 PTT、X / Twitter 單篇 status、Facebook / Threads 公開網址。
+- 準備一個 Jina 成功網址，確認不呼叫 raw_html_extraction；再模擬 Jina 失敗，確認依序進入 `legacy_raw_html_ai` 且正文 validator 生效。
 - 一次貼兩個以上網址，確認多筆靜默進 NewsUrlQueue。
 - 測試不支援或讀取失敗網址，確認 PendingReplies 會在下次訊息交付錯誤。
 - 執行 `#狀態回報`，確認顯示最近 7 天收件、入庫、佇列與失敗統計。
 - 執行 `#本週新聞` 與 `#本週新聞 精簡`，確認啟用週編輯台；多篇同事件合併、同實體不同事件不合併、全部單篇時省略焦點故事線。
 - 測試漏 itemId、重複 itemId、未知 itemId、cluster / ungrouped 衝突、空標題與單篇 cluster，確認資料 partition 讓每則原始新聞恰好位於一個故事線或其他新聞集合。
 - 測試 ConversationLog 的指令、純網址、短回覆與重複排除；「評論文字＋網址」應保留評論，沒有有效對話時省略群組話題。
-- 測試 DeepSeek 非 2xx、空回覆、非 JSON、code fence、截斷 JSON 與 `finish_reason=length`，確認不 retry 且依分類 fallback。
+- 測試 DeepSeek 非 2xx、空回覆、非 JSON、缺欄、截斷 JSON 與 `finish_reason=length`，確認 typed error、Queue retry/fallback 與資料保護符合各 task 規則。
 - 準備超過 30 則新聞與超過對話上限的資料，確認未送模型新聞仍進其他新聞，模型 payload 遵守裁切上限。
 - 準備超長回覆，確認先減少群組話題、再省略完整低順位新聞 block；每則保留新聞恰好顯示一次、被省略新聞完全不顯示、網址不被切斷，並準確顯示「尚有 N 則未顯示」。
 - 重複執行相同查詢確認 10 分鐘 cache hit；新增新聞或有效對話後確認 cache miss。
@@ -297,3 +325,6 @@ Reader Layer 的目標是把「讀網頁」與「後續 LLM 整理」拆開，�
 - 執行 `#封存本週話題`，確認 WeeklySummary 新增 `ArchiveType=topic`，且來源只計算 ConversationLog 使用者訊息。
 - 執行 `#統整話題`，確認會引用 NewsInbox Outline；再用一筆沒有 Outline 的舊資料確認可退回 Brief。
 - 回歸 `#懶人包`、網址版 `#節目話題分析`、`#新聞補充`、`#版本`、`#版本紀錄`。
+- 在 GAS 手動執行 `processWebTaskQueue` / `processNewsUrlQueue`，並確認既有 time-driven trigger handler 名稱未改變。
+- 暫時移除 `GEMINI_API_KEY` 後回歸上述所有正常功能，確認沒有啟動錯誤或 Gemini 呼叫。
+- 檢查 `AI_CALL_METADATA` 含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。

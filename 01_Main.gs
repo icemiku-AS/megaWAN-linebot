@@ -2,7 +2,7 @@
 // 01_Main.gs
 // 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.12.4 Weekly News Compact & Story Grouping Edition
+// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
 //
 // 維護原則：
 // 1. 本檔負責 LINE webhook 主流程與事件分流。
@@ -13,8 +13,14 @@
 // 6. v1.10.9 起，X / Twitter 非單篇 status 網址不入隊；Facebook / Threads 會先交給 Jina Reader。
 // 7. v1.12.0 起，群組非 trigger 網址不再回覆 Brief；失敗或不支援網址改由 PendingReplies 回報。
 // 8. v1.12.3 起，#新聞問答 由 13_NewsInbox.gs 回答近期新聞素材問題。
+// 9. v1.13.0 起，所有模型工作都交給 provider-neutral AiService；本檔不選 provider 或組 payload。
 // ======================================================
 
+/**
+ * 公開管理入口：建立或補齊既有資料表，回傳完成的 Sheet 名稱。
+ * 這是維護者可能在 GAS editor 直接執行的函式，因此 v1.13.0 保留名稱與既有 schema，
+ * 不新增 AI Log Sheet，也不進行資料 migration。
+ */
 function setupLogSheet() {
   const logSheet = ensureLogSheet_();
   const highlightSheet = ensureTopicHighlightsSheet_();
@@ -38,6 +44,11 @@ function setupLogSheet() {
   ].join(', ');
 }
 
+/**
+ * 公開 Trigger 安裝入口：重建既有 WebTaskQueue / NewsUrlQueue 每分鐘排程。
+ * 副作用是刪除同名 handler 的舊 trigger 後重建；保留函式名稱避免維護流程失效。
+ * v1.13.0 沒有新增 trigger 或改變 handler 名稱。
+ */
 function installWebTaskQueueTrigger() {
   const triggers = ScriptApp.getProjectTriggers();
 
@@ -63,6 +74,11 @@ function installWebTaskQueueTrigger() {
   return 'processWebTaskQueue and processNewsUrlQueue triggers installed.';
 }
 
+/**
+ * LINE Messaging API webhook 公開入口。
+ * 輸入為 LINE post event，固定回傳 OK；事件內錯誤只記安全 log，避免平台重送造成重複寫入。
+ * 此名稱由外部 webhook 直接依賴，任何架構重構都不得改名。
+ */
 function doPost(e) {
   try {
     if (!e || !e.postData || !e.postData.contents) {
@@ -84,6 +100,10 @@ function doPost(e) {
   }
 }
 
+/**
+ * 單一 LINE event router。負責固定指令、Queue、Reader 與 AI task 分流，並寫入既有對話紀錄。
+ * 不直接選 DeepSeek/Gemini；一般聊天使用 general_chat memory task，其餘交給各功能模組。
+ */
 function handleLineEvent(event) {
   if (!event || !event.replyToken) {
     return;
@@ -289,7 +309,12 @@ function handleLineEvent(event) {
         aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
         aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
       } else {
-        aiReply = callDeepSeekWithMemory(conversationId, commandInfo.userPrompt, commandInfo.mode);
+        aiReply = requireAiText_(runAiMemoryTask(
+          'general_chat',
+          conversationId,
+          commandInfo.userPrompt,
+          commandInfo.userPrompt
+        ));
       }
     }
 

@@ -2,7 +2,7 @@
 // 12_ResponseTexts.gs
 // 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
+// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -18,13 +18,26 @@
 // 11. v1.12.3 新增 #新聞問答，並移除低頻的 #本週新聞 24 小時檢視。
 // 12. v1.12.4 起，#本週新聞 預設按 StoryKey 精簡聚合，長回覆會自動分段。
 // 13. v1.12.5 起，預設與精簡週新聞使用一次 DeepSeek 編輯台；StoryKey 保留為候選提示。
+// 14. v1.13.0 起，正常 runtime 統一走 provider-neutral AiService；DeepSeek 接管新聞分析、快讀與 legacy extraction。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.12.5 Weekly Editorial Digest Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-07-26';
+const BOT_CURRENT_VERSION = 'v1.13.0 AI Routing & Project Architecture Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-08-06';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.13.0 AI Routing & Project Architecture Edition',
+    date: '2026-08-06',
+    summary: '建立 task-based AiService/AiProfiles，讓 DeepSeek V4 Flash 接管正常 AI runtime，Gemini 保留為預設不啟用的 dormant provider。',
+    changes: [
+      '所有 AI task 明確設定 provider、model、execution profile、thinking、reasoning effort、輸出模式與 token/timeout。',
+      'NewsInbox 分析、#懶人包 與 Jina 失敗後的 raw HTML extraction 改由 DeepSeek V4 Flash 執行。',
+      '統一 normalized response、usage metadata、finish reason、JSON 基礎檢查與 typed error；Queue 依 retryable metadata 判斷。',
+      '保留 Gemini provider 與 compatibility wrapper，但正常 runtime 不讀 GEMINI_API_KEY，也不自動 fallback。',
+      '不修改 Sheet schema、Trigger、LINE 指令或既有回覆格式；週編輯台 cache version 更新為 v1.13.0。'
+    ]
+  },
   {
     version: 'v1.12.5 Weekly Editorial Digest Edition',
     date: '2026-07-26',

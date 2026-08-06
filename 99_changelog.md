@@ -1,3 +1,17 @@
+2026-08-06
+v1.13.0 AI Routing & Project Architecture Edition
+- 新增 18_AiService.gs 與 19_AiProfiles.gs，以 task route、execution profile、provider adapter、normalized response 建立薄的 provider-neutral AI 架構。
+- 所有 AI task 顯式指定 provider、model、thinking、reasoning effort、output mode、max tokens、timeout 與 caller-owned retry metadata；thinking_max 保留但不綁日常 task。
+- DeepSeek V4 Flash 接管 NewsInbox 新聞分析、#懶人包 與 Jina 失敗後的 raw HTML extraction；既有聊天、分析、統整、問答、封存與週編輯台 caller 也統一改走 AiService。
+- 09_DeepSeekService.gs 整理為 provider adapter，thinking enabled 時不送無效 sampling 參數，並記錄 cache、output 與 reasoning tokens。
+- 08_GeminiService.gs 保留為 dormant provider；正常 runtime 不使用、不是 fallback，只有 route 明確選到 Gemini 時才讀 GEMINI_API_KEY。
+- Prompt/schema/normalizer 回到功能模組：NewsInbox 留在 13、快讀留在 07、raw HTML extraction 留在 06、週編輯台留在 17；provider adapter 不再擁有業務 Prompt。
+- 新增 normalized AI response、typed error、Queue retryable 判斷與安全 console metadata；不新增 AI Log Sheet，不記錄完整 Prompt、聊天、正文、response text 或 secret。
+- 新 reader route 使用 legacy_raw_html_ai；歷史 legacy_raw_html_gemini 不 migration 且仍可辨識。WEEKLY_EDITORIAL_CACHE_VERSION 更新為 v1.13.0。
+- 保留公開 webhook/trigger、Sheet headers、LINE 指令與既有回覆格式；本版不需要 migration、setup、新 Trigger 或新增 Script Properties。
+
+// ==================================================
+
 2026-07-26
 v1.12.5 Weekly Editorial Digest Edition
 - #本週新聞 與 #本週新聞 精簡以一次 DeepSeek JSON 呼叫整理本週群組話題與真正的多篇焦點故事線。

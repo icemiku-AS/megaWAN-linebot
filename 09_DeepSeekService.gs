@@ -1,293 +1,283 @@
 // ======================================================
 // 09_DeepSeekService.gs
-// DeepSeek API 服務層。負責主模型呼叫、短期記憶組裝、長期封存記憶注入與模型參數控制。
+// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
 //
-// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
+// 主要責任：
+// 1. 作為 DeepSeek provider adapter，lazy-load DEEPSEEK_API_KEY 並呼叫 Chat Completions。
+// 2. 將 provider-neutral request 轉成 DeepSeek payload，解析 choices、finish reason 與 usage。
+// 3. 將 HTTP、rate limit、timeout、auth 與 provider response 錯誤映射為穩定 typed error。
 //
-// 設計說明：
-// 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持清楚分層。
-// 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
-// 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
-// 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
-// 5. v1.10.5 的網址分析改由 16_ReaderLayer.gs 先讀取正文，再交給 DeepSeek 做節目話題分析。
-// 6. v1.12.3 起，news_question 模式使用低溫度與較長 token 上限，供 #新聞問答 整理 NewsInbox 素材。
-// 7. v1.12.5 新增專用 JSON direct helper；舊呼叫不帶 options 時維持原 payload 與回傳型別。
+// 明確不負責：
+// 1. 不決定 task route/profile，不保存功能 Prompt、memory、Sheet 或 LINE 排版。
+// 2. 不做 JSON schema/business validation、不做 retry、不做跨 provider fallback。
+// 3. 不讓功能層接觸 choices、reasoning_content 或 DeepSeek 原始 usage 欄位。
+//
+// 檔案關係與維護注意：
+// 1. 18_AiService.gs 是正式入口；本檔主要入口 callDeepSeekProvider_() 只供其 dispatch。
+// 2. 19_AiProfiles.gs 保證每個 task 顯式指定 thinking；本檔仍會防守缺值，避免依賴 API 預設。
+// 3. thinking enabled 時不得送 temperature、top_p、presence_penalty、frequency_penalty；
+//    reasoning_effort 依官方規格使用 high / max。
+// 4. 下方舊 callDeepSeek... 函式是 v1.13.0 compatibility wrapper，不是正式 runtime 首選。
 // ======================================================
 
-// ======================================================
-// 網頁閱讀後交給 DeepSeek
-// ======================================================
+const DEEPSEEK_API_ENDPOINT = 'https://api.deepseek.com/chat/completions';
 
-function callDeepSeekWithWebReading(conversationId, userText, mode) {
-  const urls = extractUrls(userText).slice(0, MAX_URLS_PER_MESSAGE);
-
-  if (urls.length === 0) {
-    return callDeepSeekWithMemory(conversationId, userText, mode);
-  }
-
-  const webResults = urls.map(function(url) {
-    return fetchAndExtractWebPageByReaderLayer_(url);
-  });
-
-  const deepSeekPrompt = buildWebReadingPrompt(userText, webResults, mode);
-
-  // 送給 DeepSeek 的內容是 deepSeekPrompt，裡面包含抽取後正文。
-  // 存進短期記憶的內容仍是 userText，避免把長文塞進 CacheService。
-  return callDeepSeekWithMemoryPayload(
-    conversationId,
-    userText,
-    deepSeekPrompt,
-    mode
-  );
-}
-
-// ======================================================
-// DeepSeek 記憶型呼叫
-// ======================================================
-
-function callDeepSeekWithMemory(conversationId, userText, mode) {
-  return callDeepSeekWithMemoryPayload(
-    conversationId,
-    userText,
-    userText,
-    mode
-  );
-}
-
-function callDeepSeekWithMemoryPayload(conversationId, userTextForHistory, deepSeekUserContent, mode) {
-  const lock = LockService.getScriptLock();
-  lock.waitLock(5000);
+/**
+ * DeepSeek adapter 正式入口。
+ * 輸入是 AiService 已解析的 provider-neutral request；回傳 provider result contract。
+ * API key 只在真的 dispatch 到 DeepSeek 時讀取，adapter 不會自行 retry。
+ */
+function callDeepSeekProvider_(request) {
+  const startedAt = Date.now();
+  const safeRequest = request || {};
 
   try {
-    const history = getConversationHistory(conversationId);
-    const trimmedHistory = trimHistory(history);
-
-    const systemPrompt = buildSystemPrompt(mode);
-    const longTermMemoryText = getRecentWeeklySummaryText(conversationId, 8);
-
-    const messages = [
-      {
-        role: 'system',
-        content: systemPrompt
-      }
-    ];
-
-    // 極簡長期記憶：來自 WeeklySummary
-    // 不要塞太多，避免 token 膨脹
-    if (longTermMemoryText) {
-      messages.push({
-        role: 'system',
-        content: [
-          '以下是這個聊天室過去封存的極簡長期記憶。',
-          '你可以參考它判斷目前話題是否曾經討論過。',
-          '不要主動長篇複述，只有在有關聯時簡短提醒。',
-          '如果沒有關聯，請自然忽略。',
-          '',
-          longTermMemoryText
-        ].join('\n')
-      });
+    const apiKey = getRequiredScriptProperty_('DEEPSEEK_API_KEY');
+    const thinkingType = String(safeRequest.thinking && safeRequest.thinking.type || '');
+    if (thinkingType !== 'enabled' && thinkingType !== 'disabled') {
+      return buildDeepSeekProviderFailure_(
+        'ai_configuration_error',
+        'DeepSeek request must explicitly set thinking enabled or disabled.',
+        0,
+        false,
+        Date.now() - startedAt
+      );
     }
 
-    // 短期多輪記憶：來自 CacheService
-    trimmedHistory.forEach(function(message) {
-      messages.push(message);
-    });
+    const payload = buildDeepSeekPayload_(safeRequest);
+    const options = {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + apiKey },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+      timeoutSeconds: Math.max(1, Number(safeRequest.timeoutSeconds || 60))
+    };
+    const response = UrlFetchApp.fetch(DEEPSEEK_API_ENDPOINT, options);
+    const statusCode = response.getResponseCode();
+    const responseText = response.getContentText();
 
-    messages.push({
-      role: 'user',
-      content: deepSeekUserContent
-    });
+    if (statusCode < 200 || statusCode >= 300) {
+      return classifyDeepSeekHttpFailure_(statusCode, responseText, Date.now() - startedAt);
+    }
 
-    const reply = callDeepSeekApi_(messages, mode);
+    let json = null;
+    try {
+      json = JSON.parse(responseText);
+    } catch (parseError) {
+      return buildDeepSeekProviderFailure_(
+        'ai_invalid_provider_response',
+        'DeepSeek returned a non-JSON HTTP response.',
+        statusCode,
+        true,
+        Date.now() - startedAt
+      );
+    }
 
-    const updatedHistory = trimmedHistory.concat([
-      {
-        role: 'user',
-        content: userTextForHistory
-      },
-      {
-        role: 'assistant',
-        content: reply
-      }
-    ]);
+    const choice = json.choices && json.choices[0];
+    if (!choice || !choice.message) {
+      return buildDeepSeekProviderFailure_(
+        'ai_invalid_provider_response',
+        'DeepSeek response is missing choices[0].message.',
+        statusCode,
+        true,
+        Date.now() - startedAt,
+        normalizeDeepSeekUsage_(json.usage)
+      );
+    }
 
-    saveConversationHistory(conversationId, trimHistory(updatedHistory));
+    const finishReason = String(choice.finish_reason || '');
+    if (finishReason === 'insufficient_system_resource') {
+      // 這是 DeepSeek protocol 的暫時性停止原因，必須在 adapter 轉成 retryable typed failure，
+      // 避免 provider-neutral AiService 依賴供應商專屬字串。
+      return buildDeepSeekProviderFailure_(
+        'ai_provider_http_error',
+        'DeepSeek stopped because of insufficient system resources.',
+        statusCode,
+        true,
+        Date.now() - startedAt,
+        normalizeDeepSeekUsage_(json.usage),
+        finishReason
+      );
+    }
 
-    return reply;
+    return {
+      ok: true,
+      text: String(choice.message.content || ''),
+      finishReason: finishReason,
+      usage: normalizeDeepSeekUsage_(json.usage),
+      elapsedMs: Date.now() - startedAt,
+      httpStatus: statusCode
+    };
 
-  } finally {
-    lock.releaseLock();
+  } catch (error) {
+    const message = String(error && error.message ? error.message : error || 'DeepSeek request failed.');
+    const lower = message.toLowerCase();
+    let errorType = 'ai_unknown_error';
+    let retryable = true;
+
+    if (lower.indexOf('missing deepseek_api_key') >= 0) {
+      errorType = 'ai_configuration_error';
+      retryable = false;
+    } else if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) {
+      errorType = 'ai_timeout';
+      retryable = true;
+    }
+
+    return buildDeepSeekProviderFailure_(errorType, message, 0, retryable, Date.now() - startedAt);
   }
 }
 
-function callDeepSeekDirect(userText, mode) {
-  return callDeepSeekApi_([
-    {
-      role: 'system',
-      content: buildSystemPrompt(mode)
-    },
-    {
-      role: 'user',
-      content: userText
-    }
-  ], mode);
-}
-
-function callDeepSeekJsonDirect_(userText, mode) {
-  return callDeepSeekApi_([
-    {
-      role: 'system',
-      content: buildSystemPrompt(mode)
-    },
-    {
-      role: 'user',
-      content: userText
-    }
-  ], mode, {
-    responseFormat: { type: 'json_object' },
-    thinking: { type: 'disabled' },
-    requiredFinishReason: 'stop',
-    requireTrimmedContent: true
-  });
-}
-
-// ======================================================
-// DeepSeek API 底層呼叫
-// ======================================================
-
-function callDeepSeekApi_(messages, mode, requestOptions) {
-  const apiKey = getRequiredScriptProperty_('DEEPSEEK_API_KEY');
-  const safeRequestOptions = requestOptions || {};
-
+/**
+ * 建立 DeepSeek 專屬 payload。
+ * 所有 task 都送出 thinking；只有 disabled profile 才能送 sampling 欄位。
+ * JSON mode 使用 response_format，max output 使用 Chat Completions 的 max_tokens。
+ */
+function buildDeepSeekPayload_(request) {
+  const thinkingType = String(request.thinking && request.thinking.type || '');
   const payload = {
-    model: DEEPSEEK_MODEL,
-    messages: messages,
-    temperature: getTemperatureByMode(mode),
-    max_tokens: getMaxTokensByMode(mode),
+    model: request.model,
+    messages: request.messages,
+    thinking: { type: thinkingType },
+    max_tokens: Number(request.maxOutputTokens),
     stream: false
   };
 
-  // 選配欄位只給專用 JSON helper 使用。既有兩參數呼叫不會帶入，
-  // 因此舊 mode 送出的 DeepSeek payload 與回傳字串行為保持不變。
-  if (safeRequestOptions.responseFormat) {
-    payload.response_format = safeRequestOptions.responseFormat;
-  }
-
-  if (safeRequestOptions.thinking) {
-    payload.thinking = safeRequestOptions.thinking;
-  }
-
-  const options = {
-    method: 'post',
-    contentType: 'application/json',
-    headers: {
-      Authorization: 'Bearer ' + apiKey
-    },
-    payload: JSON.stringify(payload),
-    muteHttpExceptions: true
-  };
-
-  const response = UrlFetchApp.fetch(DEEPSEEK_ENDPOINT, options);
-  const statusCode = response.getResponseCode();
-  const responseText = response.getContentText();
-
-  if (statusCode < 200 || statusCode >= 300) {
-    throw new Error('DeepSeek API error ' + statusCode + ': ' + responseText);
-  }
-
-  const json = JSON.parse(responseText);
-  logDeepSeekUsage(json);
-
-  const choice = json.choices && json.choices[0];
-  const reply = choice && choice.message && choice.message.content;
-
-  if (safeRequestOptions.requiredFinishReason) {
-    const finishReason = String(choice && choice.finish_reason || '');
-    if (finishReason !== safeRequestOptions.requiredFinishReason) {
-      throw new Error('Unexpected DeepSeek finish_reason: ' + (finishReason || 'missing'));
+  if (thinkingType === 'enabled') {
+    const effort = String(request.reasoningEffort || '');
+    if (effort !== 'high' && effort !== 'max') {
+      throw new Error('DeepSeek thinking request requires reasoning_effort high or max.');
     }
+    payload.reasoning_effort = effort;
+  } else if (request.allowSampling === true) {
+    if (typeof request.temperature === 'number') payload.temperature = request.temperature;
+    if (typeof request.topP === 'number') payload.top_p = request.topP;
   }
 
-  if (!reply) {
-    throw new Error('Invalid DeepSeek response: ' + responseText);
+  if (request.outputMode === 'json') {
+    payload.response_format = { type: 'json_object' };
   }
 
-  if (safeRequestOptions.requireTrimmedContent && !String(reply).trim()) {
-    throw new Error('DeepSeek returned empty JSON content');
-  }
+  return payload;
+}
 
-  return reply;
+/**
+ * 將 DeepSeek usage 轉成 provider-neutral 欄位。
+ * reasoning token 位於 completion_tokens_details.reasoning_tokens；cache hit/miss 為 optional。
+ */
+function normalizeDeepSeekUsage_(usage) {
+  const source = usage || {};
+  const details = source.completion_tokens_details || {};
+  return {
+    inputTokens: source.prompt_tokens,
+    cachedInputTokens: source.prompt_cache_hit_tokens,
+    uncachedInputTokens: source.prompt_cache_miss_tokens,
+    outputTokens: source.completion_tokens,
+    reasoningTokens: details.reasoning_tokens,
+    totalTokens: source.total_tokens
+  };
+}
+
+/**
+ * DeepSeek HTTP 錯誤分類。401/403 與其他 4xx 通常需修設定，不應讓 Queue 無效重試；
+ * 408/429/5xx 才視為暫時性。error body 只用來產生短訊息，不寫完整 response 到 log。
+ */
+function classifyDeepSeekHttpFailure_(statusCode, responseText, elapsedMs) {
+  const status = Number(statusCode || 0);
+  const providerMessage = extractDeepSeekErrorMessage_(responseText);
+  if (status === 401 || status === 403) {
+    return buildDeepSeekProviderFailure_('ai_auth_error', providerMessage, status, false, elapsedMs);
+  }
+  if (status === 408) {
+    return buildDeepSeekProviderFailure_('ai_timeout', providerMessage, status, true, elapsedMs);
+  }
+  if (status === 429) {
+    return buildDeepSeekProviderFailure_('ai_rate_limit', providerMessage, status, true, elapsedMs);
+  }
+  return buildDeepSeekProviderFailure_(
+    'ai_provider_http_error',
+    providerMessage,
+    status,
+    status >= 500,
+    elapsedMs
+  );
+}
+
+function extractDeepSeekErrorMessage_(responseText) {
+  const raw = String(responseText || '');
+  try {
+    const parsed = JSON.parse(raw);
+    const message = parsed && parsed.error && parsed.error.message;
+    return String(message || 'DeepSeek HTTP request failed.').slice(0, 500);
+  } catch (error) {
+    return ('DeepSeek HTTP request failed: ' + raw.slice(0, 300)).trim();
+  }
+}
+
+function buildDeepSeekProviderFailure_(errorType, errorMessage, httpStatus, retryable, elapsedMs, usage, finishReason) {
+  return {
+    ok: false,
+    text: '',
+    finishReason: String(finishReason || ''),
+    usage: usage || {},
+    elapsedMs: Number(elapsedMs || 0),
+    errorType: errorType || 'ai_unknown_error',
+    errorMessage: String(errorMessage || 'DeepSeek provider request failed.'),
+    httpStatus: Number(httpStatus || 0),
+    retryable: retryable === true
+  };
 }
 
 // ======================================================
-// DeepSeek 用量與模型參數
+// v1.13.0 compatibility wrappers
 // ======================================================
 
-function logDeepSeekUsage(json) {
-  if (!json || !json.usage) {
-    return;
-  }
-
-  const usage = json.usage;
-
-  console.log('DeepSeek usage:', JSON.stringify({
-    prompt_tokens: usage.prompt_tokens,
-    completion_tokens: usage.completion_tokens,
-    total_tokens: usage.total_tokens,
-    prompt_cache_hit_tokens: usage.prompt_cache_hit_tokens,
-    prompt_cache_miss_tokens: usage.prompt_cache_miss_tokens
-  }));
+/**
+ * v1.13.0 compatibility wrapper：正式 runtime 已無 caller。
+ * 保留給 GAS 手動診斷或尚未搜尋到的外部呼叫，轉交 Reader Layer + runAiMemoryTask()。
+ * 待一個正式版本確認部署專案與 repo 都沒有 caller 後，才可列入移除評估。
+ */
+function callDeepSeekWithWebReading(conversationId, userText, mode) {
+  const task = resolveLegacyAiTask_(mode);
+  const urls = extractUrls(userText).slice(0, MAX_URLS_PER_MESSAGE);
+  if (!urls.length) return callDeepSeekWithMemory(conversationId, userText, mode);
+  const webResults = urls.map(function(url) { return fetchAndExtractWebPageByReaderLayer_(url); });
+  const prompt = buildWebReadingPrompt(userText, webResults, task);
+  return requireAiText_(runAiMemoryTask(task, conversationId, userText, prompt));
 }
 
-function getTemperatureByMode(mode) {
-  if (mode === WEEKLY_EDITORIAL_DIGEST_MODE) {
-    return 0.1;
-  }
-
-  // 需要收束、判斷與整理的任務使用較低 temperature，減少發散。
-  if (
-    mode === 'archive' ||
-    mode === 'archive_news' ||
-    mode === 'web_read' ||
-    mode === 'program_topic_analysis' ||
-    mode === 'integrate_topics' ||
-    mode === 'news_question'
-  ) {
-    return 0.3;
-  }
-
-  // 一般聊天保留一點彈性，讓小浣回覆不會太死板。
-  return 0.7;
+/**
+ * v1.13.0 compatibility wrapper：正式一般聊天已改呼叫 runAiMemoryTask()。
+ * 保留原名稱避免 GAS 手動測試或外部腳本立刻失效；它不再直接組 DeepSeek payload。
+ * 未來確認至少一版無外部依賴後可移除。
+ */
+function callDeepSeekWithMemory(conversationId, userText, mode) {
+  return requireAiText_(runAiMemoryTask(resolveLegacyAiTask_(mode), conversationId, userText, userText));
 }
 
-function getMaxTokensByMode(mode) {
-  if (mode === WEEKLY_EDITORIAL_DIGEST_MODE) {
-    return 2800;
-  }
+/**
+ * v1.13.0 compatibility wrapper：正式 runtime 已改用 runAiMemoryTask() 傳入 history text 與 AI content。
+ * 本版保留是為避免舊診斷 caller 中斷；未來確認部署端無 caller 後可移除。
+ */
+function callDeepSeekWithMemoryPayload(conversationId, userTextForHistory, deepSeekUserContent, mode) {
+  return requireAiText_(runAiMemoryTask(
+    resolveLegacyAiTask_(mode),
+    conversationId,
+    userTextForHistory,
+    deepSeekUserContent
+  ));
+}
 
-  if (mode === 'web_read') {
-    return 1200;
-  }
-
-  if (mode === 'program_topic_analysis') {
-    return 2200;
-  }
-
-  if (mode === 'integrate_topics') {
-    return 2600;
-  }
-
-  if (mode === 'archive') {
-    return 1200;
-  }
-
-  if (mode === 'archive_news') {
-    return 2200;
-  }
-
-  if (mode === 'news_question') {
-    return 1800;
-  }
-
-  return 900;
+/**
+ * v1.13.0 compatibility wrapper：正式功能已改用 runAiTextTask / runAiJsonTask。
+ * 保留原回傳字串以相容舊手動測試；它轉交 AiService，不再是 provider 直連。
+ * JSON caller 不應使用本 wrapper；部署端確認無 caller 後可移除。
+ */
+function callDeepSeekDirect(userText, mode) {
+  const task = resolveLegacyAiTask_(mode);
+  const config = resolveAiTaskConfig_(task);
+  const result = config.outputMode === 'json'
+    ? runAiJsonTask(task, userText)
+    : runAiTextTask(task, userText);
+  return config.outputMode === 'json' ? JSON.stringify(requireAiJson_(result)) : requireAiText_(result);
 }
