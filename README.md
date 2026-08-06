@@ -59,8 +59,8 @@ v1.13.0 是 AI Routing & Project Architecture Edition。
 - 正常 runtime 全部使用 `deepseek-v4-flash`；NewsInbox 分析、`#懶人包` 與 raw HTML extraction 不再讀取 Gemini key。
 - `08_GeminiService.gs` 保留 dormant transport。只有維護者明確把 route 切到 Gemini 才會讀 `GEMINI_API_KEY`；本版沒有自動跨 provider fallback。
 - 功能 Prompt/schema/normalizer 留在最理解契約的功能檔；provider adapter 只處理 API 協議。
-- legacy Reader 會把 AI `errorType/retryable/httpStatus` 保留到 NewsUrlQueue；configuration/auth/永久 4xx 不重試，timeout/429/5xx 才依 typed metadata 重試。
-- LINE webhook 共用 40 秒工作期限，單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒；背景 Queue 不傳 execution context，仍使用完整 profile timeout。
+- Jina、FxTwitter、PTT 與 legacy Reader failure 會把 `errorType/retryable/httpStatus` 保留到 NewsUrlQueue；configuration/auth/永久 4xx 不重試，408/timeout/429/5xx 才依 typed metadata 重試。
+- 同一個 LINE webhook payload 的所有 events 共用一個 40 秒 absolute deadline；單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒，背景 Queue 不傳 execution context，仍使用完整 profile timeout。
 - AI metadata 只寫 console；`AI_CALL_METADATA.ok` 代表 provider 與基礎格式通過，不代表功能 validator 已完成。不新增 AI Log Sheet，也不記錄完整 Prompt、聊天、正文、response text 或 secret。
 - 本版不改 Sheet schema、Trigger、LINE 指令、既有回覆格式、Reader 優先順序或歷史資料。
 
@@ -223,7 +223,7 @@ viewMode 的優先順序固定為 `diagnostic > detailed > compact`；高潛力�
 
 ## 6. Reader Layer 概念
 
-Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開，讓 AiService、NewsInbox 與 WebSummary 只吃穩定的 mainText、title、siteName、author、publishedAt、warnings 等欄位。
+Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開。成功 webResult 維持既有 mainText、title、siteName、author、publishedAt、warnings 等欄位；失敗結果可額外帶 optional `errorType/retryable/httpStatus` 供 Queue 判斷，舊 caller 若只讀 `ok/error` 仍相容。
 
 目前分流規則：
 

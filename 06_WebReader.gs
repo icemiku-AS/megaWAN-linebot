@@ -139,7 +139,10 @@ function fetchRawWebPage(url, executionContext) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.0; LINE Web Reader)'
     }
   };
-  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
+  // 同步 deadline 已過時不再硬送 1 秒 request；上層會依 retryable=true 轉入既有背景 Queue。
+  if (!applyReaderFetchTimeoutForExecutionContext_(options, executionContext)) {
+    return buildReaderExecutionBudgetFailure_(url, 'legacy_raw_html_ai');
+  }
 
   try {
     const response = UrlFetchApp.fetch(url, options);
@@ -153,7 +156,7 @@ function fetchRawWebPage(url, executionContext) {
         url: url,
         readerRoute: 'legacy_raw_html_ai',
         errorType: 'raw_html_fetch_failed',
-        retryable: statusCode === 408 || statusCode === 429 || statusCode >= 500,
+        retryable: isReaderHttpStatusRetryable_(statusCode),
         httpStatus: statusCode,
         statusCode: statusCode,
         contentType: contentType,

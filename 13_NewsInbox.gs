@@ -549,7 +549,10 @@ function createNewsUrlReaderError_(webResult) {
   error.errorType = result.errorType || 'reader_error';
   error.readerRoute = result.readerRoute || '';
   if (typeof result.retryable === 'boolean') error.retryable = result.retryable;
-  error.httpStatus = Number(result.httpStatus || result.statusCode || 0);
+  // 明確的 httpStatus=0 代表沒有 provider HTTP response，不可因 0 為 falsy 而退回 raw page 的 200。
+  error.httpStatus = Object.prototype.hasOwnProperty.call(result, 'httpStatus')
+    ? Number(result.httpStatus || 0)
+    : Number(result.statusCode || 0);
   return error;
 }
 

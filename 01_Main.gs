@@ -80,6 +80,9 @@ function installWebTaskQueueTrigger() {
  * 此名稱由外部 webhook 直接依賴，任何架構重構都不得改名。
  */
 function doPost(e) {
+  // 同一批 LINE webhook events 是同時送達；必須共用這個 absolute start time，
+  // 避免後處理的 event 在前一個 event 已耗時後又重新取得完整同步預算。
+  const webhookStartedAtMs = Date.now();
   try {
     if (!e || !e.postData || !e.postData.contents) {
       return HtmlService.createHtmlOutput('OK');
@@ -89,7 +92,7 @@ function doPost(e) {
     const events = body.events || [];
 
     events.forEach(function(event) {
-      handleLineEvent(event);
+      handleLineEvent(event, webhookStartedAtMs);
     });
 
     return HtmlService.createHtmlOutput('OK');
@@ -103,15 +106,18 @@ function doPost(e) {
 /**
  * 單一 LINE event router。負責固定指令、Queue、Reader 與 AI task 分流，並寫入既有對話紀錄。
  * 不直接選 DeepSeek/Gemini；一般聊天使用 general_chat memory task，其餘交給各功能模組。
+ * webhookStartedAtMs 由 doPost 對同批 events 共用；省略時會以目前時間 fallback，
+ * 保留 GAS 手動診斷及舊測試直接呼叫 handleLineEvent(event) 的相容性。
  */
-function handleLineEvent(event) {
+function handleLineEvent(event, webhookStartedAtMs) {
   if (!event || !event.replyToken) {
     return;
   }
 
-  // 同一個 webhook 的 Reader 與所有 AI call 共用 deadline；功能層只收到 provider-neutral context，
+  // 同一個 webhook payload 的 Reader 與所有 events／AI call 共用 absolute deadline；
+  // 功能層只收到 provider-neutral context，
   // 不接觸 DeepSeek/Gemini payload。背景 Queue 不會經過此入口，因此仍使用完整 profile timeout。
-  const aiExecutionContext = createLineWebhookExecutionContext_(Date.now());
+  const aiExecutionContext = createLineWebhookExecutionContext_(webhookStartedAtMs);
 
   const sourceType = event.source && event.source.type ? event.source.type : 'unknown';
   const isGroupLike = sourceType === 'group' || sourceType === 'room';
@@ -334,8 +340,9 @@ function handleLineEvent(event) {
 }
 
 /**
- * 建立單一 LINE event 共用的同步執行預算。
- * deadline 防止同一 webhook 的兩次 AI call 各自取得完整 cap；Reader 也共用相同截止時間。
+ * 建立單一 LINE webhook payload 共用的同步執行預算。
+ * doPost 傳入整批 events 的共同起點；沒有合法起點時才使用目前時間，保留舊 direct call。
+ * deadline 防止後續 event、Reader 或第二次 AI call 各自重新取得完整 cap。
  */
 function createLineWebhookExecutionContext_(startedAtMs) {
   const safeStartedAtMs = Number(startedAtMs);

@@ -132,8 +132,8 @@ v1.13.0 是 AI Routing & Project Architecture Edition。
 18. 保留一版 `callDeepSeek...`、`callGeminiWeb...` 與 `buildSystemPrompt` compatibility wrapper；正式 runtime 不使用舊 wrapper。
 19. `WEEKLY_EDITORIAL_CACHE_VERSION` 更新為 `v1.13.0`，避免舊 normalized cache 混入新 provider contract。
 20. 本版不修改任何 Sheet header/欄序、LINE 指令或既有回覆格式；不需要 migration、setup、新 Trigger 或新增 Script Properties。
-21. legacy Reader 會保留 AI `errorType/retryable/httpStatus` 到 ReaderLayer 與 NewsUrlQueue；configuration/auth/永久 4xx 不重試，timeout/429/5xx 才依 typed metadata 重試。
-22. LINE webhook 共用 40 秒工作期限，單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒；直接網址會用同一 deadline 扣除 Reader 與前一次 AI 耗時，預算不足即進既有 Queue。
+21. Jina、FxTwitter、PTT 與 legacy Reader failure 會保留 `errorType/retryable/httpStatus` 到 ReaderLayer 與 NewsUrlQueue；configuration/auth/永久 4xx 不重試，408/timeout/429/5xx 才依 typed metadata 重試。成功 webResult 欄位不變，舊 caller 若只讀 `ok/error` 仍相容。
+22. 同一個 LINE webhook payload 的所有 events 共用一個 40 秒 absolute deadline；單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒，直接網址會用同一 deadline 扣除 Reader 與前一次 AI 耗時，預算不足即進既有 Queue。
 23. profile timeout 是任務最大值，背景 Queue 不傳同步 context 時仍使用完整上限；`retryPolicy` 只供 caller 描述與決策，AiService 不自動 retry。
 24. `AI_CALL_METADATA.ok` 只代表 provider transport、finish/content 與 JSON 基礎格式通過，不代表功能 schema/business validator 已完成。
 

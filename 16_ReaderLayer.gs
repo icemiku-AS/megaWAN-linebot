@@ -21,7 +21,9 @@
 // 3. X / Twitter 只支援可抽出 /status/{id} 的公開單篇貼文；個人頁、搜尋頁、列表頁不自動擷取。
 // 4. Facebook / Threads 是否能讀到正文取決於 Jina Reader 與公開可讀性，不保證登入牆或私人內容。
 // 5. 本檔不擁有 AI Prompt/schema/normalizer；快讀歸 07，raw HTML extraction 歸 06。
-// 6. v1.13.0 不改 Reader 優先順序，也不修改 webResult 欄位契約。
+// 6. v1.13.0 不改 Reader 優先順序；成功結果的既有 webResult 欄位不變。
+//    失敗結果可向後相容地增加 errorType / retryable / httpStatus，供 Queue 判斷重試；
+//    舊 caller 若只讀 ok / error，行為仍維持不變。
 // ======================================================
 
 // ======================================================
@@ -54,7 +56,10 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
   const safeUrl = String(url || '').trim();
 
   if (!isSafePublicUrl(safeUrl)) {
-    return buildReaderLayerErrorResult_(safeUrl, '', 'unsafe_url', '網址安全檢查未通過。');
+    return buildReaderLayerErrorResult_(safeUrl, '', 'unsafe_url', '網址安全檢查未通過。', {
+      retryable: false,
+      httpStatus: 0
+    });
   }
 
   const route = detectWebReaderRoute_(safeUrl);
@@ -68,7 +73,8 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
       safeUrl,
       route,
       'x_twitter_url_without_status_id',
-      '這個 X / Twitter 網址不是單篇 status 貼文，v1.10.9 只支援 /status/{id} 類型的公開貼文網址。'
+      '這個 X / Twitter 網址不是單篇 status 貼文，v1.10.9 只支援 /status/{id} 類型的公開貼文網址。',
+      { retryable: false, httpStatus: 0 }
     );
   }
 
@@ -79,6 +85,11 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
   const jinaResult = fetchReadablePageWithJina_(safeUrl, executionContext);
 
   if (jinaResult.ok) {
+    return jinaResult;
+  }
+
+  // absolute deadline 已耗盡時不可再嘗試 legacy；背景 Queue 會在沒有同步 context 時重新讀取。
+  if (jinaResult.errorType === 'reader_sync_budget_exhausted') {
     return jinaResult;
   }
 
@@ -101,6 +112,9 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
   const combinedRetryable = hasLegacyAiError
     ? resolveReaderFailureRetryable_(legacyResult)
     : (resolveReaderFailureRetryable_(jinaResult) || resolveReaderFailureRetryable_(legacyResult));
+  const combinedHttpStatus = hasLegacyAiError
+    ? Number(legacyResult && legacyResult.httpStatus || 0)
+    : resolveCombinedReaderFailureHttpStatus_(jinaResult, legacyResult, combinedRetryable);
   return buildReaderLayerErrorResult_(
     safeUrl,
     legacyResult && legacyResult.readerRoute ? legacyResult.readerRoute : WEB_READER_ROUTE_LEGACY,
@@ -111,9 +125,7 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
       (legacyResult && legacyResult.error ? legacyResult.error : '未知錯誤'),
     {
       retryable: combinedRetryable,
-      httpStatus: hasLegacyAiError
-        ? Number(legacyResult && legacyResult.httpStatus || 0)
-        : Number(legacyResult && (legacyResult.httpStatus || legacyResult.statusCode) || jinaResult.httpStatus || 0)
+      httpStatus: combinedHttpStatus
     }
   );
 }
@@ -217,7 +229,8 @@ function fetchTwitterStatusWithFxTwitter_(url, executionContext) {
       url,
       WEB_READER_ROUTE_FXTWITTER_API,
       'x_twitter_url_without_status_id',
-      '這個 X / Twitter 網址不是單篇 status 貼文，無法用 FxTwitter API 讀取。'
+      '這個 X / Twitter 網址不是單篇 status 貼文，無法用 FxTwitter API 讀取。',
+      { retryable: false, httpStatus: 0 }
     );
   }
 
@@ -231,7 +244,9 @@ function fetchTwitterStatusWithFxTwitter_(url, executionContext) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; FxTwitter Reader)'
     }
   };
-  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
+  if (!applyReaderFetchTimeoutForExecutionContext_(options, executionContext)) {
+    return buildReaderExecutionBudgetFailure_(url, WEB_READER_ROUTE_FXTWITTER_API);
+  }
 
   try {
     const response = UrlFetchApp.fetch(apiUrl, options);
@@ -245,7 +260,8 @@ function fetchTwitterStatusWithFxTwitter_(url, executionContext) {
         url,
         WEB_READER_ROUTE_FXTWITTER_API,
         'fxtwitter_fetch_failed',
-        'FxTwitter API 讀取失敗，HTTP 狀態碼：' + statusCode + '；回應預覽：' + String(bodyText || '').slice(0, 500)
+        'FxTwitter API 讀取失敗，HTTP 狀態碼：' + statusCode + '；回應預覽：' + String(bodyText || '').slice(0, 500),
+        buildReaderHttpFailureMetadata_(statusCode)
       );
     }
 
@@ -472,7 +488,9 @@ function fetchReadablePageWithJina_(url, executionContext) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; Jina Reader Layer)'
     }
   };
-  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
+  if (!applyReaderFetchTimeoutForExecutionContext_(options, executionContext)) {
+    return buildReaderExecutionBudgetFailure_(url, WEB_READER_ROUTE_JINA);
+  }
 
   try {
     const response = UrlFetchApp.fetch(readerUrl, options);
@@ -486,7 +504,8 @@ function fetchReadablePageWithJina_(url, executionContext) {
         url,
         WEB_READER_ROUTE_JINA,
         'jina_fetch_failed',
-        'Jina Reader 讀取失敗，HTTP 狀態碼：' + statusCode + '；回應預覽：' + String(bodyText || '').slice(0, 500)
+        'Jina Reader 讀取失敗，HTTP 狀態碼：' + statusCode + '；回應預覽：' + String(bodyText || '').slice(0, 500),
+        buildReaderHttpFailureMetadata_(statusCode)
       );
     }
 
@@ -616,7 +635,9 @@ function fetchPttPageWithOver18Cookie_(url, executionContext) {
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; PTT Reader)'
     }
   };
-  applyReaderFetchTimeoutForExecutionContext_(options, executionContext);
+  if (!applyReaderFetchTimeoutForExecutionContext_(options, executionContext)) {
+    return buildReaderExecutionBudgetFailure_(url, WEB_READER_ROUTE_PTT_OVER18);
+  }
 
   try {
     const response = UrlFetchApp.fetch(url, options);
@@ -630,7 +651,8 @@ function fetchPttPageWithOver18Cookie_(url, executionContext) {
         url,
         WEB_READER_ROUTE_PTT_OVER18,
         'ptt_fetch_failed',
-        'PTT 讀取失敗，HTTP 狀態碼：' + statusCode
+        'PTT 讀取失敗，HTTP 狀態碼：' + statusCode,
+        buildReaderHttpFailureMetadata_(statusCode)
       );
     }
 
@@ -768,6 +790,11 @@ function buildReaderLayerSuccessResult_(item) {
   };
 }
 
+/**
+ * 建立向後相容的 Reader failure result。
+ * ok/url/readerRoute/errorType/error 是既有欄位；retryable/httpStatus 為 optional typed metadata，
+ * 只供 Queue 判斷是否重試。舊 caller 若只讀 ok/error，不需要修改。
+ */
 function buildReaderLayerErrorResult_(url, readerRoute, errorType, errorMessage, metadata) {
   const result = {
     ok: false,
@@ -788,6 +815,64 @@ function isAiTypedReaderFailure_(result) {
   return !!result && String(result.errorType || '').indexOf('ai_') === 0;
 }
 
+function isReaderHttpStatusRetryable_(statusCode) {
+  const status = Number(statusCode || 0);
+  return status === 408 || status === 429 || (status >= 500 && status <= 599);
+}
+
+/**
+ * 所有 Reader 非 2xx 共用同一個 HTTP retry 契約：408、429、5xx 可重試，
+ * 其餘 4xx 為永久失敗。判斷只依 status，不解析 provider 錯誤文字。
+ */
+function buildReaderHttpFailureMetadata_(statusCode) {
+  const status = Number(statusCode || 0);
+  return {
+    httpStatus: status,
+    retryable: isReaderHttpStatusRetryable_(status)
+  };
+}
+
+function getReaderFailureHttpStatus_(result) {
+  const safeResult = result || {};
+  return Object.prototype.hasOwnProperty.call(safeResult, 'httpStatus')
+    ? Number(safeResult.httpStatus || 0)
+    : Number(safeResult.statusCode || 0);
+}
+
+/**
+ * 普通 Jina＋legacy failure 沿用「任一來源可重試就重試」策略。
+ * combined httpStatus 必須選自可重試來源；否則 Jina 500 + legacy 404 會因最後的 404
+ * 在 NewsUrlQueue 被誤判為永久失敗。若可重試來源只有 exception/timeout 而沒有 status，回傳 0。
+ */
+function resolveCombinedReaderFailureHttpStatus_(jinaResult, legacyResult, combinedRetryable) {
+  const jinaRetryable = resolveReaderFailureRetryable_(jinaResult);
+  const legacyRetryable = resolveReaderFailureRetryable_(legacyResult);
+  const jinaStatus = getReaderFailureHttpStatus_(jinaResult);
+  const legacyStatus = getReaderFailureHttpStatus_(legacyResult);
+
+  if (combinedRetryable) {
+    if (legacyRetryable && isReaderHttpStatusRetryable_(legacyStatus)) return legacyStatus;
+    if (jinaRetryable && isReaderHttpStatusRetryable_(jinaStatus)) return jinaStatus;
+    return 0;
+  }
+
+  return legacyStatus || jinaStatus || 0;
+}
+
+/**
+ * deadline 已耗盡時的 provider-neutral Reader failure。
+ * retryable=true 表示可交給既有背景 Queue 重新執行，不代表同步 webhook 應立刻再試。
+ */
+function buildReaderExecutionBudgetFailure_(url, readerRoute) {
+  return buildReaderLayerErrorResult_(
+    url,
+    readerRoute,
+    'reader_sync_budget_exhausted',
+    'LINE webhook 同步 Reader 執行預算已耗盡，未發出 HTTP request。',
+    { retryable: true, httpStatus: 0 }
+  );
+}
+
 /**
  * Reader combination 的 retryable 後備判斷。typed metadata 優先；4xx（408/429 除外）
  * 通常是永久失敗，5xx/timeout/未知 fetch exception 則允許既有 Queue 稍後再試。
@@ -800,15 +885,16 @@ function resolveReaderFailureRetryable_(result) {
     return false;
   }
   if (type.indexOf('ai_') === 0) return isAiErrorTypeRetryable_(type);
-  const status = Number(safeResult.httpStatus || safeResult.statusCode || 0);
-  if (status === 408 || status === 429 || status >= 500) return true;
+  const status = getReaderFailureHttpStatus_(safeResult);
+  if (isReaderHttpStatusRetryable_(status)) return true;
   if (status >= 400) return false;
   return true;
 }
 
 /**
- * 同步 webhook Reader 套用短 timeout，且不得超過 event 剩餘 deadline。
+ * 同步 webhook Reader 套用短 timeout，且不得超過整批 webhook 剩餘 absolute deadline。
  * 背景 Queue 不傳 execution context，因此不新增全域 Reader 行為變更，仍沿用 GAS 預設 timeout。
+ * 回傳 null 代表 deadline 已過，caller 必須直接走既有 fallback，不可再發 1 秒 request。
  */
 function applyReaderFetchTimeoutForExecutionContext_(options, executionContext) {
   const safeOptions = options || {};
@@ -817,12 +903,14 @@ function applyReaderFetchTimeoutForExecutionContext_(options, executionContext) 
 
   const deadlineAtMs = Number(context.deadlineAtMs);
   const configuredCap = Number(context.readerTimeoutCapSeconds);
-  if (!isFinite(deadlineAtMs) || deadlineAtMs <= 0 || !isFinite(configuredCap) || configuredCap <= 0) {
-    return safeOptions;
-  }
+  if (!isFinite(deadlineAtMs) || deadlineAtMs <= 0) return safeOptions;
 
-  const remainingSeconds = Math.max(1, Math.floor((deadlineAtMs - Date.now()) / 1000));
-  safeOptions.timeoutSeconds = Math.max(1, Math.floor(Math.min(configuredCap, remainingSeconds)));
+  const remainingSeconds = Math.floor((deadlineAtMs - Date.now()) / 1000);
+  if (!isFinite(remainingSeconds) || remainingSeconds < 1) return null;
+  const effectiveCap = isFinite(configuredCap) && configuredCap > 0
+    ? Math.min(configuredCap, remainingSeconds)
+    : remainingSeconds;
+  safeOptions.timeoutSeconds = Math.max(1, Math.floor(effectiveCap));
   return safeOptions;
 }
 
