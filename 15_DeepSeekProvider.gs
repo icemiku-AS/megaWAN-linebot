@@ -1,6 +1,7 @@
 // ======================================================
-// 09_DeepSeekService.gs
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 15_DeepSeekProvider.gs
+// AI provider adapter：DeepSeek transport 與 provider protocol translation。
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 主要責任：
 // 1. 作為 DeepSeek provider adapter，lazy-load DEEPSEEK_API_KEY 並呼叫 Chat Completions。
@@ -13,8 +14,8 @@
 // 3. 不讓功能層接觸 choices、reasoning_content 或 DeepSeek 原始 usage 欄位。
 //
 // 檔案關係與維護注意：
-// 1. 18_AiService.gs 是正式入口；本檔主要入口 callDeepSeekProvider_() 只供其 dispatch。
-// 2. 19_AiProfiles.gs 保證每個 task 顯式指定 thinking；本檔仍會防守缺值，避免依賴 API 預設。
+// 1. 10_AiService.gs 是正式 service 入口；本檔主要入口 callDeepSeekProvider_() 只供其 dispatch。
+// 2. 11_AiProfiles.gs 保證每個 task 顯式指定 thinking；本檔仍會防守缺值，避免依賴 API 預設。
 // 3. thinking enabled 時不得送 temperature、top_p、presence_penalty、frequency_penalty；
 //    reasoning_effort 依官方規格使用 high / max。
 // 4. 下方舊 callDeepSeek... 函式是 v1.13.0 compatibility wrapper，不是正式 runtime 首選。

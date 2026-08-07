@@ -1,17 +1,15 @@
 // ======================================================
-// 06_WebReader.gs
-// 網址與 legacy raw HTML 讀取層。負責 URL 安全、UrlFetchApp、HTML 清理、正文抽取契約與網頁分析 Prompt。
+// 21_WebReader.gs
+// Reader／Web workflows：legacy raw HTML fetch、清理、AI extraction contract 與網頁分析 Prompt。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 設計說明：
-// 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
-// 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
-// 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
-// 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
-// 5. v1.13.0 起，raw HTML extraction 的 Prompt、JSON contract、normalizer 與 mainText validator 歸本檔管理。
-// 6. 本檔不決定 provider/model/thinking；只以 raw_html_extraction task 呼叫 18_AiService.gs。
-// 7. 16_ReaderLayer.gs 仍控制 FxTwitter / PTT / Jina / legacy fallback 優先順序，本檔不改 Reader routing。
+// 1. 20_ReaderLayer.gs 在 Jina 失敗時呼叫本檔；直接 URL helper 也由 Queue／News 流程使用。
+// 2. 本檔擁有 raw HTML extraction 的 Prompt、JSON contract、normalizer 與 mainText validator。
+// 3. 本檔不決定 provider/model/thinking，只以 raw_html_extraction task 呼叫 10_AiService.gs。
+// 4. FxTwitter / PTT / Jina / legacy fallback 優先順序由 20_ReaderLayer.gs 控制，本檔不改 routing。
+// 5. URL 安全檢查、抓取上限、HTML 清理與 webResult 欄位是相容性 contract；改動需獨立 Reader 版本。
 // ======================================================
 
 // ======================================================

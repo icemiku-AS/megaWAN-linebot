@@ -1,3 +1,17 @@
+2026-08-07
+v1.13.1 Source Layout & File Ordering Edition
+- 將 20 個 GAS runtime `.gs` 依穩定領域區段排列：00–09 Core／LINE／Shared、10–19 AI、20–29 Reader／Web／Jobs、30–39 News／Editorial、40–49 Topic／Material、50–59 Data operations；區段內保留空號，60–89 保留給未來新領域。
+- 完成 17 個純 rename；`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs` 保持原名。檔號只供人類／AI 導航與 GAS 平面排序，不代表 runtime load order。
+- Provider adapter 檔名由 Service 改為 Provider，明確區分正式 `10_AiService.gs` 與 vendor adapter；既有 provider function 與 compatibility wrapper 名稱不變。
+- 完整 mapping：`12_ResponseTexts.gs` → `03_ResponseTexts.gs`、`03_Utils.gs` → `04_Utils.gs`、`04_Storage.gs` → `05_Storage.gs`、`05_Memory.gs` → `06_Memory.gs`、`18_AiService.gs` → `10_AiService.gs`、`19_AiProfiles.gs` → `11_AiProfiles.gs`、`11_Prompts.gs` → `12_Prompts.gs`。
+- 完整 mapping（續）：`09_DeepSeekService.gs` → `15_DeepSeekProvider.gs`、`08_GeminiService.gs` → `16_GeminiProvider.gs`、`16_ReaderLayer.gs` → `20_ReaderLayer.gs`、`06_WebReader.gs` → `21_WebReader.gs`、`07_WebTaskQueue.gs` → `25_WebTaskQueue.gs`。
+- 完整 mapping（續）：`13_NewsInbox.gs` → `30_NewsInbox.gs`、`17_WeeklyEditorialDigest.gs` → `35_WeeklyEditorialDigest.gs`、`14_TopicHighlights.gs` → `40_TopicHighlights.gs`、`10_TopicFeatures.gs` → `45_TopicFeatures.gs`、`15_DataCleanup.gs` → `50_DataCleanup.gs`。
+- 同步 20 個檔頭、現行跨檔註解、版本顯示 metadata、README、CURRENT_VERSION 與 AGENTS；v1.13.0 與更早歷史段落保留當時檔名。
+- top-level functions、global const 名稱、Trigger、Sheet、Script Properties、Prompt、AI route/profile/model/thinking、Reader/Queue、LINE 指令與回覆格式均不變；`WEEKLY_EDITORIAL_CACHE_VERSION` 維持 `v1.13.0`。
+- GAS 必須對既有檔案直接 Rename，不可讓新舊檔同時存在；完成後仍須正好有 20 個 `.gs`，再建立 v1.13.1 Apps Script version 並更新既有 Web App deployment。
+
+// ==================================================
+
 2026-08-06
 v1.13.0 AI Routing & Project Architecture Edition
 - 新增 18_AiService.gs 與 19_AiProfiles.gs，以 task route、execution profile、provider adapter、normalized response 建立薄的 provider-neutral AI 架構。

@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.13.0 AI Routing & Project Architecture Edition`
-Previous stable baseline described in this file: `v1.12.5 Weekly Editorial Digest Edition`
+Version represented by this Git ref: `v1.13.1 Source Layout & File Ordering Edition`
+Previous stable baseline described in this file: `v1.13.0 AI Routing & Project Architecture Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,28 +68,44 @@ Previous stable baseline described in this file: `v1.12.5 Weekly Editorial Diges
 
 ## Active Runtime Source Files
 
-以下檔案代表 v1.13.0 AI Routing & Project Architecture Edition 沿用的 GAS 程式結構：
+以下 20 個檔案代表 v1.13.1 Source Layout & File Ordering Edition 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
 * `02_LineCommands.gs`
-* `03_Utils.gs`
-* `04_Storage.gs`
-* `05_Memory.gs`
-* `06_WebReader.gs`
-* `07_WebTaskQueue.gs`
-* `08_GeminiService.gs`
-* `09_DeepSeekService.gs`
-* `10_TopicFeatures.gs`
-* `11_Prompts.gs`
-* `12_ResponseTexts.gs`
-* `13_NewsInbox.gs`
-* `14_TopicHighlights.gs`
-* `15_DataCleanup.gs`
-* `16_ReaderLayer.gs`
-* `17_WeeklyEditorialDigest.gs`
-* `18_AiService.gs`
-* `19_AiProfiles.gs`
+* `03_ResponseTexts.gs`
+* `04_Utils.gs`
+* `05_Storage.gs`
+* `06_Memory.gs`
+* `10_AiService.gs`
+* `11_AiProfiles.gs`
+* `12_Prompts.gs`
+* `15_DeepSeekProvider.gs`
+* `16_GeminiProvider.gs`
+* `20_ReaderLayer.gs`
+* `21_WebReader.gs`
+* `25_WebTaskQueue.gs`
+* `30_NewsInbox.gs`
+* `35_WeeklyEditorialDigest.gs`
+* `40_TopicHighlights.gs`
+* `45_TopicFeatures.gs`
+* `50_DataCleanup.gs`
+
+---
+
+## Source Layout Navigation Rule
+
+數字前綴只供人類／AI 架構導航與 GAS 編輯器平面排序，不代表 Google Apps Script runtime load order。
+
+* `00–09`：Core／LINE transport／Shared foundation
+* `10–19`：AI configuration／orchestration／providers
+* `20–29`：Reader／Web workflows／background jobs
+* `30–39`：News／Editorial
+* `40–49`：Topic／material workflows
+* `50–59`：Data operations／maintenance
+* `60–89`：未來新領域保留
+
+新檔案應優先使用所屬領域的保留空號。不得為了完美插入順序再次重編既有檔案，也不得新增依賴檔名、檔號或排序的 top-level executable side effect。
 
 ---
 
@@ -103,6 +119,61 @@ Previous stable baseline described in this file: `v1.12.5 Weekly Editorial Diges
 * `99_changelog.md`：歷史版本紀錄。
 
 修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
+
+---
+
+## v1.13.1 Version Boundary
+
+v1.13.1 是 Source Layout & File Ordering Edition。Previous stable baseline 是 v1.13.0；本版只整理 source layout、active 註解、版本顯示與維護文件，不改 runtime 行為。
+
+### Rename mapping
+
+| v1.13.0 active name | v1.13.1 active name |
+| --- | --- |
+| `12_ResponseTexts.gs` | `03_ResponseTexts.gs` |
+| `03_Utils.gs` | `04_Utils.gs` |
+| `04_Storage.gs` | `05_Storage.gs` |
+| `05_Memory.gs` | `06_Memory.gs` |
+| `18_AiService.gs` | `10_AiService.gs` |
+| `19_AiProfiles.gs` | `11_AiProfiles.gs` |
+| `11_Prompts.gs` | `12_Prompts.gs` |
+| `09_DeepSeekService.gs` | `15_DeepSeekProvider.gs` |
+| `08_GeminiService.gs` | `16_GeminiProvider.gs` |
+| `16_ReaderLayer.gs` | `20_ReaderLayer.gs` |
+| `06_WebReader.gs` | `21_WebReader.gs` |
+| `07_WebTaskQueue.gs` | `25_WebTaskQueue.gs` |
+| `13_NewsInbox.gs` | `30_NewsInbox.gs` |
+| `17_WeeklyEditorialDigest.gs` | `35_WeeklyEditorialDigest.gs` |
+| `14_TopicHighlights.gs` | `40_TopicHighlights.gs` |
+| `10_TopicFeatures.gs` | `45_TopicFeatures.gs` |
+| `15_DataCleanup.gs` | `50_DataCleanup.gs` |
+
+`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs` 保持原名。共 20 個 runtime `.gs`、17 個 rename。
+
+### Included
+
+1. 依穩定領域區段重新編號，並保留區段內空號供未來擴充。
+2. 將 DeepSeek／Gemini adapter 檔名由 Service 改為 Provider，明確區分 `10_AiService.gs` 與 vendor adapter。
+3. 更新 20 個檔頭 self-name、版本、責任、caller/dependency 與重要相容性註解。
+4. 更新現行跨檔引用、`BOT_CURRENT_VERSION`、`BOT_CURRENT_VERSION_DATE`、最新 `BOT_VERSION_HISTORY` 與四份 active 文件。
+5. 提供 GAS 直接 Rename、部署、驗證與反向 rename rollback 邊界。
+
+### Runtime invariants
+
+* top-level function、Trigger handler 與 global const 名稱不變；只有版本顯示 metadata 值與最新版本紀錄更新。
+* Prompt、AI task route/profile/model/thinking/token/timeout/retry metadata、normalized response contract 不變。
+* Reader priority、typed error、retry/backoff/deadline、Queue/PendingReplies 行為不變。
+* Sheet 名稱、headers、欄序、Script Properties、setup/migration、cleanup 範圍不變。
+* LINE 指令、router、reply format、Web App entry 與 Trigger handler 名稱不變。
+* `WEEKLY_EDITORIAL_CACHE_VERSION` 維持 `v1.13.0`，因 weekly editorial 資料 contract 未變。
+
+### GAS deployment and rollback boundary
+
+GAS 應在低流量時段直接 Rename 既有 17 個檔案，不得用「新增新檔、稍後刪舊檔」。同時存在新舊檔會造成重複 top-level function／const 宣告，可能讓專案無法載入。Rename 完成後仍須正好有 20 個 `.gs`，且 17 個舊 active 名稱全部消失。
+
+Trigger 綁定函式名稱，不綁定檔名；本版不需重建 Trigger。程式同步與 smoke tests 通過後，建立 v1.13.1 Apps Script version，將既有 Web App deployment 指向新 version，deployment URL 不變。
+
+回滾時先將 Web App deployment 指回先前穩定 Apps Script version；若要回復 source 名稱，依上表右欄 → 左欄直接反向 Rename，最後確認仍是 20 個 `.gs`、主要 handler 與既有 Trigger 綁定完整。Script Properties 與 Sheet 不需回滾。
 
 ---
 
@@ -370,8 +441,8 @@ v1.10.9 合併後，新增 `AGENTS.md` 作為本機 Codex / AI coding agent 工�
 v1.10.9 的 reader 分流：
 
 * 一般網站：Jina Reader。
-* PTT：GAS 原生 `UrlFetchApp` + `over18=1` cookie，並在 `16_ReaderLayer.gs` 內保留 v1.10.6 的 over18 gate 誤判修正。
-* X / Twitter 單篇 status：`16_ReaderLayer.gs` 透過 FxTwitter API 讀取。
+* PTT：GAS 原生 `UrlFetchApp` + `over18=1` cookie，並在現行 `20_ReaderLayer.gs` 內保留 v1.10.6 的 over18 gate 誤判修正。
+* X / Twitter 單篇 status：現行 `20_ReaderLayer.gs` 透過 FxTwitter API 讀取。
 * X / Twitter 非單篇 status 網址：不自動讀取，避免把個人頁、搜尋頁或登入頁誤當正文。
 * Facebook / fb.watch / Threads.com / Threads.net：先走 Jina Reader，不再入隊前攔截。
 * Jina Reader 失敗時：嘗試 legacy raw HTML + Gemini extractor fallback。
@@ -395,7 +466,24 @@ v1.10.9 沒有修改 v1.10.4 的清理功能。
 
 ---
 
-## Explicitly Not Included in v1.13.0
+## Explicitly Not Included in v1.13.1
+
+以下項目不屬於 source layout 維護版本：
+
+* 新功能、Prompt 修改或 AI task route/profile/model/provider 改動
+* 函式／global const／Trigger handler 改名，或函式跨檔搬移
+* 拆分／合併 `05_Storage.gs`、`30_NewsInbox.gs`、`45_TopicFeatures.gs` 或其他 runtime 檔案
+* Reader priority/error handling、Queue retry/backoff/deadline/PendingReplies 行為調整
+* Sheet schema、欄序、Script Properties、setup、migration 或 cleanup 行為調整
+* LINE 指令、router、help 功能內容或 reply format 調整
+* compatibility wrapper 移除、新 provider、provider fallback 或新的外部 Reader
+* `WEEKLY_EDITORIAL_CACHE_VERSION` 更新
+
+以上應在後續獨立 feature/refactor/hotfix 版本處理。
+
+---
+
+## Explicitly Not Included in v1.13.0 (Previous Version Boundary)
 
 以下功能不是本版內容，不要在讀取本版時誤判為已實作：
 
@@ -448,14 +536,21 @@ v1.10.9 沒有修改 v1.10.4 的清理功能。
 
 GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維護者手動處理。
 
+數字檔號不是 runtime load order。GAS 同一專案的 `.gs` 共享全域命名空間；初始化必須由明確函式入口執行，不得依賴 top-level executable side effect 或檔案排序。
+
+v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時保留舊檔。完成後建立新 Apps Script version，讓既有 Web App deployment 指向新 version；Trigger handler 與 deployment URL 均維持不變。
+
 ---
 
-## Suggested Smoke Tests for v1.13.0 Runtime
+## Suggested Smoke Tests for v1.13.1 Source Layout
 
-本版不修改任何 Sheet schema，不需要 migration、setup、新 Trigger 或新增 Script Properties。
+本版不修改任何 runtime contract 或 Sheet schema，不需要 migration、setup、新 Trigger 或新增 Script Properties。
+
+部署前先確認 GAS 正好有 20 個 `.gs`、17 個舊 active 檔名全部消失、函式選單仍有 `doPost`、`setupLogSheet`、`installWebTaskQueueTrigger`、`processWebTaskQueue`、`processNewsUrlQueue`，Trigger 畫面仍綁定原 handler。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
+* `#版本`、`#版本紀錄`、`#help`。
 * 在私訊與群組 `#小浣` 進行至少兩輪一般聊天，確認 general_chat 為 non-thinking，且短期/長期記憶仍可接續。
 * 群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。
 * 確認該網址進入 NewsUrlQueue，背景 trigger 處理後寫入 NewsInbox。
@@ -492,9 +587,13 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 * 執行 `#封存本週話題`，確認 WeeklySummary 新增 `ArchiveType=topic`，且來源只計算 ConversationLog 使用者訊息。
 * 執行 `#統整話題`，確認 AI task 會收到 NewsInbox Outline。
 * 準備一筆沒有 Outline 的舊 NewsInbox 資料，確認 `#統整話題` 會退回 Brief。
+* 執行 `#畫重點`，確認 TopicHighlights 可寫入，後續統整仍可讀取。
+* 對任一清理指令只執行第一階段，確認顯示影響範圍與二段式警告；不要輸入「確認」。
 * 回歸 `#懶人包`、網址版 `#節目話題分析`、`#新聞補充`、`#版本`、`#版本紀錄`。
 * 在 GAS 手動執行 `processWebTaskQueue` / `processNewsUrlQueue`，並確認既有 time-driven trigger handler 名稱未改變。
+* 等待下一輪 Queue Trigger，確認排程可正常再執行且沒有 duplicate function／const 載入錯誤。
 * 移除 `GEMINI_API_KEY` 後回歸全部正常功能，確認 Gemini dormant provider 不影響啟動或 runtime。
+* 對照部署前快照，確認所有 Sheet headers、欄序與 Script Properties 名稱／值均未變。
 * 檢查 `AI_CALL_METADATA` 包含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。
 
 本版修改了 `.gs` runtime，因此需要由維護者手動同步至 Google Apps Script。
@@ -503,7 +602,7 @@ GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.13.0 AI Routing & Project Architecture Edition`
-Previous stable baseline described in this file: `v1.12.5 Weekly Editorial Digest Edition`
-Last Confirmed Date: `2026-08-06`
-Last Documentation Note: all normal AI runtime routes through provider-neutral AiService/AiProfiles and DeepSeek V4 Flash; Gemini transport remains dormant, is not fallback, and is optional unless a route explicitly selects it.
+Last Confirmed Version at this Git ref: `v1.13.1 Source Layout & File Ordering Edition`
+Previous stable baseline described in this file: `v1.13.0 AI Routing & Project Architecture Edition`
+Last Confirmed Date: `2026-08-07`
+Last Documentation Note: 20 GAS runtime files use stable domain ranges; numbering is navigation only, all v1.13.0 runtime contracts remain unchanged, and Gemini remains dormant rather than fallback.

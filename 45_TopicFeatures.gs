@@ -1,8 +1,8 @@
 // ======================================================
-// 10_TopicFeatures.gs
-// 節目企劃功能層。負責 #節目話題分析、#統整話題、#封存本週話題 等高階功能。
+// 45_TopicFeatures.gs
+// Topic／material workflows：#節目話題分析、#統整話題、#封存本週話題 等企劃功能。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 設計說明：
 // 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
@@ -13,8 +13,9 @@
 // 6. v1.12.1 起，#封存本週新聞 的 prompt 改為週報索引取向，優先保留可回查的事件與名稱。
 // 7. v1.12.2 起，新聞封存會讀取 SpecialTopic / MatchedEntities，協助保留可回查的主角與事件名稱。
 // 8. v1.12.4 起，新聞封存素材文字會包含 StoryKey，協助長期記憶保留事件線。
-// 9. v1.13.0 起，本檔只選 AI task 與擁有功能 Prompt/schema；provider/profile/payload 由 AiService/AiProfiles 管理。
+// 9. 本檔只選 AI task 並擁有功能 Prompt/schema；provider/profile/payload 由 10_AiService.gs / 11_AiProfiles.gs 管理。
 // 10. LINE webhook 會傳入可選 execution context；它只縮短同步 timeout，背景或手動 caller 不傳時仍用完整 profile。
+// 11. 本檔不擁有 LINE router、TopicHighlights Sheet schema 或 NewsInbox 入庫流程。
 // ======================================================
 
 // ======================================================

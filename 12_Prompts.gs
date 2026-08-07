@@ -1,8 +1,8 @@
 // ======================================================
-// 11_Prompts.gs
-// 集中管理小浣人格、共用 system prompt 與跨功能模式提示詞。
+// 12_Prompts.gs
+// Prompt／response content：集中管理小浣人格、共用 system prompt 與跨功能模式提示詞。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 維護原則：
 // 1. 本檔只管理 provider-neutral 的共用 system prompt，不直接呼叫模型。
@@ -11,7 +11,7 @@
 // 4. v1.10.2 移除 #摘要 / #摘要最近 / #回顧最近 / #標題 專用 prompt，保留節目素材秘書核心任務。
 // 5. v1.12.3 起，news_question system prompt 限制只能根據 NewsInbox 與新聞封存脈絡回答。
 // 6. v1.12.5 新增 weekly_editorial_digest，模型只做批次編輯判斷並回傳固定 JSON。
-// 7. v1.13.0 起，功能專屬 Prompt 留在最理解契約的功能檔；本檔不集中 NewsInbox、快讀或正文抽取 Prompt。
+// 7. 功能專屬 Prompt 留在最理解契約的功能檔；本檔不集中 NewsInbox、快讀或正文抽取 Prompt。
 // 8. buildSystemPrompt() 只保留為 compatibility wrapper；正式 runtime 使用 buildAiSystemPrompt_()。
 // ======================================================
 

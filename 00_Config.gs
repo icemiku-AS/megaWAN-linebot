@@ -1,18 +1,15 @@
 // ======================================================
 // 00_Config.gs
-// 集中管理 LINE/Reader endpoint、Sheet 名稱、指令前綴與各種非 AI 路由常數。
+// Core／Shared foundation：集中管理 LINE/Reader endpoint、Sheet 名稱、指令前綴與非 AI 路由常數。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 維護原則：
-// 1. 本版延續 Google Apps Script 分檔架構，不導入 Node.js / npm。
-// 2. Google Apps Script 會把同一專案內的 .gs 檔視為同一個全域命名空間。
-// 3. 因此函式可跨檔案直接呼叫，但函式名稱不可重複；若新增版本相容層，必須在註解中明確說明用途。
-// 4. v1.10.9 新增 FxTwitter API endpoint 設定，供 X / Twitter 單篇貼文 reader 使用。
-// 5. v1.12.3 新增 #新聞問答 trigger，讓使用者可直接詢問近期 NewsInbox 素材。
-// 6. v1.12.4 新增 LINE 長回覆分段常數，避免週新聞回覆被單則硬裁切。
-// 7. v1.12.5 新增週編輯台的模型輸入、對話掃描、輸出驗證與快取上限。
-// 8. v1.13.0 起，AI provider endpoint 放在各 adapter，model/profile/task route 集中於 19_AiProfiles.gs。
+// 1. GAS 會把同一專案內的 .gs 視為同一個全域命名空間；數字前綴只供導航，不代表 load order。
+// 2. 不得用 top-level executable side effect 依賴檔案排序；跨檔函式與 const 名稱也不可重複。
+// 3. 本檔只放跨領域設定與不含 secret 的常數；Script Properties 的 secret 由使用端延遲讀取。
+// 4. AI provider endpoint 留在 15_DeepSeekProvider.gs / 16_GeminiProvider.gs；model、profile 與 task route 集中於 11_AiProfiles.gs。
+// 5. 修改 Sheet 名稱、Queue 上限、deadline 或快取識別都可能改變 contract，不能以 source layout 整理名義調整。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';

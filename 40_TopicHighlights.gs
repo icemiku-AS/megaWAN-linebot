@@ -1,12 +1,15 @@
 // ======================================================
-// 14_TopicHighlights.gs
-// v1.10.3 Highlight Layer Edition：人工重點資料層。
+// 40_TopicHighlights.gs
+// Topic／material workflows：人工重點資料層與 TopicHighlights Sheet contract。
+//
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 維護原則：
 // 1. #畫重點 會將使用者手動標記的內容寫入 TopicHighlights。
 // 2. TopicHighlights 是「人工釘選素材」，不是一般聊天紀錄。
-// 3. #統整話題、無網址版 #節目話題分析、#封存本週話題 會優先參考此資料。
-// 4. 本版只新增重點資料層，不處理多 Sheet 清理；清理功能留待後續版本。
+// 3. 45_TopicFeatures.gs 的 #統整話題、無網址版 #節目話題分析、#封存本週話題會優先讀取此資料。
+// 4. 本檔只管理重點寫入與讀取，不執行跨 Sheet 清理；清理規則由 50_DataCleanup.gs 負責。
+// 5. Sheet headers、conversationId 隔離與人工標記語意都是相容性 contract。
 // ======================================================
 
 function ensureTopicHighlightsSheet_() {
