@@ -1,12 +1,13 @@
 // ======================================================
-// 19_AiProfiles.gs
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 11_AiProfiles.gs
+// AI configuration：provider/model registry、execution profiles、task routes 與 retry metadata。
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 主要責任：
 // 1. 集中登記 AI provider、model、execution profile 與 task route。
 // 2. 將 task 的 provider / model / profile 選擇，和 profile 的 thinking、輸出模式、
 //    token、timeout、sampling、finish reason 與 retry policy 分開管理。
-// 3. 解析 route override，輸出 provider-neutral 的執行設定給 18_AiService.gs。
+// 3. 解析 route override，輸出 provider-neutral 的執行設定給 10_AiService.gs。
 //
 // 明確不負責：
 // 1. 不呼叫任何 provider API，也不讀取 API key。
@@ -14,11 +15,11 @@
 // 3. 不實作跨 provider fallback；切換 provider 必須由維護者明確調整 task route。
 //
 // 檔案關係與設計原則：
-// 1. 18_AiService.gs 是唯一正式調度入口；08 / 09 只轉譯各 provider 協議。
+// 1. 10_AiService.gs 是唯一正式調度入口；15 / 16 只轉譯各 provider 協議。
 // 2. 功能檔只傳 task 與 Prompt/messages，不應自行組 DeepSeek 或 Gemini options。
 // 3. 每個 task route 都重複標示 expectedThinking，並由 resolver 驗證它和 profile
 //    一致。這項刻意的少量重複是安全稽核，避免未來換 profile 後意外改變成本與延遲。
-// 4. v1.13.0 不綁定 thinking_max；它只保留給未來明確指定的高價值低頻任務。
+// 4. 目前沒有 runtime task 綁定 thinking_max；它只保留給未來明確指定的高價值低頻任務。
 // 5. DeepSeek 最新官方規格只有 high / max 是正式 reasoning_effort；不要新增
 //    low / medium profile，因為供應商只會把它們相容映射為 high。
 // 6. profile/route timeout 是任務最大預算；LINE webhook 會在 AiService 再套較短同步 cap。
@@ -121,7 +122,7 @@ const AI_EXECUTION_PROFILES = {
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   },
 
-  // 未來高價值、低頻率深度任務的預留 profile；v1.13.0 沒有 task 綁定。
+  // 未來高價值、低頻率深度任務的預留 profile；目前沒有 runtime task 綁定。
   // max effort 與 16000 tokens 可能顯著提高延遲與成本，180 秒也不適合 webhook 日常流量。
   // 保留獨立 profile 是為了讓未來啟用時必須經過明確 route review。
   thinking_max: {
@@ -276,7 +277,7 @@ function resolveAiTaskConfig_(task) {
     maxOutputTokens: maxOutputTokens,
     timeoutSeconds: timeoutSeconds,
     requiredFinishReason: route.requiredFinishReason || profile.requiredFinishReason || 'stop',
-    // 僅提供 Queue/caller 判斷；AiService v1.13.0 不讀此欄位執行 retry。
+    // 僅提供 Queue/caller 判斷；10_AiService.gs 不讀此欄位執行 retry。
     retryPolicy: route.retryPolicy || profile.retryPolicy || { strategy: 'caller_owned', maxAttemptsInService: 1 }
   };
 }

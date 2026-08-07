@@ -1,15 +1,15 @@
 // ======================================================
-// 13_NewsInbox.gs
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
-// 新聞素材池、靜默網址收件、NewsInbox AI 契約、狀態回報與新聞封存脈絡。
+// 30_NewsInbox.gs
+// News／Editorial：新聞素材池、靜默網址收件、NewsInbox AI 契約、狀態回報與新聞封存脈絡。
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
 // 2. 多網址、Reader 過慢、同步 API 失敗或結果不足時，退回 NewsUrlQueue；time-driven trigger 每次最多處理 2 筆。
-// 3. v1.10.5 起，自動網址入庫會先透過 16_ReaderLayer.gs 取得 mainText，再交給 AI news_analysis task 整理。
+// 3. 自動網址入庫會先透過 20_ReaderLayer.gs 取得 mainText，再交給 AI news_analysis task 整理。
 // 4. v1.10.9 起，X / Twitter 非單篇 status 網址會在入隊前直接攔截；Facebook / Threads 先交給 Jina Reader。
 // 5. v1.10.7 起，背景處理若遇到永久性錯誤，會直接 failed 並建立 PendingReplies，不再無效重試三次。
-// 6. v1.13.0 起，NewsInbox / 新聞問答 / 新聞補充 / memory bridge 都只透過 provider-neutral AiService task。
+// 6. NewsInbox / 新聞問答 / 新聞補充 / memory bridge 都只透過 provider-neutral AiService task。
 // 7. v1.10.8 修正 #新聞補充 的 JSON parser 名稱錯誤，讓 DeepSeek 解析結果真的能被使用，而不是每次靜默 fallback。
 // 8. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
 // 8.1 v1.12.1 起，#本週新聞 支援高潛力、詳細、精簡與分類篩選模式。
@@ -17,9 +17,9 @@
 // 8.3 v1.12.3 起，移除 24 小時檢視，並新增 #新聞問答 以近期 NewsInbox 回答素材問題。
 // 8.4 v1.12.4 起，NewsInbox 追加 StoryKey，#本週新聞 預設改按故事線精簡聚合。
 // 8.5 v1.12.5 起，預設與精簡模式改由本週編輯台批次聚類；StoryKey 保留為候選提示。
-// 9. 本檔盡量不改動舊 WebTaskQueue，避免影響 #懶人包 / #節目話題分析。
+// 9. 本檔不擁有 25_WebTaskQueue.gs 的快讀 contract，避免新聞收件變更影響 #懶人包 / #節目話題分析。
 // 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
-// 11. 本版不改 NewsInbox / NewsUrlQueue Sheet schema、欄序、Queue 次數或公開 trigger 名稱。
+// 11. NewsInbox / NewsUrlQueue Sheet schema、欄序、Queue 次數與公開 processNewsUrlQueue() 名稱都是相容性邊界。
 // 12. webhook execution context 讓 Reader、legacy extraction 與 news_analysis 共用期限；背景 Queue 仍用完整 profile。
 // ======================================================
 
@@ -533,7 +533,7 @@ function processSingleNewsUrlTask_(task) {
 
     // v1.10.7 修正：
     // 舊版誤呼叫不存在的 createPendingReply()，導致 queue 已 failed 但 PendingReplies 沒有建立。
-    // 這裡改用 07_WebTaskQueue.gs 既有的 createPendingReplyFromTask()，
+    // 這裡復用 25_WebTaskQueue.gs 既有的 createPendingReplyFromTask()，
     // 讓下一次同 conversationId 有訊息進來時，01_Main.gs 可透過 getAndDeletePendingReply() 交付錯誤通知。
     createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, errorText), 'news_url_failed');
   }

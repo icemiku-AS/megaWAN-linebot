@@ -1,8 +1,8 @@
 // ======================================================
-// 16_ReaderLayer.gs
-// 統一網頁 Reader Layer；負責 FxTwitter、PTT、Jina 與 legacy raw HTML fallback routing。
+// 20_ReaderLayer.gs
+// Reader／Web workflows：統一 FxTwitter、PTT、Jina 與 legacy raw HTML fallback routing。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 本檔是 Reader Layer 的核心檔案，目標是把「讀網頁」與後續 LLM 整理拆開。
 // 下游 NewsInbox、WebSummary 與 AI task 只需要吃穩定的 webResult：
@@ -20,8 +20,9 @@
 // 2. 本版不導入 Apify / ByCrawl。
 // 3. X / Twitter 只支援可抽出 /status/{id} 的公開單篇貼文；個人頁、搜尋頁、列表頁不自動擷取。
 // 4. Facebook / Threads 是否能讀到正文取決於 Jina Reader 與公開可讀性，不保證登入牆或私人內容。
-// 5. 本檔不擁有 AI Prompt/schema/normalizer；快讀歸 07，raw HTML extraction 歸 06。
-// 6. v1.13.0 不改 Reader 優先順序；成功結果的既有 webResult 欄位不變。
+// 5. 主要 caller 是 25_WebTaskQueue.gs 與 30_NewsInbox.gs；本檔不擁有 AI Prompt/schema/normalizer。
+// 6. 快讀契約歸 25_WebTaskQueue.gs，raw HTML extraction 歸 21_WebReader.gs；本檔只決定 Reader routing。
+// 7. Reader 優先順序與成功結果的既有 webResult 欄位是相容性 contract，不可因 source layout 調整。
 //    失敗結果可向後相容地增加 errorType / retryable / httpStatus，供 Queue 判斷重試；
 //    舊 caller 若只讀 ok / error，行為仍維持不變。
 // ======================================================
@@ -199,11 +200,11 @@ function extractTwitterStatusIdFromUrl_(url) {
 }
 
 // ======================================================
-// Legacy fallback：復用 06_WebReader.gs 舊流程
+// Legacy fallback：復用 21_WebReader.gs 舊流程
 // ======================================================
 
 function fetchAndExtractWebPageLegacy_(url, executionContext) {
-  // 目前 06_WebReader.gs 的 fetchAndExtractWebPage(url) 代表 raw HTML + AI extraction 流程。
+  // 目前 21_WebReader.gs 的 fetchAndExtractWebPage(url) 代表 raw HTML + AI extraction 流程。
   // 若未來把 fetchAndExtractWebPage(url) 改成也走 Reader Layer，這裡必須同步重構，避免遞迴。
   return fetchAndExtractWebPage(url, executionContext);
 }

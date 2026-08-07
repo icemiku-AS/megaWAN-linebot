@@ -1,24 +1,25 @@
 // ======================================================
 // 01_Main.gs
-// 主要入口、首次設定、Trigger 安裝、Webhook 事件主流程。
+// Core／LINE transport：主要入口、首次設定、Trigger 安裝與 Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 維護原則：
-// 1. 本檔負責 LINE webhook 主流程與事件分流。
-// 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. 群組「直接貼網址」走靜默 NewsUrlQueue；個人聊天室與明確指令保留同步回覆，方便維護測試。
-// 4. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
-// 5. v1.10.4 將資料清理統一交給 15_DataCleanup.gs，所有清理都需二段確認。
-// 6. v1.10.9 起，X / Twitter 非單篇 status 網址不入隊；Facebook / Threads 會先交給 Jina Reader。
-// 7. v1.12.0 起，群組非 trigger 網址不再回覆 Brief；失敗或不支援網址改由 PendingReplies 回報。
-// 8. v1.12.3 起，#新聞問答 由 13_NewsInbox.gs 回答近期新聞素材問題。
-// 9. v1.13.0 起，所有模型工作都交給 provider-neutral AiService；本檔不選 provider 或組 payload。
+// 1. 對外入口是 doPost()、setupLogSheet() 與 Trigger 安裝函式；公開 handler 名稱不得因分檔調整而改變。
+// 2. 本檔負責 LINE webhook 主流程與事件分流；指令與 Reply API 交給 02_LineCommands.gs。
+// 3. 不經過 LLM 的固定回覆與版本資訊集中於 03_ResponseTexts.gs。
+// 4. 群組「直接貼網址」走靜默 NewsUrlQueue；個人聊天室與明確指令保留同步回覆，方便維護測試。
+// 5. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
+// 6. 資料清理統一交給 50_DataCleanup.gs，所有清理都需二段確認。
+// 7. v1.10.9 起，X / Twitter 非單篇 status 網址不入隊；Facebook / Threads 會先交給 Jina Reader。
+// 8. v1.12.0 起，群組非 trigger 網址不再回覆 Brief；失敗或不支援網址改由 PendingReplies 回報。
+// 9. #新聞問答與 NewsUrlQueue 交給 30_NewsInbox.gs；本檔不擁有新聞資料契約。
+// 10. 所有模型工作都交給 provider-neutral AiService；本檔不選 provider、model 或組 payload。
 // ======================================================
 
 /**
  * 公開管理入口：建立或補齊既有資料表，回傳完成的 Sheet 名稱。
- * 這是維護者可能在 GAS editor 直接執行的函式，因此 v1.13.0 保留名稱與既有 schema，
+ * 這是維護者可能在 GAS editor 直接執行的函式；名稱與既有 schema 都是相容性邊界，
  * 不新增 AI Log Sheet，也不進行資料 migration。
  */
 function setupLogSheet() {
@@ -47,7 +48,7 @@ function setupLogSheet() {
 /**
  * 公開 Trigger 安裝入口：重建既有 WebTaskQueue / NewsUrlQueue 每分鐘排程。
  * 副作用是刪除同名 handler 的舊 trigger 後重建；保留函式名稱避免維護流程失效。
- * v1.13.0 沒有新增 trigger 或改變 handler 名稱。
+ * Source layout 版本不新增 trigger，也不改變任何 handler 名稱。
  */
 function installWebTaskQueueTrigger() {
   const triggers = ScriptApp.getProjectTriggers();

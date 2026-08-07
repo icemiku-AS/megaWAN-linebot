@@ -1,6 +1,7 @@
 // ======================================================
-// 18_AiService.gs
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 10_AiService.gs
+// AI orchestration：provider-neutral 的正式 AI service 與唯一 provider dispatch 入口。
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 主要責任：
 // 1. 提供 provider-neutral AI task 入口與 task/profile resolution。
@@ -11,17 +12,17 @@
 //
 // 明確不負責：
 // 1. 不擁有 NewsInbox、快讀、raw HTML、封存或週編輯台等功能 Prompt / schema / validator。
-// 2. 不保存 DeepSeek/Gemini payload 格式；provider-specific 協議只存在 08 / 09 provider adapter。
+// 2. 不保存 DeepSeek/Gemini payload 格式；provider-specific 協議只存在 15 / 16 provider adapter。
 // 3. 不做跨 provider 自動 fallback、不替 Queue retry、不寫 Sheet、不處理 LINE 排版。
 //
 // 檔案關係與 provider-neutral 原則：
-// 1. 19_AiProfiles.gs 決定 task route 與執行行為；本檔只解析並執行。
-// 2. 08_GeminiService.gs 與 09_DeepSeekService.gs 必須回傳相同 provider result contract。
+// 1. 11_AiProfiles.gs 決定 task route 與執行行為；本檔只解析並執行。
+// 2. 15_DeepSeekProvider.gs 與 16_GeminiProvider.gs 必須回傳相同 provider result contract。
 // 3. 功能層應呼叫 runAiTextTask / runAiJsonTask / runAiMemoryTask；只有已自行組好
 //    messages 的少數情境才直接使用 runAiMessagesTask。
 // 4. normalized response 永遠包含 task/profile/provider/model/usage/error metadata；provider
 //    原始 choices、candidates 或 usage 欄位不得洩漏到功能層。
-// 5. v1.13.0 所有 task 都顯式指定 thinking；新增 task 若漏 route，會在 HTTP 前安全失敗。
+// 5. 所有現行 task 都顯式指定 thinking；新增 task 若漏 route，會在 HTTP 前安全失敗。
 // ======================================================
 
 /**

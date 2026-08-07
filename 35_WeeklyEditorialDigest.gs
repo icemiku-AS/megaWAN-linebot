@@ -1,7 +1,7 @@
 // ======================================================
-// 17_WeeklyEditorialDigest.gs
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
-// 本週編輯台：模型輸入、itemId 安全邊界、partition validator、render coverage、cache 與 fallback。
+// 35_WeeklyEditorialDigest.gs
+// News／Editorial：本週編輯台的模型輸入、partition validator、render coverage、cache 與 fallback。
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 責任邊界：
 // 1. GAS 建立固定 itemId、裁切模型輸入、保存原始 NewsInbox item 與網址。
@@ -10,6 +10,7 @@
 // 4. 模型結果只用於當次顯示與 10 分鐘快取，不回寫 NewsInbox。
 // 5. 本檔不組 provider payload；fast_json profile 失敗、JSON/partition 違規都使用既有分類 fallback。
 // 6. webhook execution context 只負責同步時間上限；預算不足或逾時仍走相同程式端 fallback。
+// 7. 主要 caller 是 30_NewsInbox.gs；WEEKLY_EDITORIAL_CACHE_VERSION 只跟資料 contract 變更，不跟 source layout 版本連動。
 // ======================================================
 
 function shouldUseWeeklyEditorialDigest_(queryOptions) {

@@ -1,14 +1,14 @@
 // ======================================================
-// 05_Memory.gs
-// 短期多輪記憶層。使用 CacheService 保存同一聊天室最近幾輪 user / assistant 對話。
+// 06_Memory.gs
+// Memory／Shared foundation：使用 CacheService 保存同一聊天室最近幾輪 user / assistant 對話。
 //
-// 小浣 LINE Bot v1.9 Service Split Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
-// 設計說明：
-// 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
-// 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
-// 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
-// 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
+// 設計與 contract：
+// 1. 主要 caller 是一般聊天與 AiService memory orchestration；conversationId 是隔離邊界。
+// 2. 本檔只管理短期 history 的讀寫、修剪與格式，不選 provider、不組 Prompt、不處理長期 Sheet 封存。
+// 3. Cache key 與 history message 結構屬相容性 contract，不能因檔案排序調整。
+// 4. 函式名稱後綴底線代表內部 helper，但仍位於 GAS 全域命名空間。
 // ======================================================
 
 // ======================================================

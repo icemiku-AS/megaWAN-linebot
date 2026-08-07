@@ -1,17 +1,15 @@
 // ======================================================
-// 07_WebTaskQueue.gs
-// WebTaskQueue、#懶人包與 PendingReplies 任務層。負責排程、快讀契約、結果暫存與下次訊息交付。
+// 25_WebTaskQueue.gs
+// Background jobs／Web workflows：WebTaskQueue、#懶人包、PendingReplies 與快讀契約。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 設計說明：
-// 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
-// 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
-// 3. 檔案拆分的目的，是讓未來維護時能快速判斷：資料、記憶、網頁、排程、模型或節目功能各自在哪裡。
-// 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式，雖然 GAS 沒有真正 private，但維護時請視為內部使用。
-// 5. v1.10.5 起，#懶人包 先透過 16_ReaderLayer.gs 取得可用正文。
-// 6. v1.13.0 起，快讀 Prompt、JSON contract、normalizer 與 validator 歸本檔，模型呼叫走 web_lazy_summary task。
-// 7. 本檔不處理 provider payload、不改 WebTaskQueue/PendingReplies schema，也不在 AiService 內重試。
+// 1. 對外 Trigger 是 processWebTaskQueue()；installWebTaskQueueTrigger() 位於 01_Main.gs，名稱不可變更。
+// 2. 02_LineCommands.gs 建立工作，20_ReaderLayer.gs 提供正文，10_AiService.gs 執行 web_lazy_summary task。
+// 3. 本檔擁有快讀 Prompt、JSON contract、normalizer、validator 與 PendingReplies 交付流程。
+// 4. 本檔不處理 provider payload；WebTaskQueue/PendingReplies schema、retry、backoff 與批次上限是相容性 contract。
+// 5. 同步 webhook deadline 與背景 Trigger execution context 必須保持隔離，不能因檔案排序合併預算。
 // ======================================================
 
 // ======================================================

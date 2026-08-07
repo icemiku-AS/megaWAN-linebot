@@ -1,18 +1,14 @@
 // ======================================================
 // 02_LineCommands.gs
-// 處理 LINE 指令解析、回覆文字、Help 與 LINE Reply API。
+// LINE transport：處理指令解析、Help、Reply API 與長文字分段。
 //
-// 小浣 LINE Bot v1.12.5 Weekly Editorial Digest Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 維護原則：
-// 1. 本檔負責指令解析與 Reply API，不直接管理大量固定文案。
-// 2. 不經過 LLM 的固定回覆文字集中於 12_ResponseTexts.gs。
-// 3. v1.10.4 新增分層 help，避免清理指令全部塞進主 help 造成壓力。
-// 4. v1.12.1 起，#help 聚焦核心新聞入口，低頻功能移到 #help 進階。
-// 5. v1.12.2 起，#help 進階列出 #本週新聞 診斷，用來檢查分類稽核欄位。
-// 6. v1.12.3 起，#新聞問答 讀取近期 NewsInbox 素材並回覆可追溯來源。
-// 7. v1.12.4 起，LINE 長回覆會在單次 Reply API payload 內自動拆成最多 5 則文字訊息。
-// 8. v1.12.5 新增 splitter metadata，既有 splitTextForLineMessages_(text) 行為維持不變。
+// 1. 主要 caller 是 01_Main.gs；本檔只做 transport/router，不擁有 AI、Reader、News 或 Sheet contract。
+// 2. 不經過 LLM 的固定回覆與版本文字集中於 03_ResponseTexts.gs。
+// 3. #help 聚焦核心新聞入口，低頻功能放在 #help 進階；指令名稱與回覆格式是相容性邊界。
+// 4. LINE 長回覆在單次 Reply API payload 內最多拆成 5 則；splitter 與 reply token 行為不可因檔案整理改變。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {

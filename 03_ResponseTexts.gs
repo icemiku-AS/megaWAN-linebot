@@ -1,8 +1,8 @@
 // ======================================================
-// 12_ResponseTexts.gs
-// 小浣固定回覆文字層。集中管理「不經過 LLM」的系統回覆、版本資訊與版本紀錄。
+// 03_ResponseTexts.gs
+// Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -18,14 +18,26 @@
 // 11. v1.12.3 新增 #新聞問答，並移除低頻的 #本週新聞 24 小時檢視。
 // 12. v1.12.4 起，#本週新聞 預設按 StoryKey 精簡聚合，長回覆會自動分段。
 // 13. v1.12.5 起，預設與精簡週新聞使用一次 DeepSeek 編輯台；StoryKey 保留為候選提示。
-// 14. v1.13.0 起，正常 runtime 統一走 provider-neutral AiService；DeepSeek 接管新聞分析、快讀與 legacy extraction。
+// 14. 正常 runtime 統一走 provider-neutral AiService；本檔不呼叫 provider，也不擁有 Prompt contract。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.13.0 AI Routing & Project Architecture Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-08-06';
+const BOT_CURRENT_VERSION = 'v1.13.1 Source Layout & File Ordering Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-08-07';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.13.1 Source Layout & File Ordering Edition',
+    date: '2026-08-07',
+    summary: '將 20 個 GAS runtime 檔依穩定領域區段排序，並把 DeepSeek／Gemini adapter 檔名改為 Provider；runtime 行為不變。',
+    changes: [
+      '完成 17 個純檔名 rename，保留區段空號供未來拆檔與擴充。',
+      'AI adapters 更名為 15_DeepSeekProvider.gs 與 16_GeminiProvider.gs，函式名稱與 provider contract 不變。',
+      '同步 20 個檔頭、現行跨檔註解、README、CURRENT_VERSION、AGENTS 與 changelog。',
+      '數字前綴只供人類與 AI 導航，不是 GAS runtime load order。',
+      '不修改 Prompt、AI route/profile/model、Reader/Queue、Sheet schema、Trigger、LINE 指令或回覆格式。'
+    ]
+  },
   {
     version: 'v1.13.0 AI Routing & Project Architecture Edition',
     date: '2026-08-06',

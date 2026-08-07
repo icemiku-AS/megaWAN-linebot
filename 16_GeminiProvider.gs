@@ -1,14 +1,15 @@
 // ======================================================
-// 08_GeminiService.gs
-// 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+// 16_GeminiProvider.gs
+// AI provider adapter：保留 dormant Gemini transport 與 provider protocol translation。
+// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 //
 // 主要責任：
 // 1. 保留 dormant Gemini provider transport：authentication、endpoint、payload、HTTP、response 與 usage parsing。
 // 2. 將 Gemini candidates / usageMetadata 轉為和其他 provider 相同的 provider result contract。
-// 3. 只有 19_AiProfiles.gs 的 task route 明確選到 Gemini 時，才讀取 GEMINI_API_KEY。
+// 3. 只有 11_AiProfiles.gs 的 task route 明確選到 Gemini 時，才讀取 GEMINI_API_KEY。
 //
 // 明確不負責：
-// 1. v1.13.0 正常 runtime 不使用 Gemini；Gemini 也不是 DeepSeek 的自動 fallback。
+// 1. 現行正常 runtime 不使用 Gemini；Gemini 也不是 DeepSeek 的自動 fallback。
 // 2. 不保存 NewsInbox、快讀摘要或 raw HTML extraction 的 Prompt、schema、normalizer、validator。
 // 3. 不決定 task route，不寫 Sheet，不處理 memory、Queue retry 或 LINE 排版。
 //
@@ -16,7 +17,7 @@
 // 1. 保留 provider 是為了未來模型價格/能力競爭、快速重新啟用與可能的多模態用途。
 // 2. 缺少 GEMINI_API_KEY 不影響 DeepSeek runtime；key 只在 callGeminiProvider_() 真正被 dispatch 時讀取。
 // 3. 重新啟用前必須核對當時最新 Gemini API、model ID、thinking 與 payload 規格；
-//    本檔不保證 v1.13.0 保存的 v1beta generateContent 格式永遠有效。
+//    本檔不保證現存的 v1beta generateContent 格式永遠有效。
 // 4. 本版 adapter 僅允許 non-thinking route。未來若要把 thinking task 切到 Gemini，
 //    必須先明確實作並驗證 Gemini 當時的推理參數，不可靜默忽略 execution profile。
 // ======================================================
@@ -231,7 +232,7 @@ function buildGeminiProviderFailure_(errorType, errorMessage, httpStatus, retrya
 
 /**
  * v1.13.0 compatibility wrapper：repo 正式 runtime 已無 caller。
- * 舊名稱雖含 Gemini，現在轉交 07_WebTaskQueue.gs 的 provider-neutral 快讀入口，
+ * 舊名稱雖含 Gemini，現在轉交 25_WebTaskQueue.gs 的 provider-neutral 快讀入口，
  * 因此不會讀 GEMINI_API_KEY。保留一版供 GAS 手動測試相容；確認部署端無 caller 後可移除。
  */
 function callGeminiWebLazySummary(url, rawHtml, contentType, originalMessage) {
@@ -239,7 +240,7 @@ function callGeminiWebLazySummary(url, rawHtml, contentType, originalMessage) {
 }
 
 /**
- * v1.13.0 compatibility wrapper：正式 legacy reader 已直接呼叫 06_WebReader.gs 的
+ * v1.13.0 compatibility wrapper：正式 legacy reader 已直接呼叫 21_WebReader.gs 的
  * extractRawHtmlWithAi_()。保留原回傳 webResult contract 供舊部署診斷，不是 Gemini fallback。
  * 確認部署端與外部手動函式至少一版無 caller 後可移除。
  */
