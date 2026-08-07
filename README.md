@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.13.0 AI Routing & Project Architecture Edition
+# 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -46,23 +46,27 @@ v1.12.5 將 StoryKey 重新定位為單篇新聞的候選事件提示。`#本週
 
 v1.13.0 建立 provider-neutral AiService/AiProfiles。正常 runtime 的所有 AI task 都明確指定 provider、model、execution profile 與 thinking；DeepSeek V4 Flash 接管 NewsInbox 分析、`#懶人包` 與 Jina 失敗後的 raw HTML extraction。Gemini transport 保留為 dormant provider，但不是 fallback，沒有 `GEMINI_API_KEY` 也不影響正常功能。
 
+v1.13.1 將 20 個 GAS runtime `.gs` 依穩定領域區段重新編號，並將 DeepSeek／Gemini adapter 檔名由 Service 改為 Provider。這是 source layout 維護版本；函式、Trigger、Prompt、AI route/profile/model、Reader/Queue、Sheet schema 與 LINE 行為均不變。
+
 ---
 
-## 2. v1.13.0 本版重點
+## 2. v1.13.1 本版重點
 
-v1.13.0 是 AI Routing & Project Architecture Edition。
+v1.13.1 是 Source Layout & File Ordering Edition。
 
 主要調整如下：
 
-- 新增 `18_AiService.gs`：統一 task route resolution、memory orchestration、provider dispatch、normalized response、finish reason/空回覆/JSON 基礎檢查、typed error 與安全 metadata log。
-- 新增 `19_AiProfiles.gs`：集中 provider/model registry、execution profiles、task routes、thinking、reasoning effort、token、timeout、sampling 與 caller-owned retry metadata。
-- 正常 runtime 全部使用 `deepseek-v4-flash`；NewsInbox 分析、`#懶人包` 與 raw HTML extraction 不再讀取 Gemini key。
-- `08_GeminiService.gs` 保留 dormant transport。只有維護者明確把 route 切到 Gemini 才會讀 `GEMINI_API_KEY`；本版沒有自動跨 provider fallback。
-- 功能 Prompt/schema/normalizer 留在最理解契約的功能檔；provider adapter 只處理 API 協議。
-- Jina、FxTwitter、PTT 與 legacy Reader failure 會把 `errorType/retryable/httpStatus` 保留到 NewsUrlQueue；configuration/auth/永久 4xx 不重試，408/timeout/429/5xx 才依 typed metadata 重試。
-- 同一個 LINE webhook payload 的所有 events 共用一個 40 秒 absolute deadline；單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒，背景 Queue 不傳 execution context，仍使用完整 profile timeout。
-- AI metadata 只寫 console；`AI_CALL_METADATA.ok` 代表 provider 與基礎格式通過，不代表功能 validator 已完成。不新增 AI Log Sheet，也不記錄完整 Prompt、聊天、正文、response text 或 secret。
-- 本版不改 Sheet schema、Trigger、LINE 指令、既有回覆格式、Reader 優先順序或歷史資料。
+- 20 個 runtime `.gs` 依 Core、AI、Reader/Jobs、News/Editorial、Topic/Material、Data operations 六個領域區段排列。
+- 完成 17 個 rename；`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs` 保持原名。
+- `09_DeepSeekService.gs` → `15_DeepSeekProvider.gs`，`08_GeminiService.gs` → `16_GeminiProvider.gs`，明確區分正式 `10_AiService.gs` 與 vendor adapter。
+- 區段內保留空號，未來新增檔案優先使用所屬領域空號，不為了完美插入順序再次重編既有檔案。
+- 數字前綴只供人類／AI 架構導航與 GAS 平面檔案排序，不代表 runtime load order；不得新增依賴檔案排序的 top-level executable side effect。
+- 本版只更新檔名、檔頭、版本顯示與維護文件；不改函式名稱、global const 名稱（版本顯示值除外）、Prompt、AI route/profile/model、Reader/Queue、Sheet、Trigger、LINE 指令或回覆格式。
+- `WEEKLY_EDITORIAL_CACHE_VERSION` 維持 `v1.13.0`，因週編輯台資料 contract 未變，避免無價值 cache miss。
+
+### v1.13.0 沿用的 AI runtime 基線
+
+v1.13.0 建立的 provider-neutral runtime 行為全部保留，目前由 `10_AiService.gs`、`11_AiProfiles.gs`、`15_DeepSeekProvider.gs` 與 `16_GeminiProvider.gs` 承接。正常 runtime 仍使用 `deepseek-v4-flash`；Gemini 仍是 dormant provider、不是 fallback，缺少 `GEMINI_API_KEY` 不影響正常功能。
 
 ### AI call flow
 
@@ -85,7 +89,7 @@ v1.13.0 是 AI Routing & Project Architecture Edition。
 | `manual_news_supplement` | `fast_json` | disabled | JSON | 1,800 / 60s | `#新聞補充` |
 | `news_memory_bridge` | `thinking_high` | enabled / high | text | 5,000 / 90s | 本週新聞與過去封存脈絡比對 |
 
-`thinking_max` 只保留 profile，v1.13.0 沒有任何 runtime task 綁定。
+`thinking_max` 只保留 profile，目前沒有任何 runtime task 綁定。
 
 表中 timeout 是 profile/route 的任務最大值。由 LINE webhook 同步執行的 task 會再套 30 秒單次 cap，並受同一 event 的 40 秒共同 deadline 約束；背景 WebTaskQueue / NewsUrlQueue 使用表中的完整上限。`retryPolicy` 目前只是 caller-owned metadata，AiService 本身不執行 retry。
 
@@ -228,7 +232,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 目前分流規則：
 
 - 一般網站：優先使用 Jina Reader。
-- PTT：使用 GAS 原生 UrlFetchApp，並帶 over18=1 cookie；v1.10.6 起在 16_ReaderLayer.gs 內修正正常文章頁被 over18 gate detector 誤判的問題。
+- PTT：使用 GAS 原生 UrlFetchApp，並帶 over18=1 cookie；現行 routing 與 over18 gate detector 位於 `20_ReaderLayer.gs`。
 - X / Twitter 單篇 status：使用 FxTwitter API。
 - X / Twitter 非單篇 status：不自動擷取，避免把個人頁、搜尋頁、列表頁或登入頁誤當正文。
 - Facebook、fb.watch、Threads.com、Threads.net：先交給 Jina Reader 嘗試讀取。
@@ -246,35 +250,54 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 - WebTaskQueue：保存網址快讀與網址版節目分析的背景任務。
 - WebSummary：保存網址快讀摘要。
 - NewsUrlQueue：保存多網址、同步處理過慢或失敗時的新聞網址待處理佇列。
-- NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.13.0 不新增欄位，也不回寫週編輯台聚類。
+- NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.13.1 不新增欄位，也不回寫週編輯台聚類。
 - PendingReplies：背景任務完成後，等待下次訊息交付的回覆。
 
 ---
 
 ## 8. 檔案配置
 
-目前主要檔案如下：
+數字前綴只供架構導航與 GAS 編輯器的平面排序，不是 runtime load order。新檔案應優先使用所屬領域的保留空號；不要為了插入新檔重新編號整個專案，也不得透過 top-level executable side effect 依賴檔案排序。
 
-- 00_Config.gs：LINE/Reader endpoint、Sheet 名稱、指令前綴與非 AI 路由常數。
-- 01_Main.gs：LINE webhook 主流程。
-- 02_LineCommands.gs：指令解析、分層 help 與 LINE Reply API。
-- 03_Utils.gs：共用工具函式。
-- 04_Storage.gs：Google Sheet 與 Script Properties 入口。
-- 05_Memory.gs：短期對話記憶。
-- 06_WebReader.gs：網址安全、legacy HTML 清理、raw extraction Prompt/schema/normalizer/validator 與網頁分析 Prompt。
-- 07_WebTaskQueue.gs：背景處理、快讀 Prompt/schema/normalizer/validator、網址版節目話題分析與 PendingReplies。
-- 08_GeminiService.gs：預設不啟用的 dormant Gemini provider adapter 與相容 wrapper。
-- 09_DeepSeekService.gs：DeepSeek provider adapter、payload、HTTP/error/usage normalization 與相容 wrapper。
-- 10_TopicFeatures.gs：節目話題分析、統整話題、封存本週話題、封存本週新聞。
-- 11_Prompts.gs：小浣人格與 provider-neutral 共用 system prompt。
-- 12_ResponseTexts.gs：固定文案、版本資訊與非 LLM 系統回覆。
-- 13_NewsInbox.gs：新聞素材池、短 Brief、完整 Outline、NewsUrlQueue、`#本週新聞` 與 `#新聞問答` 處理。
-- 14_TopicHighlights.gs：人工重點資料層。
-- 15_DataCleanup.gs：資料清理層。
-- 16_ReaderLayer.gs：Jina Reader、PTT over18、FxTwitter API、legacy fallback wrapper 與 reader 統一資料契約。
-- 17_WeeklyEditorialDigest.gs：週編輯台 orchestration、模型輸入、ConversationLog 去噪、validator、cache、固定排版與 LINE block fitting。
-- 18_AiService.gs：AI task 正式入口、memory orchestration、provider dispatch、normalized response、typed error 與 console metadata。
-- 19_AiProfiles.gs：provider/model registry、execution profiles、task routes 與 retry policy metadata。
+### 00–09 Core／LINE transport／Shared foundation
+
+- `00_Config.gs`：共用設定、endpoint、Sheet 名稱、指令前綴與非 AI 路由常數。
+- `01_Main.gs`：LINE webhook、setup 與 Trigger 安裝入口。
+- `02_LineCommands.gs`：指令解析、分層 help 與 LINE Reply API。
+- `03_ResponseTexts.gs`：固定文案、版本資訊與非 LLM 系統回覆。
+- `04_Utils.gs`：跨領域共用工具函式。
+- `05_Storage.gs`：Google Sheet 與 Script Properties 共用入口。
+- `06_Memory.gs`：短期對話記憶。
+
+### 10–19 AI configuration／orchestration／providers
+
+- `10_AiService.gs`：AI task 正式入口、memory orchestration、provider dispatch、normalized response 與 typed error。
+- `11_AiProfiles.gs`：provider/model registry、execution profiles、task routes 與 retry metadata。
+- `12_Prompts.gs`：小浣人格與 provider-neutral 共用 system prompt。
+- `15_DeepSeekProvider.gs`：DeepSeek provider adapter、payload、HTTP/error/usage normalization 與相容 wrapper。
+- `16_GeminiProvider.gs`：預設不啟用的 dormant Gemini provider adapter 與相容 wrapper。
+
+### 20–29 Reader／Web workflows／background jobs
+
+- `20_ReaderLayer.gs`：Jina、PTT、FxTwitter、legacy fallback routing 與統一 webResult contract。
+- `21_WebReader.gs`：legacy raw HTML fetch/cleaning、raw extraction contract 與網頁分析 Prompt。
+- `25_WebTaskQueue.gs`：WebTaskQueue、快讀 contract、網址版節目話題分析與 PendingReplies。
+
+### 30–39 News／Editorial
+
+- `30_NewsInbox.gs`：新聞素材池、NewsUrlQueue、`#本週新聞`、`#新聞問答` 與新聞封存脈絡。
+- `35_WeeklyEditorialDigest.gs`：週編輯台輸入、validator、cache、fallback 與 LINE block fitting。
+
+### 40–49 Topic／material workflows
+
+- `40_TopicHighlights.gs`：人工重點資料層。
+- `45_TopicFeatures.gs`：節目話題分析、統整話題、封存本週話題與封存本週新聞。
+
+### 50–59 Data operations／maintenance
+
+- `50_DataCleanup.gs`：依 conversationId 執行二段式確認的資料清理。
+
+`60–89` 保留給未來新領域；所有區段內未使用的編號都刻意保留。
 
 ---
 
@@ -287,14 +310,28 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 5. 若 README、CURRENT_VERSION、changelog 與實際 .gs 不一致，以 .gs 為準。
 6. PR 合併後，以 main branch 最新 commit 作為唯一現行程式碼來源。
 7. 若要修改程式，不要直接改 main，應建立 feature 或 hotfix branch，開 PR 後由維護者手動 merge。
+8. 數字前綴與檔名不得被程式當成 load order；跨檔初始化應由函式入口明確呼叫。
+9. 新增 `.gs` 時先選領域與保留號碼，不為了排序美觀重編既有檔案。
 
 ---
 
-## 10. v1.13.0 建議測試流程
+## 10. v1.13.1 GAS rollout 與建議測試流程
 
-本版不修改任何 Sheet schema，不需要 migration、setup、新 Trigger 或新增 Script Properties。將修改的 `.gs` 手動同步至 Apps Script 後再進行 LINE / GAS 測試。
+本版不修改任何 runtime contract、Sheet schema、Trigger、Prompt 或 Script Properties，也不需要 migration/setup。因 GAS 由維護者手動同步，應在低流量時段直接 Rename 既有檔案；不要用「新增新檔、稍後刪舊檔」，避免新舊檔同時存在而造成重複函式或 global const 宣告。
+
+GAS 手動同步順序：
+
+1. 先備份目前 Apps Script version，並確認現有專案正好有 20 個 `.gs`。
+2. 依 `CURRENT_VERSION.md` 的完整 old → new mapping，在 GAS 編輯器逐筆使用 Rename 完成 17 個 rename；`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs` 不改名。
+3. 確認 17 個舊 active 檔名全部消失、20 個最終檔名與本 README 一致，再同步 Commit 2 的檔頭與版本 metadata。
+4. 不暫停或重建 Trigger；在 Trigger 畫面確認仍綁定原 handler，並在函式選單確認主要入口仍存在。
+5. 完成 smoke tests 後建立 v1.13.1 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
+
+若同步過程無法一次完成，先停止部署並回復到上一個 Apps Script version；不要讓新舊檔名同時留在可執行專案中。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
+
+- 執行 `#版本`、`#版本紀錄` 與 `#help`，確認顯示與指令內容正確。
 
 - 在私訊與群組 `#小浣` 進行至少兩輪一般聊天，確認 general_chat 為 non-thinking，且短期/長期記憶仍可接續。
 - 在群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。
@@ -331,7 +368,11 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 - 執行舊指令 `#本週新聞 24小時` 與 `#本週新聞 24小時 診斷`，確認會回覆 v1.12.3 已移除 24 小時檢視，不會改查最近一天素材。
 - 執行 `#封存本週話題`，確認 WeeklySummary 新增 `ArchiveType=topic`，且來源只計算 ConversationLog 使用者訊息。
 - 執行 `#統整話題`，確認會引用 NewsInbox Outline；再用一筆沒有 Outline 的舊資料確認可退回 Brief。
+- 執行 `#畫重點`，確認 TopicHighlights 可寫入，後續統整仍可讀取。
+- 對任一清理指令只執行第一階段，確認顯示影響範圍與二段式警告；不要輸入「確認」。
 - 回歸 `#懶人包`、網址版 `#節目話題分析`、`#新聞補充`、`#版本`、`#版本紀錄`。
 - 在 GAS 手動執行 `processWebTaskQueue` / `processNewsUrlQueue`，並確認既有 time-driven trigger handler 名稱未改變。
+- 等待下一輪 Queue Trigger，確認排程可正常再執行且沒有 duplicate function／const 載入錯誤。
 - 暫時移除 `GEMINI_API_KEY` 後回歸上述所有正常功能，確認沒有啟動錯誤或 Gemini 呼叫。
+- 對照部署前快照，確認所有 Sheet headers、欄序與 Script Properties 名稱／值均未變。
 - 檢查 `AI_CALL_METADATA` 含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。

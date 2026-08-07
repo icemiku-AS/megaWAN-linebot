@@ -88,6 +88,37 @@ Codex 不需要把 CURRENT_VERSION.md 當成操作規則；操作規則以本 AG
 
 不要根據舊對話或記憶自行推定目前架構。請以 repo 內現行檔案為準。
 
+### 現行 `.gs` 導航與建議閱讀順序
+
+v1.13.1 起，20 個 active runtime source 依領域區段排列：
+
+1. Core／LINE transport／Shared foundation：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`
+2. AI configuration／orchestration／providers：`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`
+3. Reader／Web workflows／background jobs：`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`
+4. News／Editorial：`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`
+5. Topic／material workflows：`40_TopicHighlights.gs`、`45_TopicFeatures.gs`
+6. Data operations／maintenance：`50_DataCleanup.gs`
+
+閱讀實際功能時，不必機械式依檔號讀完全部檔案；先讀入口與該領域，再沿 caller/dependency 追蹤。例如 AI 任務先讀 `10_AiService.gs` → `11_AiProfiles.gs` → 對應 Provider，網址流程先讀 `20_ReaderLayer.gs` → `21_WebReader.gs` / `25_WebTaskQueue.gs`，新聞流程先讀 `30_NewsInbox.gs` → `35_WeeklyEditorialDigest.gs`。
+
+檔號規則：
+
+* `00–09`：Core／LINE transport／Shared foundation
+* `10–19`：AI configuration／orchestration／providers
+* `20–29`：Reader／Web workflows／background jobs
+* `30–39`：News／Editorial
+* `40–49`：Topic／material workflows
+* `50–59`：Data operations／maintenance
+* `60–89`：未來新領域保留
+
+數字前綴只供人類／AI 架構導航與 GAS 平面檔案排序，不代表 runtime load order。GAS 同一專案的 `.gs` 共享全域命名空間，因此：
+
+* 不得依賴檔名、檔號或排序執行 top-level executable side effect。
+* 新檔案應先判斷所屬領域，再使用該區段的保留空號。
+* 不要為了完美插入順序任意重編整個專案。
+* DeepSeek／Gemini vendor adapters 的 active 檔名是 `15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`；正式 service 層是 `10_AiService.gs`。
+* Provider 檔名調整不授權修改既有 provider function、compatibility wrapper 或 dispatch contract。
+
 ---
 
 ## 4. 工作模式判斷
@@ -314,7 +345,7 @@ Reader Layer 的目標是把「讀網址」與「後續 LLM 整理」拆開。
 
 修改網址讀取流程時，請優先維持統一 webResult 契約，讓下游流程可以繼續使用穩定欄位。
 
-目前讀取策略請以 CURRENT_VERSION.md 與 16_ReaderLayer.gs 為準。
+目前讀取策略請以 CURRENT_VERSION.md 與 `20_ReaderLayer.gs` 為準；legacy raw HTML extraction 位於 `21_WebReader.gs`，背景快讀與 PendingReplies 位於 `25_WebTaskQueue.gs`。
 
 不要自行假設已整合：
 
