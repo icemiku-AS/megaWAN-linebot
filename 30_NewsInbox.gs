@@ -1,7 +1,7 @@
 // ======================================================
 // 30_NewsInbox.gs
 // News／Editorial：新聞素材池、靜默網址收件、NewsInbox AI 契約、狀態回報與新聞封存脈絡。
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.13.2 X Post Weekly Display Edition
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
@@ -36,6 +36,7 @@ const DEFAULT_WEEKLY_NEWS_DAYS = 7;
 const DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT = 4;
 const MAX_NEWS_QUESTION_ITEMS = 30;
 const NEWS_STORY_FALLBACK_KEY = '未命名故事線';
+const MAX_WEEKLY_NEWS_DISPLAY_TITLE_LENGTH = 100;
 
 // NewsUrlQueue 永久性錯誤清單。
 //
@@ -1512,6 +1513,63 @@ function getRecentNewsInboxItems_(conversationId, days) {
   });
 }
 
+// 週新聞的 X status 判定與 Reader routing 共用同一套 URL semantics。
+// hostname 與 numeric status ID 必須同時成立，不能只靠 synthetic Title 文字判斷。
+function isWeeklyNewsXStatus_(item) {
+  const url = String(item && item.url || '').trim();
+  const hostname = getReaderLayerHostname_(url);
+  return !!hostname &&
+    isTwitterLikeHostname_(hostname) &&
+    !!extractTwitterStatusIdFromUrl_(url);
+}
+
+function normalizeWeeklyNewsDisplayTitleText_(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (!text) return '';
+  if (text.length <= MAX_WEEKLY_NEWS_DISPLAY_TITLE_LENGTH) return text;
+  return text.slice(0, MAX_WEEKLY_NEWS_DISPLAY_TITLE_LENGTH - 1).trim() + '…';
+}
+
+function getWeeklyNewsDisplayTextCandidate_(value) {
+  const text = normalizeWeeklyNewsDisplayTitleText_(value);
+  const lowered = text.toLowerCase();
+  if (!text ||
+      text === '無' ||
+      text === '沒有' ||
+      lowered === 'none' ||
+      lowered === 'null' ||
+      lowered === 'undefined' ||
+      lowered === 'n/a') {
+    return '';
+  }
+  return text;
+}
+
+function getWeeklyNewsStoredStoryKeyForDisplay_(item) {
+  const safeItem = item || {};
+  if (safeItem.storyKeyWasMissing) return '';
+
+  const hasRawStoryKey = Object.prototype.hasOwnProperty.call(safeItem, 'storyKeyRaw');
+  const storedStoryKey = normalizeStoryKeyText_(hasRawStoryKey ? safeItem.storyKeyRaw : safeItem.storyKey);
+  if (!isMeaningfulStoryKey_(storedStoryKey)) return '';
+  return storedStoryKey;
+}
+
+// Display Title 只供 #本週新聞 render；不寫回 Sheet，也不進入 AI、排序或封存 contract。
+function getWeeklyNewsDisplayTitle_(item) {
+  const safeItem = item || {};
+  const rawTitle = String(safeItem.title || '').trim();
+  if (!isWeeklyNewsXStatus_(safeItem)) return rawTitle || '未取得標題';
+
+  const brief = getWeeklyNewsDisplayTextCandidate_(safeItem.brief);
+  if (brief) return normalizeWeeklyNewsDisplayTitleText_('X｜' + brief);
+
+  const storyKey = getWeeklyNewsStoredStoryKeyForDisplay_(safeItem);
+  if (storyKey) return normalizeWeeklyNewsDisplayTitleText_('X｜' + storyKey);
+
+  return rawTitle || '未取得標題';
+}
+
 function formatWeeklyNewsDigest_(items, queryOptions) {
   const options = queryOptions || {};
 
@@ -1556,7 +1614,7 @@ function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
     lines.push('', '【' + category + '】');
     groupedResult.grouped[category].forEach(function(item, index) {
       lines.push(
-        (index + 1) + '. ' + (item.title || '未取得標題'),
+        (index + 1) + '. ' + getWeeklyNewsDisplayTitle_(item),
         '來源：' + (item.url || ''),
         '主分類：' + (item.category || '待分類'),
         '內容大綱：' + (item.outline || item.brief || '無'),
@@ -1625,9 +1683,11 @@ function buildWeeklyNewsDiagnosticContext_(items) {
       context.urlCounts[normalizedUrl] = (context.urlCounts[normalizedUrl] || 0) + 1;
     }
 
-    const normalizedTitle = normalizeNewsTitleForDuplicateCheck_(item.title);
-    if (normalizedTitle) {
-      context.titleCounts[normalizedTitle] = (context.titleCounts[normalizedTitle] || 0) + 1;
+    if (shouldUseNewsTitleForDuplicateDiagnosis_(item)) {
+      const normalizedTitle = normalizeNewsTitleForDuplicateCheck_(item.title);
+      if (normalizedTitle) {
+        context.titleCounts[normalizedTitle] = (context.titleCounts[normalizedTitle] || 0) + 1;
+      }
     }
 
     const storyKey = normalizeStoryKey_(item.storyKey, item);
@@ -1650,7 +1710,10 @@ function getWeeklyNewsDiagnosticIssues_(item, diagnosticContext) {
   const storyKey = normalizeStoryKey_(item.storyKey, item);
   const topicText = [category, item.specialTopic || '', item.matchedEntities || '', storyKey].join(' ');
   const normalizedUrl = normalizeNewsUrlForDuplicateCheck_(item.url);
-  const normalizedTitle = normalizeNewsTitleForDuplicateCheck_(item.title);
+  const shouldUseTitleForDuplicateDiagnosis = shouldUseNewsTitleForDuplicateDiagnosis_(item);
+  const normalizedTitle = shouldUseTitleForDuplicateDiagnosis
+    ? normalizeNewsTitleForDuplicateCheck_(item.title)
+    : '';
   const storyCategories = context.storyCategoryMap[storyKey]
     ? Object.keys(context.storyCategoryMap[storyKey])
     : [];
@@ -1667,7 +1730,7 @@ function getWeeklyNewsDiagnosticIssues_(item, diagnosticContext) {
     issues.push('同 URL 重複入庫');
   }
 
-  if (normalizedTitle && context.titleCounts[normalizedTitle] > 1) {
+  if (shouldUseTitleForDuplicateDiagnosis && normalizedTitle && context.titleCounts[normalizedTitle] > 1) {
     issues.push('標題正規化後重複，疑似重複素材');
   }
 
@@ -1780,6 +1843,12 @@ function normalizeNewsUrlForDuplicateCheck_(url) {
   });
 
   return keptParams.length ? baseUrl + '?' + keptParams.sort().join('&') : baseUrl;
+}
+
+function shouldUseNewsTitleForDuplicateDiagnosis_(item) {
+  // X Reader 的 canonical Title 是帳號層級的 synthetic metadata；不同 status
+  // 可能完全相同。URL duplicate 仍照常檢查，只有 title duplicate diagnosis 略過。
+  return !isWeeklyNewsXStatus_(item);
 }
 
 function normalizeNewsTitleForDuplicateCheck_(title) {

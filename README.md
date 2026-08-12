@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+# 小浣 LINE Bot v1.13.2 X Post Weekly Display Edition
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -48,9 +48,24 @@ v1.13.0 建立 provider-neutral AiService/AiProfiles。正常 runtime 的所有 
 
 v1.13.1 將 20 個 GAS runtime `.gs` 依穩定領域區段重新編號，並將 DeepSeek／Gemini adapter 檔名由 Service 改為 Provider。這是 source layout 維護版本；函式、Trigger、Prompt、AI route/profile/model、Reader/Queue、Sheet schema 與 LINE 行為均不變。
 
+v1.13.2 改善 `#本週新聞` 的 X / Twitter 單篇 status 顯示：週新聞 presentation 會優先用既有 Brief 產生 `X｜Brief`，但 NewsInbox raw Title、Brief、Outline、StoryKey 與 AI / Reader contract 都保持不變；診斷模式也不再因同帳號的 synthetic X title 誤報標題重複。
+
 ---
 
-## 2. v1.13.1 本版重點
+## 2. v1.13.2 本版重點
+
+v1.13.2 是 X Post Weekly Display Edition。
+
+主要調整如下：
+
+- 只有 Twitter-like hostname 且具有有效 numeric status ID 的真正 X status 才套用特規；個人頁、搜尋頁、list 與一般網站 `/status/` 不會誤判。
+- `#本週新聞` 的 X status 依 `Brief → 有效既有 StoryKey → raw Title → 未取得標題` 產生 Display Title；一般網站繼續顯示原始 Title。
+- Weekly Editorial success、fallback、cache hit、高潛力、分類與詳細模式共用同一套 Display Title；診斷仍顯示 raw Title。
+- X status 不使用 synthetic raw Title 進行診斷模式的 title duplicate 判斷；同 URL 重複與一般新聞 Title duplicate 仍照常運作。
+- Display Title 不寫回 Sheet；NewsInbox schema、Reader、AI、排序、StoryKey、新聞問答與封存 contract 都不變，不需要 migration。
+- `WEEKLY_EDITORIAL_CACHE_VERSION` 維持 `v1.13.0`，因模型 input、partition 與 cache payload contract 未變。
+
+### v1.13.1 source layout baseline
 
 v1.13.1 是 Source Layout & File Ordering Edition。
 
@@ -109,7 +124,7 @@ v1.10.5 起，網址流程會先透過 Reader Layer 讀取網頁內容。v1.10.6
 
 ### 本週新聞
 
-查看最近 7 天收集到的 NewsInbox 新聞素材。預設與精簡模式會使用一次週編輯台呼叫，顯示有效群組話題、真正的多篇焦點故事線，以及依分類排列的其他新聞。每則新聞預設只顯示潛力、標題與完整來源網址。
+查看最近 7 天收集到的 NewsInbox 新聞素材。預設與精簡模式會使用一次週編輯台呼叫，顯示有效群組話題、真正的多篇焦點故事線，以及依分類排列的其他新聞。每則新聞預設只顯示潛力、標題與完整來源網址；真正的 X / Twitter 單篇 status 會用既有 Brief 產生 `X｜Brief` Display Title，Brief 缺失時才安全回退。一般網站仍顯示原始 Title。
 
 常用檢視模式：
 
@@ -250,7 +265,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 - WebTaskQueue：保存網址快讀與網址版節目分析的背景任務。
 - WebSummary：保存網址快讀摘要。
 - NewsUrlQueue：保存多網址、同步處理過慢或失敗時的新聞網址待處理佇列。
-- NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.13.1 不新增欄位，也不回寫週編輯台聚類。
+- NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.13.2 的 Display Title 只在 render 時計算，不新增欄位、不改 raw Title / Brief / Outline contract，也不回寫週編輯台聚類。
 - PendingReplies：背景任務完成後，等待下次訊息交付的回覆。
 
 ---
@@ -315,23 +330,29 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 
 ---
 
-## 10. v1.13.1 GAS rollout 與建議測試流程
+## 10. v1.13.2 GAS rollout 與建議測試流程
 
-本版不修改任何 runtime contract、Sheet schema、Trigger、Prompt 或 Script Properties，也不需要 migration/setup。因 GAS 由維護者手動同步，應在低流量時段直接 Rename 既有檔案；不要用「新增新檔、稍後刪舊檔」，避免新舊檔同時存在而造成重複函式或 global const 宣告。
+本版只修改週新聞 presentation 與 Diagnostic title duplicate decision；不修改 Sheet schema、Reader、AI、cache payload、Trigger 或 Script Properties，也不需要 migration/setup。GAS 仍由維護者手動同步。
 
 GAS 手動同步順序：
 
 1. 先備份目前 Apps Script version，並確認現有專案正好有 20 個 `.gs`。
-2. 依 `CURRENT_VERSION.md` 的完整 old → new mapping，在 GAS 編輯器逐筆使用 Rename 完成 17 個 rename；`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs` 不改名。
-3. 確認 17 個舊 active 檔名全部消失、20 個最終檔名與本 README 一致，再同步 Commit 2 的檔頭與版本 metadata。
-4. 不暫停或重建 Trigger；在 Trigger 畫面確認仍綁定原 handler，並在函式選單確認主要入口仍存在。
-5. 完成 smoke tests 後建立 v1.13.1 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
+2. 手動同步 `03_ResponseTexts.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`；其他 runtime 檔案不需因本版改動。
+3. 不暫停或重建 Trigger；在 Trigger 畫面確認仍綁定原 handler，並在函式選單確認主要入口仍存在。
+4. 完成 smoke tests 後建立 v1.13.2 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
 
-若同步過程無法一次完成，先停止部署並回復到上一個 Apps Script version；不要讓新舊檔名同時留在可執行專案中。
+若同步或 smoke test 發現問題，先讓 Web App deployment 保持在上一個穩定 Apps Script version，再檢查三個修改檔案。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
 - 執行 `#版本`、`#版本紀錄` 與 `#help`，確認顯示與指令內容正確。
+
+- 準備一般網站 Title 與不同 Brief，確認所有週新聞 presentation 仍顯示 Title，不改成 Brief。
+- 準備 `x.com`、`twitter.com`、`mobile.twitter.com`、`fxtwitter.com`、`fixupx.com` 的有效 status 舊資料，確認顯示 `X｜Brief`；X 個人頁、搜尋頁、list、無 numeric status ID 與一般網站 `/status/` 不套特規。
+- 測試 X status 缺 Brief，確認依有效既有 StoryKey、raw Title、`未取得標題` 回退，且不會顯示空的 `X｜`。
+- 在 Weekly Editorial success、失敗 fallback、cache hit、高潛力、分類與詳細模式確認 X 顯示一致；診斷仍顯示 raw Title。
+- 準備同帳號、相同 synthetic Title、不同 status URL 的兩筆 X 素材，確認不報 title duplicate；相同 URL 仍報重複，一般新聞 Title duplicate 仍有效。
+- 準備多筆長 Brief，確認既有 LINE block fitting、protected ranges、最多 5 則 message、單則長度與 omission count 都正常。
 
 - 在私訊與群組 `#小浣` 進行至少兩輪一般聊天，確認 general_chat 為 non-thinking，且短期/長期記憶仍可接續。
 - 在群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。

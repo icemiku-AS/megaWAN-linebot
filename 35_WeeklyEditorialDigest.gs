@@ -1,7 +1,7 @@
 // ======================================================
 // 35_WeeklyEditorialDigest.gs
 // News／Editorial：本週編輯台的模型輸入、partition validator、render coverage、cache 與 fallback。
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.13.2 X Post Weekly Display Edition
 //
 // 責任邊界：
 // 1. GAS 建立固定 itemId、裁切模型輸入、保存原始 NewsInbox item 與網址。
@@ -1085,7 +1085,7 @@ function formatWeeklyEditorialNewsBlock_(entry, index) {
   const item = entry.item || {};
   return [
     (index + 1) + '. [' + normalizeWeeklyEditorialPotential_(item.topicPotential) + '] ' +
-      (String(item.title || '').trim() || '未取得標題'),
+      getWeeklyNewsDisplayTitle_(item),
     '來源：' + (String(item.url || '').trim() || '未記錄網址')
   ].join('\n');
 }
