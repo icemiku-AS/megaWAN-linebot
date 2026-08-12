@@ -1558,7 +1558,7 @@ function getWeeklyNewsStoredStoryKeyForDisplay_(item) {
 // Display Title 只供 #本週新聞 render；不寫回 Sheet，也不進入 AI、排序或封存 contract。
 function getWeeklyNewsDisplayTitle_(item) {
   const safeItem = item || {};
-  const rawTitle = normalizeWeeklyNewsDisplayTitleText_(safeItem.title);
+  const rawTitle = String(safeItem.title || '').trim();
   if (!isWeeklyNewsXStatus_(safeItem)) return rawTitle || '未取得標題';
 
   const brief = getWeeklyNewsDisplayTextCandidate_(safeItem.brief);
