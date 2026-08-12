@@ -2,7 +2,7 @@
 // 03_ResponseTexts.gs
 // Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.13.2 X Post Weekly Display Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -19,13 +19,26 @@
 // 12. v1.12.4 起，#本週新聞 預設按 StoryKey 精簡聚合，長回覆會自動分段。
 // 13. v1.12.5 起，預設與精簡週新聞使用一次 DeepSeek 編輯台；StoryKey 保留為候選提示。
 // 14. 正常 runtime 統一走 provider-neutral AiService；本檔不呼叫 provider，也不擁有 Prompt contract。
+// 15. v1.13.2 起，X status 的週新聞展示標題優先使用既有 Brief，raw NewsInbox Title 保持不變。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.13.1 Source Layout & File Ordering Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-08-07';
+const BOT_CURRENT_VERSION = 'v1.13.2 X Post Weekly Display Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-08-12';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.13.2 X Post Weekly Display Edition',
+    date: '2026-08-12',
+    summary: '改善 #本週新聞 的 X / Twitter 貼文顯示，以既有 Brief 產生可讀的展示標題，並避免 synthetic X title 造成診斷模式假重複。',
+    changes: [
+      '真正的 X / Twitter status 在週新聞 presentation 優先顯示 X｜Brief；Brief 缺失時才依有效 StoryKey、raw Title 與既有標題 fallback 回退。',
+      '一般新聞維持原始 Title；NewsInbox 的 raw Title、Brief、Outline 與 StoryKey 都不回寫、不改 contract。',
+      '#本週新聞 診斷以完整 URL context 排除 X synthetic Title 假重複，同 URL 重複仍照常回報。',
+      '不修改 Sheet schema、Reader contract、AI Prompt/schema/profile/provider/model、排序、封存或新聞問答。',
+      'Weekly Editorial success、fallback 與 cache hit 共用本地 Display Title；WEEKLY_EDITORIAL_CACHE_VERSION 維持 v1.13.0。'
+    ]
+  },
   {
     version: 'v1.13.1 Source Layout & File Ordering Edition',
     date: '2026-08-07',

@@ -1,3 +1,14 @@
+2026-08-12
+v1.13.2 X Post Weekly Display Edition
+- `#本週新聞` 對真正 X / Twitter 單篇 status 使用 presentation-only Display Title，優先顯示 `X｜Brief`，再依有效既有 StoryKey、raw Title 與既有標題 fallback 回退；一般新聞維持 raw Title。
+- Display Title 與 Diagnostic 共用 Reader Layer 的 Twitter-like hostname + numeric status ID 判定；不以 synthetic title pattern 猜測 X status。
+- Weekly Editorial success、fallback、cache hit、高潛力、分類與詳細模式共用 Display Title；診斷模式仍顯示 raw NewsInbox Title。
+- 修正同帳號不同 X status 因 synthetic Title 相同而被誤報標題重複；同 URL 重複與一般新聞 Title duplicate 診斷保持不變。
+- NewsInbox Title / Brief / Outline / StoryKey、Sheet schema、AI、Reader、排序、新聞問答與封存 contract 均不變，不需要 migration 或回填。
+- `normalizeNewsTitleForDuplicateCheck_()` 與 `WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.13.0'` 均維持不變。
+
+// ==================================================
+
 2026-08-07
 v1.13.1 Source Layout & File Ordering Edition
 - 將 20 個 GAS runtime `.gs` 依穩定領域區段排列：00–09 Core／LINE／Shared、10–19 AI、20–29 Reader／Web／Jobs、30–39 News／Editorial、40–49 Topic／Material、50–59 Data operations；區段內保留空號，60–89 保留給未來新領域。

@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.13.1 Source Layout & File Ordering Edition`
-Previous stable baseline described in this file: `v1.13.0 AI Routing & Project Architecture Edition`
+Version represented by this Git ref: `v1.13.2 X Post Weekly Display Edition`
+Previous stable baseline described in this file: `v1.13.1 Source Layout & File Ordering Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.13.0 AI Routing & Project A
 
 ## Active Runtime Source Files
 
-以下 20 個檔案代表 v1.13.1 Source Layout & File Ordering Edition 的 active GAS runtime source：
+以下 20 個檔案代表 v1.13.2 X Post Weekly Display Edition 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -119,6 +119,38 @@ Previous stable baseline described in this file: `v1.13.0 AI Routing & Project A
 * `99_changelog.md`：歷史版本紀錄。
 
 修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
+
+---
+
+## v1.13.2 Version Boundary
+
+v1.13.2 是 X Post Weekly Display Edition。Previous stable baseline 是 v1.13.1；本版只改善 `#本週新聞` 對 X / Twitter 單篇 status 的 presentation title，並修正診斷模式因 synthetic X title 產生的假重複。
+
+### Included
+
+1. 建立共同的 weekly-news Display Title helper；真正 X status 優先顯示 `X｜Brief`。
+2. Brief 缺失時，只使用 NewsInbox 已保存且有效、非 fallback 的 StoryKey；再依序退回 raw Title 與 `未取得標題`。
+3. Weekly Editorial success、AI/API/JSON/validator/cache-invalid fallback、cache hit、高潛力、分類與詳細模式共用同一套 Display Title semantics。
+4. 診斷模式仍顯示 raw NewsInbox Title，但真正 X status 不再使用 synthetic Title 進行 title duplicate diagnosis；同 URL 重複仍照常檢查。
+5. Display Title 只做 whitespace 正規化與 100 字 presentation 防爆，不寫回 Sheet，也不修改 canonical Brief。
+6. 同步 `BOT_CURRENT_VERSION`、內建版本紀錄、README、CURRENT_VERSION 與 changelog。
+
+### Runtime invariants
+
+* X status 判定直接復用 Reader Layer 的 Twitter-like hostname 與 numeric status ID helpers；不依賴 synthetic title pattern。
+* Reader priority、FxTwitter endpoint、webResult 與 canonical Reader title contract 不變；`20_ReaderLayer.gs` runtime 不修改。
+* NewsInbox headers、欄序、Title / Brief / Outline / StoryKey contract、舊資料與人工補充資料不變。
+* Weekly Editorial AI input、Prompt、schema、profile、provider、model、partition validator、排序與 cache payload contract 不變。
+* `normalizeNewsTitleForDuplicateCheck_()` contract 不變；X 特規只位於 Diagnostic duplicate decision layer。
+* `formatWeeklyNewsDefaultDigest_()` 保持既有 defensive / compatibility 行為；正常 query parser 不會產生可到達該 formatter 的 viewMode。
+* `WEEKLY_EDITORIAL_CACHE_VERSION` 維持 `v1.13.0`，因 cache 保存的是模型整理 / partition 結果，最終文字仍由本地 formatter 即時 render。
+* LINE command/router、Trigger、Script Properties、新聞問答、封存、統整與 memory bridge contract 不變。
+
+### Migration and deployment
+
+本版不需要 Sheet migration、setup、回填舊資料、重跑 AI、新 Trigger 或新增 Script Properties。既有 NewsInbox row 只要 URL 可辨識為真正 X status 且 Brief 已存在，部署後下一次 `#本週新聞` 就會套用新展示。
+
+本版修改 `.gs` runtime，維護者完成 review 後需手動同步 `03_ResponseTexts.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs` 至 Google Apps Script，再建立新 Apps Script version 並更新既有 Web App deployment。
 
 ---
 
@@ -542,15 +574,22 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ---
 
-## Suggested Smoke Tests for v1.13.1 Source Layout
+## Suggested Smoke Tests for v1.13.2 X Post Weekly Display
 
-本版不修改任何 runtime contract 或 Sheet schema，不需要 migration、setup、新 Trigger 或新增 Script Properties。
+本版只修改週新聞 presentation 與 Diagnostic title duplicate decision，不修改 Sheet、Reader、AI、cache payload、router 或 Trigger contract，也不需要 migration、setup、新 Trigger 或新增 Script Properties。
 
-部署前先確認 GAS 正好有 20 個 `.gs`、17 個舊 active 檔名全部消失、函式選單仍有 `doPost`、`setupLogSheet`、`installWebTaskQueueTrigger`、`processWebTaskQueue`、`processNewsUrlQueue`，Trigger 畫面仍綁定原 handler。
+部署前先確認 GAS 正好有 20 個 `.gs`，並手動同步 `03_ResponseTexts.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`；函式選單與 Trigger 仍應保留原 handler。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
 * `#版本`、`#版本紀錄`、`#help`。
+* 準備一般網站 Title 與不同 Brief，確認所有週新聞 presentation 仍顯示 Title，不改成 Brief。
+* 準備 `x.com`、`twitter.com`、`mobile.twitter.com`、`fxtwitter.com`、`fixupx.com` 的有效 `/status/{numeric id}` 舊資料，確認 Brief 存在時顯示 `X｜Brief`，且 whitespace / newline 會收斂、異常長文字會安全裁切。
+* 準備 X status 缺 Brief 的資料，確認依有效既有 StoryKey → raw Title → `未取得標題` 回退，不會顯示空的 `X｜`。
+* 準備 X 個人頁、搜尋頁、list、無有效 numeric status ID，以及一般網站的 `/status/`，確認都不套 X Display Title。
+* 在 Weekly Editorial success、模型失敗 fallback、cache hit、高潛力、分類與詳細模式確認 X 使用同一套 Display Title；診斷畫面仍顯示 raw Title。
+* 準備同帳號、相同 synthetic Title、不同 status URL 的兩筆 X 資料，確認不報 title duplicate；完全相同 status URL 仍報同 URL 重複；一般新聞相同 Title 仍照常診斷。
+* 準備多筆長 X Brief，確認 formatter 的實際 block 長度會進入既有 LINE fitter，protected block、最多 5 則 message、單則長度、omission count 與 rendered coverage 都保持正確。
 * 在私訊與群組 `#小浣` 進行至少兩輪一般聊天，確認 general_chat 為 non-thinking，且短期/長期記憶仍可接續。
 * 群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。
 * 確認該網址進入 NewsUrlQueue，背景 trigger 處理後寫入 NewsInbox。
@@ -602,7 +641,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.13.1 Source Layout & File Ordering Edition`
-Previous stable baseline described in this file: `v1.13.0 AI Routing & Project Architecture Edition`
-Last Confirmed Date: `2026-08-07`
-Last Documentation Note: 20 GAS runtime files use stable domain ranges; numbering is navigation only, all v1.13.0 runtime contracts remain unchanged, and Gemini remains dormant rather than fallback.
+Last Confirmed Version at this Git ref: `v1.13.2 X Post Weekly Display Edition`
+Previous stable baseline described in this file: `v1.13.1 Source Layout & File Ordering Edition`
+Last Confirmed Date: `2026-08-12`
+Last Documentation Note: X status weekly-news presentation uses a local Brief-based Display Title while raw NewsInbox, Reader, AI, sorting, StoryKey, cache and Sheet contracts remain unchanged.
