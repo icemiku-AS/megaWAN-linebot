@@ -2,7 +2,7 @@
 // 25_WebTaskQueue.gs
 // Background jobs／Web workflows：WebTaskQueue、#懶人包、PendingReplies 與快讀契約。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 設計說明：
 // 1. 對外 Trigger 是 processWebTaskQueue()；installWebTaskQueueTrigger() 位於 01_Main.gs，名稱不可變更。
@@ -365,7 +365,7 @@ function buildWebLazySummaryPrompt_(url, readableText, contentType, originalMess
 }
 
 /**
- * provider-neutral 快讀入口。fast_json 關閉 thinking，因為任務是固定結構摘要；
+ * provider-neutral 快讀入口。thinking_json 使用 HIGH，token 預算包含 reasoning；
  * validator 在此檢查缺欄與空 summary，避免非法資料寫入 WebSummary。
  */
 function runWebLazySummaryAi_(url, readableText, contentType, originalMessage, readerMeta) {

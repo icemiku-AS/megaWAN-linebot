@@ -1,7 +1,7 @@
 // ======================================================
 // 10_AiService.gs
 // AI orchestration：provider-neutral 的正式 AI service 與唯一 provider dispatch 入口。
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 主要責任：
 // 1. 提供 provider-neutral AI task 入口與 task/profile resolution。
@@ -24,6 +24,9 @@
 //    原始 choices、candidates 或 usage 欄位不得洩漏到功能層。
 // 5. 所有現行 task 都顯式指定 thinking；新增 task 若漏 route，會在 HTTP 前安全失敗。
 // ======================================================
+
+// 單次只處理一張 JPEG/PNG；4 MiB raw 編碼後約 5.34 MiB，保留序列化與 webhook 餘裕。
+const AI_IMAGE_MAX_BYTES = 4 * 1024 * 1024;
 
 /**
  * 執行純文字 direct task。輸入是功能 Prompt 與可選 systemPrompt；回傳 normalized response。
@@ -97,13 +100,16 @@ function runAiMemoryTask(task, conversationId, userTextForHistory, aiUserContent
     }
 
     trimmedHistory.forEach(function(message) { messages.push(message); });
-    messages.push({ role: 'user', content: String(aiUserContent || '') });
+    messages.push({ role: 'user', content: aiUserContent || '' });
 
     const result = runAiMessagesTask(task, messages, safeOptions);
     if (!result.ok) return result;
 
     const updatedHistory = trimmedHistory.concat([
-      { role: 'user', content: String(userTextForHistory || '') },
+      // 圖片 caller 必須另提供文字 placeholder；structured content 絕不進 history。
+      { role: 'user', content: Array.isArray(aiUserContent)
+        ? redactAiMediaText_(typeof userTextForHistory === 'string' ? userTextForHistory : '[使用者提供圖片]')
+        : String(userTextForHistory || '') },
       { role: 'assistant', content: result.text }
     ]);
     saveConversationHistory(conversationId, trimHistory(updatedHistory));
@@ -129,12 +135,19 @@ function runAiMessagesTask(task, messages, options) {
 
   try {
     config = resolveAiTaskConfig_(task);
+    const normalizedMessages = normalizeAiMessages_(messages);
+    const hasImages = normalizedMessages.some(function(message) {
+      return Array.isArray(message.content) && message.content.some(function(part) { return part.type === 'image'; });
+    });
+    if (hasImages && !config.supportsImages) {
+      throw createAiConfigurationError_('Selected AI model does not support images.');
+    }
     const request = {
       task: config.task,
       profile: config.profile,
       provider: config.provider,
       model: config.model,
-      messages: normalizeAiMessages_(messages),
+      messages: normalizedMessages,
       thinking: config.thinking,
       reasoningEffort: config.reasoningEffort,
       allowSampling: config.allowSampling,
@@ -142,7 +155,9 @@ function runAiMessagesTask(task, messages, options) {
       topP: config.topP,
       outputMode: config.outputMode,
       maxOutputTokens: config.maxOutputTokens,
-      timeoutSeconds: resolveAiRequestTimeoutSeconds_(config.timeoutSeconds, options)
+      timeoutSeconds: resolveAiRequestTimeoutSeconds_(config.timeoutSeconds, options),
+      executionDeadlineAtMs: options && options.executionDeadlineAtMs,
+      minimumRequestSeconds: options && options.minimumRequestSeconds
     };
     let providerResult = null;
 
@@ -164,6 +179,8 @@ function runAiMessagesTask(task, messages, options) {
     }
 
     let result = normalizeAiProviderResult_(config, providerResult, Date.now() - startedAt);
+    // 即使模型意外回傳編碼片段，也只讓安全文字進 LINE、Sheet 與短期 memory。
+    if (hasImages && result.ok) result.text = redactAiMediaText_(result.text);
     if (!result.ok) {
       logAiCallMetadata_(result, config);
       return result;
@@ -223,13 +240,47 @@ function normalizeAiMessages_(messages) {
     throw createAiConfigurationError_('AI messages must be a non-empty array.');
   }
 
+  let imageCount = 0;
   return messages.map(function(message) {
     const role = String(message && message.role || '').trim();
     if (['system', 'user', 'assistant'].indexOf(role) < 0) {
-      throw createAiConfigurationError_('Unsupported AI message role: ' + role);
+      throw createAiConfigurationError_('Unsupported AI message role.');
     }
-    return { role: role, content: String(message && message.content || '') };
+    if (!Array.isArray(message.content)) {
+      if (message.content && typeof message.content === 'object') {
+        throw createAiConfigurationError_('AI content must be text or an array of content parts.');
+      }
+      return { role: role, content: String(message.content || '') };
+    }
+    if (!message.content.length) throw createAiConfigurationError_('AI content parts must not be empty.');
+    return { role: role, content: message.content.map(function(part) {
+      if (part && part.type === 'text' && typeof part.text === 'string') {
+        return { type: 'text', text: part.text };
+      }
+      if (!part || part.type !== 'image' || role !== 'user' || ++imageCount > 1) {
+        throw createAiConfigurationError_('Only one image in a user message is supported.');
+      }
+      const bytes = part.bytes;
+      if (!Array.isArray(bytes) || !bytes.length || bytes.length > AI_IMAGE_MAX_BYTES ||
+          bytes.some(function(value) { return !Number.isInteger(value) || value < -128 || value > 255; })) {
+        throw createAiConfigurationError_('AI image bytes are empty, invalid or too large.');
+      }
+      const signature = bytes.slice(0, 8).map(function(value) { return value & 255; });
+      const isPng = signature.join(',') === '137,80,78,71,13,10,26,10';
+      const isJpeg = signature[0] === 255 && signature[1] === 216 && signature[2] === 255;
+      if (!((part.mimeType === 'image/png' && isPng) || (part.mimeType === 'image/jpeg' && isJpeg))) {
+        throw createAiConfigurationError_('AI image MIME/signature mismatch; only JPEG and PNG are supported.');
+      }
+      return { type: 'image', mimeType: part.mimeType, bytes: bytes };
+    }) };
   });
+}
+
+/** 圖片流程的文字出口：不保留 data URL 或大段編碼資料，也不嘗試永久保存原圖。 */
+function redactAiMediaText_(text) {
+  return String(text || '')
+    .replace(/data:[^\s"'<>]*;base64,[a-z0-9+/=\s]*/gi, '[已省略圖片編碼]')
+    .replace(/[a-z0-9+/]{256,}={0,2}/gi, '[已省略編碼資料]');
 }
 
 /**

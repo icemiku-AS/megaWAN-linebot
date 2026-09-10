@@ -1,7 +1,7 @@
 // ======================================================
 // 15_DeepSeekProvider.gs
 // AI provider adapter：DeepSeek transport 與 provider protocol translation。
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 主要責任：
 // 1. 作為 DeepSeek provider adapter，lazy-load DEEPSEEK_API_KEY 並呼叫 Chat Completions。
@@ -16,12 +16,14 @@
 // 檔案關係與維護注意：
 // 1. 10_AiService.gs 是正式 service 入口；本檔主要入口 callDeepSeekProvider_() 只供其 dispatch。
 // 2. 11_AiProfiles.gs 保證每個 task 顯式指定 thinking；本檔仍會防守缺值，避免依賴 API 預設。
-// 3. thinking enabled 時不得送 temperature、top_p、presence_penalty、frequency_penalty；
-//    reasoning_effort 依官方規格使用 high / max。
+// 3. 本專案 thinking request 不送 sampling；官方 2026-09-10 雖允許 top_p，本版不需調整。
+//    正式 route 固定 high；多模態的 image_url/data URL 只在此 adapter 產生，不流入記憶。
 // 4. 下方舊 callDeepSeek... 函式是 v1.13.0 compatibility wrapper，不是正式 runtime 首選。
 // ======================================================
 
 const DEEPSEEK_API_ENDPOINT = 'https://api.deepseek.com/chat/completions';
+// 低於官方 48 MiB body / GAS 50 MB POST 上限；一張 4 MiB raw 圖約佔 5.34 MiB。
+const DEEPSEEK_REQUEST_MAX_BYTES = 8 * 1024 * 1024;
 
 /**
  * DeepSeek adapter 正式入口。
@@ -46,13 +48,21 @@ function callDeepSeekProvider_(request) {
     }
 
     const payload = buildDeepSeekPayload_(safeRequest);
+    const serializedPayload = JSON.stringify(payload);
+    if (Utilities.newBlob(serializedPayload).getBytes().length > DEEPSEEK_REQUEST_MAX_BYTES) {
+      throw createAiConfigurationError_('DeepSeek request exceeds the local 8 MiB body limit.');
+    }
     const options = {
       method: 'post',
       contentType: 'application/json',
       headers: { Authorization: 'Bearer ' + apiKey },
-      payload: JSON.stringify(payload),
+      payload: serializedPayload,
       muteHttpExceptions: true,
-      timeoutSeconds: Math.max(1, Number(safeRequest.timeoutSeconds || 60))
+      // 編碼與序列化可能耗時；真正 fetch 前再扣同一 absolute deadline。
+      timeoutSeconds: resolveAiRequestTimeoutSeconds_(safeRequest.timeoutSeconds, {
+        executionDeadlineAtMs: safeRequest.executionDeadlineAtMs,
+        minimumRequestSeconds: safeRequest.minimumRequestSeconds
+      })
     };
     const response = UrlFetchApp.fetch(DEEPSEEK_API_ENDPOINT, options);
     const statusCode = response.getResponseCode();
@@ -75,19 +85,24 @@ function callDeepSeekProvider_(request) {
       );
     }
 
-    const choice = json.choices && json.choices[0];
-    if (!choice || !choice.message) {
+    const choice = json && json.choices && json.choices[0];
+    if (!choice || !choice.message || (choice.message.content != null && typeof choice.message.content !== 'string')) {
       return buildDeepSeekProviderFailure_(
         'ai_invalid_provider_response',
-        'DeepSeek response is missing choices[0].message.',
+        'DeepSeek response has missing or invalid message content.',
         statusCode,
         true,
         Date.now() - startedAt,
-        normalizeDeepSeekUsage_(json.usage)
+        normalizeDeepSeekUsage_(json && json.usage)
       );
     }
 
     const finishReason = String(choice.finish_reason || '');
+    // metadata 也需驗證；未知內容不可原樣穿透 console。null content 仍交由 finish/empty 檢查，
+    // 尤其 reasoning 用完 budget 時，length 必須維持既有不可重試的截斷契約。
+    if (['', 'stop', 'length', 'tool_calls', 'content_filter', 'insufficient_system_resource'].indexOf(finishReason) < 0) {
+      return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek returned an unknown finish reason.', statusCode, true, Date.now() - startedAt);
+    }
     if (finishReason === 'insufficient_system_resource') {
       // 這是 DeepSeek protocol 的暫時性停止原因，必須在 adapter 轉成 retryable typed failure，
       // 避免 provider-neutral AiService 依賴供應商專屬字串。
@@ -127,7 +142,8 @@ function callDeepSeekProvider_(request) {
       }
     }
 
-    return buildDeepSeekProviderFailure_(errorType, message, 0, retryable, Date.now() - startedAt);
+    // GAS/供應商例外可能夾帶 request、binary 或 secret；只輸出固定技術訊息。
+    return buildDeepSeekProviderFailure_(errorType, 'DeepSeek request failed (' + errorType + ').', 0, retryable, Date.now() - startedAt);
   }
 }
 
@@ -138,9 +154,21 @@ function callDeepSeekProvider_(request) {
  */
 function buildDeepSeekPayload_(request) {
   const thinkingType = String(request.thinking && request.thinking.type || '');
+  if (thinkingType !== 'enabled' && thinkingType !== 'disabled') {
+    throw createAiConfigurationError_('DeepSeek request must explicitly set thinking.');
+  }
   const payload = {
     model: request.model,
-    messages: request.messages,
+    messages: request.messages.map(function(message) {
+      return { role: message.role, content: Array.isArray(message.content)
+        ? message.content.map(function(part) {
+          return part.type === 'text' ? { type: 'text', text: part.text } : {
+            type: 'image_url',
+            image_url: { url: 'data:' + part.mimeType + ';base64,' + Utilities.base64Encode(part.bytes) }
+          };
+        })
+        : message.content };
+    }),
     thinking: { type: thinkingType },
     max_tokens: Number(request.maxOutputTokens),
     stream: false
@@ -183,11 +211,11 @@ function normalizeDeepSeekUsage_(usage) {
 
 /**
  * DeepSeek HTTP 錯誤分類。401/403 與其他 4xx 通常需修設定，不應讓 Queue 無效重試；
- * 408/429/5xx 才視為暫時性。error body 只用來產生短訊息，不寫完整 response 到 log。
+ * 408/429/5xx 才視為暫時性。error body 不外傳，防止供應商把圖片或 request 反射進 log。
  */
 function classifyDeepSeekHttpFailure_(statusCode, responseText, elapsedMs) {
   const status = Number(statusCode || 0);
-  const providerMessage = extractDeepSeekErrorMessage_(responseText);
+  const providerMessage = 'DeepSeek HTTP request failed (' + status + ').';
   if (status === 401 || status === 403) {
     return buildDeepSeekProviderFailure_('ai_auth_error', providerMessage, status, false, elapsedMs);
   }
@@ -207,14 +235,8 @@ function classifyDeepSeekHttpFailure_(statusCode, responseText, elapsedMs) {
 }
 
 function extractDeepSeekErrorMessage_(responseText) {
-  const raw = String(responseText || '');
-  try {
-    const parsed = JSON.parse(raw);
-    const message = parsed && parsed.error && parsed.error.message;
-    return String(message || 'DeepSeek HTTP request failed.').slice(0, 500);
-  } catch (error) {
-    return ('DeepSeek HTTP request failed: ' + raw.slice(0, 300)).trim();
-  }
+  // 保留舊 helper 名稱；原始錯誤 body 可能包含敏感 request，不回傳其片段。
+  return 'DeepSeek HTTP request failed.';
 }
 
 function buildDeepSeekProviderFailure_(errorType, errorMessage, httpStatus, retryable, elapsedMs, usage, finishReason) {

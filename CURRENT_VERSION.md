@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.13.2 X Post Weekly Display Edition`
-Previous stable baseline described in this file: `v1.13.1 Source Layout & File Ordering Edition`
+Version represented by this Git ref: `v1.14.0 DeepSeek Flash Multimodal Edition`
+Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.13.1 Source Layout & File O
 
 ## Active Runtime Source Files
 
-以下 20 個檔案代表 v1.13.2 X Post Weekly Display Edition 的 active GAS runtime source：
+以下 21 個檔案代表 v1.14.0 DeepSeek Flash Multimodal Edition 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -77,6 +77,7 @@ Previous stable baseline described in this file: `v1.13.1 Source Layout & File O
 * `04_Utils.gs`
 * `05_Storage.gs`
 * `06_Memory.gs`
+* `07_LineImages.gs`
 * `10_AiService.gs`
 * `11_AiProfiles.gs`
 * `12_Prompts.gs`
@@ -121,6 +122,41 @@ Previous stable baseline described in this file: `v1.13.1 Source Layout & File O
 修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
 
 ---
+
+## v1.14.0 Version Boundary
+
+本版為 DeepSeek Flash Multimodal Edition，基線 v1.13.2。現行 source of truth 是目前 Git ref 的實際 .gs；本地修改不代表已 merge、發布或部署到 GAS。
+
+### Included
+
+1. 正式 model 使用 `deepseek-flash`，internal key 使用 `deepseek_flash`；2026-09-10 對應 DeepSeek V4.1 Flash。舊 `deepseek-v4-flash` alias 不再供 active runtime 使用。
+2. 原有 12 個 task 加上 `image_analysis` 共 13 個，全部 thinking enabled / reasoning_effort high。profiles 只保留 `thinking_high`（text）、`thinking_json`（JSON）、`long_extraction_json`（長文 HIGH JSON）；各 route 顯式驗證 thinking/effort，預算詳見 README task 表。
+3. 因 reasoning 與最終輸出共用 max_tokens，原 non-thinking task 分別補足預算；既有 HIGH task 不放大。所有舊 task timeout、40 秒共同 webhook deadline、30 秒 AI cap、12 秒 Reader cap、8/20 秒啟動門檻保留。
+4. 私訊直接傳 JPEG/PNG 圖；群組貼圖靜默，使用 LINE 原生「回覆圖片」+ `#小浣 看圖 <問題>` 指定。沒有 caption pairing／永久圖片 queue；私訊多圖僅處理第一張。
+5. 新增 `07_LineImages.gs`：固定 LINE Get content endpoint、數字 message ID、HTTP 200、MIME／signature、空內容與 raw bytes ≤ 4 MiB 驗證；拒絕 redirect／external content。下載 cap 10 秒，之後 memory／編碼耗時繼續扣原 deadline。
+6. AiService content 向後相容字串，另接受 text/image parts；image 以 mimeType + bytes 表達，最多一張且只能在 user message。DeepSeek adapter 才將 bytes 編成 Base64 image_url data URL，完整 JSON body ≤ 8 MiB。Gemini 沒有 image capability，仍 dormant 且不 fallback。
+7. 圖片原始資料不進 Sheet、Cache、console 或永久儲存；只保存 placeholder／問題／分析文字。HTTP／exception 不回傳供應商原始 error body，圖片結果中的 data URL／大段編碼於文字出口移除。
+8. 新增圖片 prompt、固定繁中錯誤與 help。圖片逾時、過大、格式無法解析、過期、下載／AI 失敗時提示重新傳送，不把原圖送背景 queue。
+9. 原 JSON schema／validator、NewsInbox／StoryKey、Reader routing／typed errors、Queue retry／fallback、compatibility wrappers 均保留；`25/35` 僅同步 profile 註解。Weekly Editorial cache contract/version 不變，既有 cache 自然到期後重算使用 HIGH。
+10. 版本、README、CURRENT_VERSION 與 changelog 同步；歷史段落仍保留當時的模型／profile 事實。
+
+### Migration and deployment
+
+沒有新增 Script Property、Sheet 欄位、setup／migration、Trigger 或 handler。沿用 LINE_CHANNEL_ACCESS_TOKEN、SPREADSHEET_ID、DEEPSEEK_API_KEY；GEMINI_API_KEY 仍非必要。無 Node runtime、npm dependency、Drive／Cloud Storage、Files API、圖片資料庫、多圖配對或新 provider。
+
+手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、新增 `07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`25_WebTaskQueue.gs`、`35_WeeklyEditorialDigest.gs`。完成後 GAS 應有 21 個 .gs，建立 v1.14.0 Apps Script version，更新既有 Web App deployment；URL 與 Trigger handler 維持不變。文件與 tests/v1140_smoke.cjs 不部署。
+
+### Verification and limits
+
+本機 `node tests/v1140_smoke.cjs` 使用內建模組與 mock 服務檢查 syntax、13 routes、HIGH／JSON payload、圖片與純文字路由、privacy、size、expired no-fetch、共同 deadline、Reader retry metadata 與業務 validator。未能本機執行 GAS，未實際呼叫 LINE／DeepSeek；圖片辨識品質與 HIGH latency／length 比例需用 README 的部署 smoke tests 校準。
+
+本地只接收 JPEG/PNG；GIF/WebP 雖為 DeepSeek 官方格式，但本版未啟用。原圖每邊的官方上限為 8192 px，由 DeepSeek 解碼驗證；本地限制 raw bytes，不引入 image decoder。GAS 先緩衝下載，無法在 HTTP 過程提早截流。引用圖片取決於 LINE 尚可提供內容，不保證永久可取；後續文字記憶不代表能重新查看原圖。
+
+官方規格（2026-09-10）：[Model / V4.1 Flash](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。最新版 thinking top_p 可用，本版仍不送任何 sampling；溫度與兩種 penalty 不送出。
+
+---
+
+以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.0 實作。
 
 ## v1.13.2 Version Boundary
 
@@ -574,7 +610,9 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ---
 
-## Suggested Smoke Tests for v1.13.2 X Post Weekly Display
+## Historical Smoke Tests for v1.13.2 X Post Weekly Display
+
+以下保留 v1.13.2 當時的檢查紀錄；v1.14.0 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
 
 本版只修改週新聞 presentation 與 Diagnostic title duplicate decision，不修改 Sheet、Reader、AI、cache payload、router 或 Trigger contract，也不需要 migration、setup、新 Trigger 或新增 Script Properties。
 
@@ -641,7 +679,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.13.2 X Post Weekly Display Edition`
-Previous stable baseline described in this file: `v1.13.1 Source Layout & File Ordering Edition`
-Last Confirmed Date: `2026-08-12`
-Last Documentation Note: X status weekly-news presentation uses a local Brief-based Display Title while raw NewsInbox, Reader, AI, sorting, StoryKey, cache and Sheet contracts remain unchanged.
+Last Confirmed Version at this Git ref: `v1.14.0 DeepSeek Flash Multimodal Edition`
+Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display Edition`
+Last Confirmed Date: `2026-09-10`
+Last Documentation Note: deepseek-flash / HIGH thinking / LINE image understanding implemented in this Git ref; local mock verification only, manual GAS deployment and live smoke tests required.

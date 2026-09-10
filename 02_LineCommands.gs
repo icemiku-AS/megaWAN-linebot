@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // LINE transport：處理指令解析、Help、Reply API 與長文字分段。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 維護原則：
 // 1. 主要 caller 是 01_Main.gs；本檔只做 transport/router，不擁有 AI、Reader、News 或 Sheet contract。
@@ -67,7 +67,11 @@ function parseCommand(text) {
   let mode = 'chat';
   let userPrompt = text;
 
-  if (text.startsWith('#節目話題分析')) {
+  if (/^#小浣\s+看圖(?:\s|$)/.test(text)) {
+    mode = 'image_analysis';
+    userPrompt = text.replace(/^#小浣\s+看圖\s*/, '').trim();
+
+  } else if (text.startsWith('#節目話題分析')) {
     mode = 'program_topic_analysis';
     userPrompt = text.replace('#節目話題分析', '').trim();
 
@@ -323,6 +327,8 @@ function getHelpText() {
     '小浣可以幫你把群組裡的雜訊、網址和討論，整理成節目素材。',
     '',
     '常用功能：',
+    '・私訊直接傳圖片；群組請回覆該圖片並輸入 #小浣 看圖 <問題>。',
+    '・看圖支援 JPEG/PNG、每張最多 4 MiB；不永久保存原圖，逾時請重送。',
     '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
     '・#本週新聞：整合最近 7 天群組話題、焦點故事線與其他分類新聞。',
     '・#本週新聞 高潛力：只看高潛力素材，依分類精簡顯示。',

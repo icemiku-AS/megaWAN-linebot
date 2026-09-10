@@ -1,7 +1,7 @@
 // ======================================================
 // 11_AiProfiles.gs
 // AI configuration：provider/model registry、execution profiles、task routes 與 retry metadata。
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 主要責任：
 // 1. 集中登記 AI provider、model、execution profile 與 task route。
@@ -19,9 +19,8 @@
 // 2. 功能檔只傳 task 與 Prompt/messages，不應自行組 DeepSeek 或 Gemini options。
 // 3. 每個 task route 都重複標示 expectedThinking，並由 resolver 驗證它和 profile
 //    一致。這項刻意的少量重複是安全稽核，避免未來換 profile 後意外改變成本與延遲。
-// 4. 目前沒有 runtime task 綁定 thinking_max；它只保留給未來明確指定的高價值低頻任務。
-// 5. DeepSeek 最新官方規格只有 high / max 是正式 reasoning_effort；不要新增
-//    low / medium profile，因為供應商只會把它們相容映射為 high。
+// 4. v1.14.0 全部正式 task 固定 HIGH；移除未使用的 thinking_max 與誤導的 fast 命名。
+// 5. model registry key 不綁世代；DeepSeek Flash 在 2026-09-10 對應 V4.1 Flash。
 // 6. profile/route timeout 是任務最大預算；LINE webhook 會在 AiService 再套較短同步 cap。
 // 7. retryPolicy 目前只是 caller-owned 描述資料，AiService 不會據此 sleep 或自動重試。
 // ======================================================
@@ -40,9 +39,10 @@ const AI_PROVIDER_REGISTRY = {
 };
 
 const AI_MODEL_REGISTRY = {
-  deepseek_v4_flash: {
+  deepseek_flash: {
     provider: 'deepseek',
-    model: 'deepseek-v4-flash'
+    model: 'deepseek-flash',
+    supportsImages: true
   },
   gemini_flash_lite_dormant: {
     provider: 'gemini',
@@ -62,55 +62,34 @@ const AI_RETRYABLE_ERROR_TYPES = [
 ];
 
 const AI_EXECUTION_PROFILES = {
-  // 一般聊天與簡單文字整理：不需要額外推理，保留適度語氣彈性。
-  // 1200 tokens 足以涵蓋 LINE 日常回覆；45 秒是任務上限，webhook 另有較短同步 cap。
-  // 它不能與 thinking_high 合併，否則一般聊天會無謂增加 reasoning token 與延遲。
-  fast_text: {
-    thinking: { type: 'disabled' },
-    reasoningEffort: '',
-    allowSampling: true,
-    outputMode: 'text',
-    temperature: 0.7,
-    maxOutputTokens: 1200,
-    timeoutSeconds: 45,
-    requiredFinishReason: 'stop',
-    retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
-  },
-
-  // 固定結構 JSON：關閉 thinking 以提高格式穩定性，低溫度減少 enum 與欄位漂移。
-  // 4000 tokens 涵蓋一般結構化任務；60 秒是背景 Queue 可用的完整任務上限。
-  // 它不能與 long_extraction_json 合併，否則日常 JSON 會普遍取得過高輸出預算。
-  fast_json: {
-    thinking: { type: 'disabled' },
-    reasoningEffort: '',
-    allowSampling: true,
+  // 結構化 HIGH：max_tokens 同時計入 reasoning 與最終 JSON；欄位 validator 仍屬功能層。
+  // 一般 8000，短補充／封存另縮小，週編輯台另擴大；背景 timeout 保持 60 秒。
+  thinking_json: {
+    thinking: { type: 'enabled' },
+    reasoningEffort: 'high',
+    allowSampling: false,
     outputMode: 'json',
-    temperature: 0.1,
-    maxOutputTokens: 4000,
+    maxOutputTokens: 8000,
     timeoutSeconds: 60,
     requiredFinishReason: 'stop',
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   },
 
-  // raw HTML 正文抽取：任務是保留原文而非推理，因此 thinking 關閉、溫度為 0。
-  // 24000 tokens 是為長文 mainText 留空間，90 秒是背景 extraction 的完整任務上限。
-  // 它不能與 fast_json 合併，否則長文會被一般 4000-token 上限截斷。
+  // 長文抽取保留原本 24000-token 正文空間，另加 4000 給 reasoning；90 秒上限不變。
+  // 獨立 profile 避免一般 JSON 取得長文預算；同步 caller 仍受共同 deadline 約束。
   long_extraction_json: {
-    thinking: { type: 'disabled' },
-    reasoningEffort: '',
-    allowSampling: true,
+    thinking: { type: 'enabled' },
+    reasoningEffort: 'high',
+    allowSampling: false,
     outputMode: 'json',
-    temperature: 0,
-    maxOutputTokens: 24000,
+    maxOutputTokens: 28000,
     timeoutSeconds: 90,
     requiredFinishReason: 'stop',
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   },
 
-  // 跨多筆素材的分析與統整：thinking 開啟並使用官方 high effort。
-  // thinking 模式不得送 temperature / top_p 等無效採樣欄位；8000 tokens 同時涵蓋
-  // reasoning 與最終文字，120 秒提供背景或非 webhook caller 足夠時間；webhook 不會用滿。
-  // 它不能與 fast_text 合併，因為兩者的成本、延遲與 payload 相容規則不同。
+  // 一般聊天、圖片與跨素材分析共用 HIGH 文字 profile，token/timeout 差異由 task 決定。
+  // 不送 sampling 欄位；8000 包含 reasoning 與最終文字，webhook 另套 30 秒 cap。
   thinking_high: {
     thinking: { type: 'enabled' },
     reasoningEffort: 'high',
@@ -120,91 +99,84 @@ const AI_EXECUTION_PROFILES = {
     timeoutSeconds: 120,
     requiredFinishReason: 'stop',
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
-  },
-
-  // 未來高價值、低頻率深度任務的預留 profile；目前沒有 runtime task 綁定。
-  // max effort 與 16000 tokens 可能顯著提高延遲與成本，180 秒也不適合 webhook 日常流量。
-  // 保留獨立 profile 是為了讓未來啟用時必須經過明確 route review。
-  thinking_max: {
-    thinking: { type: 'enabled' },
-    reasoningEffort: 'max',
-    allowSampling: false,
-    outputMode: 'text',
-    maxOutputTokens: 16000,
-    timeoutSeconds: 180,
-    requiredFinishReason: 'stop',
-    retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   }
 };
 
 const AI_TASK_ROUTES = {
-  // 一般聊天以低延遲為優先，不需要 thinking。
+  // 短回覆原有 1200 加 3600 reasoning 空間；不放大同步 timeout。
   general_chat: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'fast_text', expectedThinking: 'disabled'
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 4800, timeoutSeconds: 45
   },
 
-  // NewsInbox 分析已有完整 schema、normalizer 與分類稽核，使用 non-thinking JSON。
+  // 3200 → 8000，為分類稽核與 StoryKey 推理留空間；schema/normalizer 不變。
   news_analysis: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'fast_json', expectedThinking: 'disabled',
-    maxOutputTokens: 3200, timeoutSeconds: 60
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 8000, timeoutSeconds: 60
   },
 
-  // 快讀摘要是固定結構整理，不需要推理；validator 留在 WebTaskQueue 功能層。
+  // 4000 → 8000，保留原摘要 JSON 空間並加入 reasoning；validator 留在 WebTaskQueue。
   web_lazy_summary: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'fast_json', expectedThinking: 'disabled',
-    maxOutputTokens: 4000, timeoutSeconds: 60
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 8000, timeoutSeconds: 60
   },
 
   // legacy raw HTML 需要保留大量 mainText，使用獨立長輸出 profile。
   raw_html_extraction: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'long_extraction_json', expectedThinking: 'disabled'
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'long_extraction_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high'
   },
 
   // 新聞問答需跨多筆 NewsInbox 素材推理；本版不另建複雜度分類器，因此固定 high。
-  // 輸出維持文字，避免 thinking 與 JSON mode 在本版同時承擔格式風險。
+  // 原本已包含 reasoning 的 token/timeout 維持不變。
   news_question: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'thinking_high', expectedThinking: 'enabled',
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
     maxOutputTokens: 7000, timeoutSeconds: 90
   },
 
   // 節目分析需要同時判斷脈絡、爭議與節目切角，固定使用 high thinking。
   program_topic_analysis: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'thinking_high', expectedThinking: 'enabled',
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
     maxOutputTokens: 8000, timeoutSeconds: 120
   },
 
   // 統整話題跨 ConversationLog、Highlights、NewsInbox、WebSummary 與封存記憶。
   integrate_topics: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'thinking_high', expectedThinking: 'enabled',
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
     maxOutputTokens: 9000, timeoutSeconds: 120
   },
 
-  // 封存契約固定且低頻，strict JSON validator 比額外 thinking 更重要。
+  // 封存從 1800/2600 增至 6000/7000，兼顧來源統整的 reasoning 與短 JSON。
   archive_topics: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'fast_json', expectedThinking: 'disabled',
-    maxOutputTokens: 1800, timeoutSeconds: 60
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 6000, timeoutSeconds: 60
   },
   archive_news: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'fast_json', expectedThinking: 'disabled',
-    maxOutputTokens: 2600, timeoutSeconds: 60
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 7000, timeoutSeconds: 60
   },
 
-  // 週編輯台已有 itemId、partition 與 rendered coverage validator；先用 fast JSON。
+  // 3200 → 10000：最多 30 則新聞聚類及對話去重，需要比單篇 JSON 更多 reasoning。
   weekly_editorial_digest: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'fast_json', expectedThinking: 'disabled',
-    maxOutputTokens: 3200, timeoutSeconds: 60
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 10000, timeoutSeconds: 60
   },
 
-  // 人工補充是短固定 JSON；失敗時功能層仍保留既有人工 fallback。
+  // 1800 → 5000：短輸入只保留較小 reasoning 空間，既有人工 fallback 不變。
   manual_news_supplement: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'fast_json', expectedThinking: 'disabled',
-    maxOutputTokens: 1800, timeoutSeconds: 60
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 5000, timeoutSeconds: 60
   },
 
   // memory bridge 要判斷跨週延續與反轉，屬跨素材推理，但失敗只回空字串。
   news_memory_bridge: {
-    provider: 'deepseek', model: 'deepseek_v4_flash', profile: 'thinking_high', expectedThinking: 'enabled',
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
     maxOutputTokens: 5000, timeoutSeconds: 90
+  },
+
+  // 單張圖片辨識／OCR／問題分析：8000 包含 reasoning；同步仍受 30 秒 cap 與下載耗時扣除。
+  image_analysis: {
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 8000, timeoutSeconds: 60
   }
 };
 
@@ -233,6 +205,9 @@ function resolveAiTaskConfig_(task) {
   }
   if (thinkingType !== route.expectedThinking) {
     throw createAiConfigurationError_('AI task thinking/profile mismatch: ' + taskName);
+  }
+  if (profile.reasoningEffort !== route.expectedReasoningEffort) {
+    throw createAiConfigurationError_('AI task reasoning effort/profile mismatch: ' + taskName);
   }
   if (['text', 'json'].indexOf(profile.outputMode) < 0) {
     throw createAiConfigurationError_('AI profile output mode must be text or json: ' + route.profile);
@@ -267,6 +242,7 @@ function resolveAiTaskConfig_(task) {
     providerAdapter: provider.adapter,
     model: modelEntry.model,
     modelRegistryKey: route.model,
+    supportsImages: modelEntry.supportsImages === true,
     profile: route.profile,
     thinking: { type: thinkingType },
     reasoningEffort: profile.reasoningEffort || '',
