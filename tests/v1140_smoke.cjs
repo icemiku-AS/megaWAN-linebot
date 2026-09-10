@@ -37,6 +37,7 @@ vm.runInContext(source, context);
 context.ensureLogSheet_ = () => ({ appendRow: row => rows.push(row) });
 context.getRecentWeeklySummaryText = () => '';
 context.getAndDeletePendingReply = () => { const value = pending; pending = null; return value; };
+const transportReply = context.replyToLine;
 context.replyToLine = (token, text) => replies.push({ token, text });
 const value = expression => vm.runInContext(expression, context);
 const json = expression => JSON.parse(JSON.stringify(value(expression)));
@@ -131,6 +132,62 @@ check('pending reply takes priority without silently losing image request', () =
   context.handleLineEvent(event(), now);
   assert.equal(calls.length, 0); assert(replies[0].text.includes('請再傳一次'));
 });
+check('quoted image questions are redacted before any persistence', () => {
+  const question = 'data:image/png;base64,' + Buffer.from(png).toString('base64') + '。' + 'A'.repeat(300);
+  for (const state of ['success', 'download_failure', 'pending']) {
+    reset();
+    if (state === 'download_failure') fetchImpl = () => response(404, 'unavailable');
+    if (state === 'pending') pending = { text: '先前結果' };
+    context.handleLineEvent(event('text', 'group', { text: '#小浣 看圖 ' + question, quotedMessageId: '123' }), now);
+    const persisted = JSON.stringify([...cache.values(), rows, logs, replies]);
+    assert(!/data:image/.test(persisted)); assert(!persisted.includes('A'.repeat(300)));
+    assert(persisted.includes('已省略'));
+  }
+});
+check('pending image question URL is not collected as news', () => {
+  const originalIntake = context.handleSilentNewsUrlMessage_;
+  let intakeCount = 0;
+  context.handleSilentNewsUrlMessage_ = () => { intakeCount++; return { ok: true }; };
+  try {
+    pending = { text: '先前結果' };
+    context.handleLineEvent(event('text', 'group', { text: '#小浣 看圖 https://example.org 是來源嗎？', quotedMessageId: '123' }), now);
+    assert.equal(intakeCount, 0); assert.equal(calls.length, 0);
+    assert(replies[0].text.includes('請重送看圖指令')); assert(!replies[0].text.includes('新網址'));
+    pending = { text: '另一份先前結果' };
+    context.handleLineEvent(event('text', 'group', { text: 'https://example.org/news' }), now);
+    assert.equal(intakeCount, 1, 'ordinary pending URL intake is preserved');
+  } finally { context.handleSilentNewsUrlMessage_ = originalIntake; }
+});
+check('album without a valid index requires explicit image selection', () => {
+  // LINE webhook reference: Android <=11.15 can omit imageSet.index/total; events may arrive out of order.
+  for (const index of [undefined, null, 0, -1, '1', 0.5]) {
+    context.handleLineEvent(event('image', 'user', { imageSet: { id: 'album', index } }), now);
+    assert(replies.at(-1).text.includes('單張分次傳送'));
+  }
+  assert.equal(calls.length, 0);
+  context.handleLineEvent(event('image', 'user', { imageSet: { id: 'album', index: 2, total: 2 } }), now);
+  context.handleLineEvent(event('image', 'user', { imageSet: { id: 'album', index: 1, total: 2 } }), now);
+  assert.equal(calls.length, 2, 'only index=1 downloads and analyzes, regardless of event order');
+  assert(replies.at(-1).text.includes('第一張'));
+});
+check('LINE transport bounds timeout and never exposes external failures', () => {
+  const sensitive = 'external-error-sentinel data:image/png;base64,token-sentinel';
+  fetchImpl = () => response(400, sensitive);
+  transportReply('test-reply', 'safe analysis');
+  assert.equal(calls[0].options.timeoutSeconds, 10);
+  assert(logs.join('').includes('400')); assert(!logs.join('').includes('sentinel'));
+  fetchImpl = () => { throw new Error(sensitive); };
+  assert.throws(() => transportReply('test-reply', 'safe analysis'), error => error.message === 'LINE Reply API request failed.');
+  // 使用真正 Reply transport，驗證 doPost 最外層 stack log 也不含外部例外內容。
+  const mockReply = context.replyToLine;
+  context.replyToLine = transportReply;
+  try {
+    fetchImpl = url => url.includes('/message/reply') ? (() => { throw new Error(sensitive); })()
+      : url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : completion();
+    assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events: [event()] }) } }), 'OK');
+    assert(!JSON.stringify([...cache.values(), rows, logs]).includes('sentinel'));
+  } finally { context.replyToLine = mockReply; }
+});
 check('reject malformed message IDs before downloading', () => {
   for (const id of ['', null, 123, '../a', '1?token=abc', '9'.repeat(65)]) assert(!context.downloadLineImage_(id).ok);
   assert.equal(calls.length, 0);
@@ -165,6 +222,24 @@ check('multimodal trust boundary rejects unsupported structures', () => {
   assert.equal(context.runAiMessagesTask('image_analysis', [message]).errorType, 'ai_configuration_error');
   value('AI_MODEL_REGISTRY.deepseek_flash.supportsImages = true');
   assert.equal(calls.length, 0);
+});
+check('only user accepts content arrays under the published message schema', () => {
+  // DeepSeek Chat Completions: system=string, assistant=string|null, user=string|parts.
+  for (const role of ['system', 'assistant']) {
+    const result = context.runAiMessagesTask('image_analysis', [
+      { role, content: [{ type: 'text', text: 'structured text' }] }, message
+    ]);
+    assert.equal(result.errorType, 'ai_configuration_error'); assert.equal(result.retryable, false);
+  }
+  assert.equal(calls.length, 0, 'invalid roles fail before provider HTTP');
+  const result = context.runAiMessagesTask('general_chat', [
+    { role: 'system', content: 'system text' }, { role: 'assistant', content: 'previous answer' },
+    { role: 'user', content: [{ type: 'text', text: 'user text parts' }] }
+  ]);
+  assert(result.ok);
+  const messages = JSON.parse(calls[0].options.payload).messages;
+  assert.equal(typeof messages[0].content, 'string'); assert.equal(typeof messages[1].content, 'string');
+  assert.equal(messages[2].content[0].text, 'user text parts');
 });
 check('encoded body ceiling is enforced before fetch', () => {
   const request = { ...context.resolveAiTaskConfig_('image_analysis'), messages: context.normalizeAiMessages_([message]) };
@@ -238,6 +313,13 @@ check('reasoning-only truncation and malformed provider response', () => {
   assert.equal(result.errorType, 'ai_finish_reason_length'); assert.equal(result.retryable, false);
   fetchImpl = () => response(200, { choices: [{ message: { content: null }, finish_reason: 'insufficient_system_resource' }] });
   assert.equal(context.runAiJsonTask('news_analysis', 'JSON').retryable, true);
+  for (const text of [null, 'partial analysis']) {
+    fetchImpl = () => completion(text, 'aborted');
+    const interrupted = context.runAiMemoryTask('image_analysis', 'user:user1', '[圖片]', message.content);
+    assert.equal(interrupted.errorType, 'ai_provider_http_error'); assert.equal(interrupted.retryable, true);
+    assert.equal(interrupted.finishReason, 'aborted'); assert.equal(interrupted.usage.reasoningTokens, 2200);
+    assert.equal(interrupted.text, ''); assert.equal(cache.size, 0);
+  }
   for (const body of ['null', '{}', 'not json', '{"choices":[{"message":{"content":[]},"finish_reason":"stop"}]}']) {
     fetchImpl = () => response(200, body);
     assert.equal(context.runAiTextTask('general_chat', 'hello').errorType, 'ai_invalid_provider_response');

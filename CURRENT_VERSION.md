@@ -132,12 +132,12 @@ Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display 
 1. 正式 model 使用 `deepseek-flash`，internal key 使用 `deepseek_flash`；2026-09-10 對應 DeepSeek V4.1 Flash。舊 `deepseek-v4-flash` alias 不再供 active runtime 使用。
 2. 原有 12 個 task 加上 `image_analysis` 共 13 個，全部 thinking enabled / reasoning_effort high。profiles 只保留 `thinking_high`（text）、`thinking_json`（JSON）、`long_extraction_json`（長文 HIGH JSON）；各 route 顯式驗證 thinking/effort，預算詳見 README task 表。
 3. 因 reasoning 與最終輸出共用 max_tokens，原 non-thinking task 分別補足預算；既有 HIGH task 不放大。所有舊 task timeout、40 秒共同 webhook deadline、30 秒 AI cap、12 秒 Reader cap、8/20 秒啟動門檻保留。
-4. 私訊直接傳 JPEG/PNG 圖；群組貼圖靜默，使用 LINE 原生「回覆圖片」+ `#小浣 看圖 <問題>` 指定。沒有 caption pairing／永久圖片 queue；私訊多圖僅處理第一張。
+4. 私訊直接傳 JPEG/PNG 圖；群組貼圖靜默，使用 LINE 原生「回覆圖片」+ `#小浣 看圖 <問題>` 指定。沒有 caption pairing／永久圖片 queue；私訊多圖僅處理 index=1，舊版 LINE 缺有效 index 時提示單張／引用。Pending Reply 優先交付後提示重送看圖指令，問題中的 URL 不作新聞收件。
 5. 新增 `07_LineImages.gs`：固定 LINE Get content endpoint、數字 message ID、HTTP 200、MIME／signature、空內容與 raw bytes ≤ 4 MiB 驗證；拒絕 redirect／external content。下載 cap 10 秒，之後 memory／編碼耗時繼續扣原 deadline。
-6. AiService content 向後相容字串，另接受 text/image parts；image 以 mimeType + bytes 表達，最多一張且只能在 user message。DeepSeek adapter 才將 bytes 編成 Base64 image_url data URL，完整 JSON body ≤ 8 MiB。Gemini 沒有 image capability，仍 dormant 且不 fallback。
-7. 圖片原始資料不進 Sheet、Cache、console 或永久儲存；只保存 placeholder／問題／分析文字。HTTP／exception 不回傳供應商原始 error body，圖片結果中的 data URL／大段編碼於文字出口移除。
+6. AiService content 向後相容字串，只有 user 接受 text/image parts，system／assistant 不接受任何 content array；image 以 mimeType + bytes 表達，最多一張。DeepSeek adapter 才將 bytes 編成 Base64 image_url data URL，完整 JSON body ≤ 8 MiB。Gemini 沒有 image capability，仍 dormant 且不 fallback。
+7. 圖片原始資料不進 Sheet、Cache、console 或永久儲存；只保存 placeholder／問題／分析文字。看圖問題在 Sheet logging 前、圖片結果在文字出口移除 data URL／大段編碼。包含 LINE Reply 在內的 HTTP／exception 不輸出外部原始 error body；Reply timeout 設 10 秒，AI 共同 deadline 不變。
 8. 新增圖片 prompt、固定繁中錯誤與 help。圖片逾時、過大、格式無法解析、過期、下載／AI 失敗時提示重新傳送，不把原圖送背景 queue。
-9. 原 JSON schema／validator、NewsInbox／StoryKey、Reader routing／typed errors、Queue retry／fallback、compatibility wrappers 均保留；`25/35` 僅同步 profile 註解。Weekly Editorial cache contract/version 不變，既有 cache 自然到期後重算使用 HIGH。
+9. 原 JSON schema／validator、NewsInbox／StoryKey、Reader routing／typed errors、Queue retry／fallback、compatibility wrappers 均保留；`25/35` 僅同步 profile 註解。DeepSeek `aborted` 與 `insufficient_system_resource` 都轉為可重試中斷並保留 finish／usage，不保存半截內容。Weekly Editorial cache contract/version 不變，既有 cache 自然到期後重算使用 HIGH。
 10. 版本、README、CURRENT_VERSION 與 changelog 同步；歷史段落仍保留當時的模型／profile 事實。
 
 ### Migration and deployment

@@ -167,14 +167,21 @@ function replyToLine(replyToken, text) {
     contentType: 'application/json',
     headers: { Authorization: 'Bearer ' + token },
     payload: JSON.stringify(payload),
-    muteHttpExceptions: true
+    muteHttpExceptions: true,
+    // 同步工作最多 40 秒；Reply 不沿用 GAS 360 秒預設，保留 replyToken 時間餘裕。
+    timeoutSeconds: 10
   };
 
-  const response = UrlFetchApp.fetch(LINE_REPLY_ENDPOINT, options);
-  const statusCode = response.getResponseCode();
+  try {
+    const response = UrlFetchApp.fetch(LINE_REPLY_ENDPOINT, options);
+    const statusCode = response.getResponseCode();
 
-  if (statusCode < 200 || statusCode >= 300) {
-    console.error('LINE Reply API error:', statusCode, response.getContentText());
+    if (statusCode < 200 || statusCode >= 300) {
+      console.error('LINE Reply API error:', statusCode);
+    }
+  } catch (error) {
+    // 保留既有拋錯行為，但不讓含 request/token 的外部例外流入上層 stack log。
+    throw new Error('LINE Reply API request failed.');
   }
 }
 

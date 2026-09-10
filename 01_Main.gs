@@ -129,10 +129,12 @@ function handleLineEvent(event, webhookStartedAtMs) {
     if (sourceType !== 'user') return;
     const imageSet = event.message.imageSet;
     // ponytail: 私訊一次多圖只看第一張；需要跨圖分析時再擴充 request contract。
-    if (imageSet && Number(imageSet.index) > 1) return;
+    if (imageSet && Number.isInteger(imageSet.index) && imageSet.index > 1) return;
     const pendingImageReply = getAndDeletePendingReply(conversationId);
     const imageReply = pendingImageReply && pendingImageReply.text
       ? getBotTextPendingDelivery_(pendingImageReply.text, false) + '\n\n這張圖片尚未分析，請再傳一次。'
+      // 舊版 LINE 可能只提供 imageSet.id，不能把每張都誤當第一張。
+      : imageSet && imageSet.index !== 1 ? getBotTextImageError_('image_album_unknown_index')
       : analyzeLineImage_(event, conversationId, event.message.id, '', aiExecutionContext) +
         (imageSet && Number(imageSet.total) > 1 ? '\n\n這次只分析多圖中的第一張；其他圖片請分次傳送。' : '');
     replyToLine(event.replyToken, imageReply);
@@ -147,8 +149,12 @@ function handleLineEvent(event, webhookStartedAtMs) {
     return;
   }
 
-  const userText = String(event.message.text || '').trim();
+  let userText = String(event.message.text || '').trim();
   if (!userText) return;
+
+  const commandInfo = parseCommand(userText);
+  // 看圖問題也屬圖片輸入；先遮蔽編碼，再交給 Sheet 或 Pending Reply 流程。
+  if (commandInfo.mode === 'image_analysis') userText = redactAiMediaText_(userText);
 
   logMessageToSheet({
     event: event,
@@ -165,8 +171,11 @@ function handleLineEvent(event, webhookStartedAtMs) {
   const pendingReply = getAndDeletePendingReply(conversationId);
 
   if (pendingReply && pendingReply.text) {
-    const enqueueResult = enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
-    const deliveryText = getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok));
+    // 看圖問題中的網址不是新聞收件；交付舊結果後請使用者重送明確看圖指令。
+    const enqueueResult = commandInfo.mode === 'image_analysis' ? null
+      : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
+    const deliveryText = getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
+      (commandInfo.mode === 'image_analysis' ? '\n\n這張圖片尚未分析，請重送看圖指令。' : '');
 
     replyToLine(event.replyToken, deliveryText);
     logAssistantReplyToSheet(event, conversationId, deliveryText, pendingReply.replyMode || 'pending_reply_delivery');
@@ -290,7 +299,6 @@ function handleLineEvent(event, webhookStartedAtMs) {
     return;
   }
 
-  const commandInfo = parseCommand(userText);
   let aiReply = '';
   let aiReplyMode = commandInfo.mode;
 

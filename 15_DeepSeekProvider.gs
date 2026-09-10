@@ -100,15 +100,15 @@ function callDeepSeekProvider_(request) {
     const finishReason = String(choice.finish_reason || '');
     // metadata 也需驗證；未知內容不可原樣穿透 console。null content 仍交由 finish/empty 檢查，
     // 尤其 reasoning 用完 budget 時，length 必須維持既有不可重試的截斷契約。
-    if (['', 'stop', 'length', 'tool_calls', 'content_filter', 'insufficient_system_resource'].indexOf(finishReason) < 0) {
+    if (['', 'stop', 'length', 'tool_calls', 'content_filter', 'insufficient_system_resource', 'aborted'].indexOf(finishReason) < 0) {
       return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek returned an unknown finish reason.', statusCode, true, Date.now() - startedAt);
     }
-    if (finishReason === 'insufficient_system_resource') {
+    if (finishReason === 'insufficient_system_resource' || finishReason === 'aborted') {
       // 這是 DeepSeek protocol 的暫時性停止原因，必須在 adapter 轉成 retryable typed failure，
       // 避免 provider-neutral AiService 依賴供應商專屬字串。
       return buildDeepSeekProviderFailure_(
         'ai_provider_http_error',
-        'DeepSeek stopped because of insufficient system resources.',
+        'DeepSeek generation was interrupted (' + finishReason + ').',
         statusCode,
         true,
         Date.now() - startedAt,

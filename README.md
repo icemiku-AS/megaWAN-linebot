@@ -115,7 +115,7 @@ v1.13.0 建立的 provider-neutral 分層由 `10_AiService.gs`、`11_AiProfiles.
 
 maxOutputTokens 是 reasoning + visible output 的共用上限，並非保證保留多少可見輸出。原 non-thinking task 的初始調整：聊天 1,200→4,800、新聞分析 3,200→8,000、懶人包 4,000→8,000、長文抽取 24,000→28,000、話題封存 1,800→6,000、新聞封存 2,600→7,000、週編輯台 3,200→10,000、人工補充 1,800→5,000。週編輯台需處理最多 30 則新聞與對話去重，預留較多 reasoning；短補充較少。原本已 HIGH 的四個 task 預算不變。
 
-所有既有 timeout 維持不變。單次同步 AI 仍最多 30 秒，同一批 webhook events 共用 40 秒 absolute deadline，主 task 最低剩餘 8 秒、輔助 memory bridge 最低 20 秒才發 request；同步 Reader cap 12 秒。圖片下載最多 10 秒，下載、memory lock、驗證、Base64 編碼／序列化耗時都會在 AI fetch 前重新扣除。背景 Queue 不帶同步 context，保留 task 原上限。AiService 不 retry。
+所有既有 AI task timeout 維持不變。單次同步 AI 仍最多 30 秒，同一批 webhook events 共用 40 秒 absolute deadline，主 task 最低剩餘 8 秒、輔助 memory bridge 最低 20 秒才發 request；同步 Reader cap 12 秒。圖片下載最多 10 秒，下載、memory lock、驗證、Base64 編碼／序列化耗時都會在 AI fetch 前重新扣除。LINE Reply API 另設 10 秒 timeout，避免使用 GAS 的 360 秒預設；此上限不延長 AI 工作 deadline。背景 Queue 不帶同步 context，保留 task 原上限。AiService 不 retry。
 
 保留 `finish_reason=length`、空內容、非法 JSON 的 failure contract；不保存半截 JSON。直接網址可依 typed retryable 退回 NewsUrlQueue，週編輯台使用分類 fallback，人工補充使用既有文字 fallback；封存失敗不寫入 WeeklySummary。圖片失敗或預算不足回覆重送提示，不建立圖片 queue。上述 token 預算是待真實流量校準的初始值，請觀察 `AI_CALL_METADATA` 的 reasoningTokens／outputTokens／finishReason 與 timeout；本機 mock 不代表真實模型延遲或輸出品質。
 
@@ -128,8 +128,8 @@ maxOutputTokens 是 reasoning + visible output 的共用上限，並非保證保
 - 私訊：直接傳 JPEG/PNG 圖片，小浣會描述內容。要指定問題，可用 LINE「回覆」選取圖片，再輸入 `#小浣 看圖 這個錯誤怎麼處理？`。
 - 群組／多人聊天室：單純貼圖不下載、不回覆、不記錄圖片；要分析時，回覆該圖片並輸入 `#小浣 看圖 <問題>`，不附問題則描述重點。普通 @mention、只引用圖片但沒有這個指令，都不會啟動看圖。
 - LINE 的 `quotedMessageId` 直接用來下載指定圖片，不另外保存 message pairing。只能取得 LINE 仍保有的內容；過期、撤回、external content、非圖片引用或缺引用，都會提示重新傳圖／正確引用。
-- 私訊一次多圖（imageSet）只處理 index=1，並提示其他圖片分次傳送；群組可單獨引用其中一張。不做多圖比較，也不將先前／下一則文字自動配成 caption。
-- 既有 Pending Reply 優先交付；私訊此時傳圖會收到「圖片尚未分析，請再傳一次」。文字看圖指令遇到 Pending Reply 仍沿用既有優先規則，請交付完成後重送指令。
+- 私訊一次多圖（imageSet）只處理 index=1，並提示其他圖片分次傳送；舊版 LINE 若未提供有效 index，會提示單張傳送／明確引用，不自動逐張分析。群組可單獨引用其中一張。不做多圖比較，也不將先前／下一則文字自動配成 caption。
+- 既有 Pending Reply 優先交付；私訊此時傳圖會收到「圖片尚未分析，請再傳一次」。文字看圖指令也會提示交付完成後重送，問題中的網址不會被當成新聞收件。
 - 成功後只保存「使用者提供圖片」placeholder、問題與分析文字；後續文字聊天可延續這些描述。重新查細節須重新傳圖或引用仍可下載的原圖。
 
 圖片輸入僅接受一張 JPEG/PNG、raw bytes ≤ 4 MiB（4,194,304 bytes），包含 Content-Type、檔案 signature、非空 bytes、整數 byte、HTTP 200 與 Content-Length／實際長度防線；不信任副檔名。完整 DeepSeek JSON body（含 Base64）另限 8 MiB；4 MiB 原圖編碼約 5.34 MiB。此上限刻意低於 DeepSeek 48 MiB request body / 32 MiB inline image 及 GAS 50 MB POST/response 限制。GAS fetch 會先緩衝回應，無法在下載途中以 raw ceiling 截流。
@@ -138,7 +138,7 @@ DeepSeek 官方另支援 GIF/WebP，但本版入口只開放 JPEG/PNG。尺寸�
 
 流程：`LINE image event / quotedMessageId → 07_LineImages 下載與驗證 → runAiMemoryTask(image_analysis) → normalizeAiMessages_ → DeepSeek Provider → normalized text → LINE / 文字 memory`。
 
-AiService content 沿用字串，另接受 `[{type:'text', text:'問題'}, {type:'image', mimeType:'image/png', bytes:[...]}]`；圖片僅能放 user message。Base64、`image_url` 與 data URL 只在 DeepSeek adapter 組 request 時產生，不寫 Sheet、Cache 或 console。不保存原圖，也不使用 Drive、Cloud Storage 或 DeepSeek Files API；分析文字與 placeholder 仍依原本 ConversationLog／Cache 政策保存。模型意外回傳的 data URL／大段編碼會在文字出口移除。
+AiService content 沿用字串，只有 user message 可另用 `[{type:'text', text:'問題'}, {type:'image', mimeType:'image/png', bytes:[...]}]`；system／assistant 保持字串，純 text parts 也不接受。Base64、`image_url` 與 data URL 只在 DeepSeek adapter 組 request 時產生，不寫 Sheet、Cache 或 console。不保存原圖，也不使用 Drive、Cloud Storage 或 DeepSeek Files API；分析文字與 placeholder 仍依原本 ConversationLog／Cache 政策保存。看圖問題在寫入 ConversationLog 前、模型結果在文字出口，都會移除 data URL／大段編碼；LINE Reply 失敗只記 HTTP status 或固定訊息，不記外部 error body／exception。
 
 ### 直接貼網址
 
@@ -379,6 +379,7 @@ GAS 手動同步順序：
 - 私訊傳一般圖片、中文截圖、錯誤訊息、新聞圖卡與表格，確認能分析；模糊字應標示看不清楚。
 - 群組貼圖確認完全靜默；回覆圖片輸入 `#小浣 看圖 哪裡出錯？` 後才分析；不帶引用時顯示操作提示。
 - 檢查超過 4 MiB、非 JPEG/PNG、過期引用與下載／AI timeout 的繁中 fallback；私訊多圖只回第一張。
+- 測試缺少 imageSet.index 的舊版多圖事件：提示單張／引用且不呼叫 AI；有 Pending Reply 時，帶網址的看圖問題不可進 NewsUrlQueue。
 - 圖片分析後文字追問，檢查 Cache 與 ConversationLog 只有 placeholder／問題／分析文字，console 沒有圖片、data URL 或 secret。
 - 模擬圖片下載耗時、memory lock 耗時與同批多 events，確認共用 40 秒 deadline；預算不足不發後續 fetch，也不排圖片 queue。
 
@@ -440,7 +441,7 @@ GAS 手動同步順序：
 
 - [DeepSeek 更新日誌](https://api-docs.deepseek.com/updates/)與[模型資料](https://api-docs.deepseek.com/quick_start/pricing/)：正式 `deepseek-flash` 對應 V4.1 Flash，支援文字、Vision 與 JSON。
 - [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：送 `thinking:{type:'enabled'}` 與 `reasoning_effort:'high'`；temperature／presence_penalty／frequency_penalty 不生效。最新版 top_p 可用且最低 0.95，本版全部省略 sampling 欄位。
-- [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)：JSON task 保留 `response_format:{type:'json_object'}`、明確 JSON prompt 與 finish reason 檢查。
+- [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)：system content 是 string、assistant 是 string/null、user 可用 string/content parts。JSON task 保留 `response_format:{type:'json_object'}`、明確 JSON prompt 與 finish reason 檢查；`aborted`／`insufficient_system_resource` 在 adapter 分類為可重試中斷，保留 finish／usage metadata，部分輸出不進記憶。
 - [Vision](https://api-docs.deepseek.com/guides/vision/)：user content 中使用 text + image_url 區塊，inline image 是 Base64 data URL；本地限制詳見看圖說明。
 - [LINE Get content／quotedMessageId](https://developers.line.biz/en/reference/messaging-api/nojs/)：原生 content API 使用 api-data.line.me；replyToken 應在收到 webhook 一分鐘內使用，圖片保存時間不保證。
 - [GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)與[配額](https://developers.google.com/apps-script/guides/services/quotas)：使用 timeoutSeconds；POST／response 上限 50 MB，本版採更小的應用上限。

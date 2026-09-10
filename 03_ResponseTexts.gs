@@ -486,6 +486,8 @@ function getBotTextImageError_(errorType) {
   switch (errorType) {
     case 'image_need_quote':
       return '請用 LINE「回覆」選取那張圖片，再輸入 #小浣 看圖，也可以在後面加問題。私訊可直接傳圖片。';
+    case 'image_album_unknown_index':
+      return 'LINE 沒有提供這組圖片的順序，這次尚未分析。請單張分次傳送，或回覆其中一張圖片並輸入 #小浣 看圖。';
     case 'image_too_large':
       return '這張圖片超過 4 MiB 的處理上限，請裁切重點或縮小後重新傳送。';
     case 'image_unsupported_format':

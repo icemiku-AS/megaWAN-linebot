@@ -252,12 +252,14 @@ function normalizeAiMessages_(messages) {
       }
       return { role: role, content: String(message.content || '') };
     }
+    // 共用 contract 只允許 user 使用 content parts；system/assistant 保持文字。
+    if (role !== 'user') throw createAiConfigurationError_('Only user messages may contain content parts.');
     if (!message.content.length) throw createAiConfigurationError_('AI content parts must not be empty.');
     return { role: role, content: message.content.map(function(part) {
       if (part && part.type === 'text' && typeof part.text === 'string') {
         return { type: 'text', text: part.text };
       }
-      if (!part || part.type !== 'image' || role !== 'user' || ++imageCount > 1) {
+      if (!part || part.type !== 'image' || ++imageCount > 1) {
         throw createAiConfigurationError_('Only one image in a user message is supported.');
       }
       const bytes = part.bytes;
