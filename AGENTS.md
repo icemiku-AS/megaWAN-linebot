@@ -90,16 +90,16 @@ Codex 不需要把 CURRENT_VERSION.md 當成操作規則；操作規則以本 AG
 
 ### 現行 `.gs` 導航與建議閱讀順序
 
-v1.13.1 起，20 個 active runtime source 依領域區段排列：
+目前 v1.14.0 有 21 個 active runtime source，依領域區段排列：
 
-1. Core／LINE transport／Shared foundation：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`
+1. Core／LINE transport／Shared foundation：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs`
 2. AI configuration／orchestration／providers：`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`
 3. Reader／Web workflows／background jobs：`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`
 4. News／Editorial：`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`
 5. Topic／material workflows：`40_TopicHighlights.gs`、`45_TopicFeatures.gs`
 6. Data operations／maintenance：`50_DataCleanup.gs`
 
-閱讀實際功能時，不必機械式依檔號讀完全部檔案；先讀入口與該領域，再沿 caller/dependency 追蹤。例如 AI 任務先讀 `10_AiService.gs` → `11_AiProfiles.gs` → 對應 Provider，網址流程先讀 `20_ReaderLayer.gs` → `21_WebReader.gs` / `25_WebTaskQueue.gs`，新聞流程先讀 `30_NewsInbox.gs` → `35_WeeklyEditorialDigest.gs`。
+閱讀實際功能時，不必機械式依檔號讀完全部檔案；先讀入口與該領域，再沿 caller/dependency 追蹤。例如 AI 任務先讀 `10_AiService.gs` → `11_AiProfiles.gs` → 對應 Provider，圖片流程先讀 `01_Main.gs` → `07_LineImages.gs` → `10_AiService.gs` → `15_DeepSeekProvider.gs`，網址流程先讀 `20_ReaderLayer.gs` → `21_WebReader.gs` / `25_WebTaskQueue.gs`，新聞流程先讀 `30_NewsInbox.gs` → `35_WeeklyEditorialDigest.gs`。
 
 檔號規則：
 

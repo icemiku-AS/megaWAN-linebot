@@ -152,7 +152,7 @@ Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display 
 
 本地只接收 JPEG/PNG；GIF/WebP 雖為 DeepSeek 官方格式，但本版未啟用。原圖每邊的官方上限為 8192 px，由 DeepSeek 解碼驗證；本地限制 raw bytes，不引入 image decoder。GAS 先緩衝下載，無法在 HTTP 過程提早截流。引用圖片取決於 LINE 尚可提供內容，不保證永久可取；後續文字記憶不代表能重新查看原圖。
 
-官方規格（2026-09-10）：[Model / V4.1 Flash](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。最新版 thinking top_p 可用，本版仍不送任何 sampling；溫度與兩種 penalty 不送出。
+官方規格（2026-09-10）：[Model / V4.1 Flash](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。官方目前明列 thinking 的 temperature／presence_penalty／frequency_penalty 無效，top_p 可用但低於 0.95 會被提升至 0.95；本版仍不送任何 sampling fields。
 
 ---
 

@@ -440,7 +440,7 @@ GAS 手動同步順序：
 ## 11. 2026-09-10 官方規格核對
 
 - [DeepSeek 更新日誌](https://api-docs.deepseek.com/updates/)與[模型資料](https://api-docs.deepseek.com/quick_start/pricing/)：正式 `deepseek-flash` 對應 V4.1 Flash，支援文字、Vision 與 JSON。
-- [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：送 `thinking:{type:'enabled'}` 與 `reasoning_effort:'high'`；temperature／presence_penalty／frequency_penalty 不生效。最新版 top_p 可用且最低 0.95，本版全部省略 sampling 欄位。
+- [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：送 `thinking:{type:'enabled'}` 與 `reasoning_effort:'high'`；官方目前明列 temperature／presence_penalty／frequency_penalty 在 thinking 無效，`top_p` 雖可用但低於 0.95 會被提升至 0.95。本版刻意省略全部 sampling 欄位。
 - [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)：system content 是 string、assistant 是 string/null、user 可用 string/content parts。JSON task 保留 `response_format:{type:'json_object'}`、明確 JSON prompt 與 finish reason 檢查；`aborted`／`insufficient_system_resource` 在 adapter 分類為可重試中斷，保留 finish／usage metadata，部分輸出不進記憶。
 - [Vision](https://api-docs.deepseek.com/guides/vision/)：user content 中使用 text + image_url 區塊，inline image 是 Base64 data URL；本地限制詳見看圖說明。
 - [LINE Get content／quotedMessageId](https://developers.line.biz/en/reference/messaging-api/nojs/)：原生 content API 使用 api-data.line.me；replyToken 應在收到 webhook 一分鐘內使用，圖片保存時間不保證。
