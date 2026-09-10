@@ -2,7 +2,7 @@
 // 01_Main.gs
 // Core／LINE transport：主要入口、首次設定、Trigger 安裝與 Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 維護原則：
 // 1. 對外入口是 doPost()、setupLogSheet() 與 Trigger 安裝函式；公開 handler 名稱不得因分檔調整而改變。
@@ -124,6 +124,24 @@ function handleLineEvent(event, webhookStartedAtMs) {
   const isGroupLike = sourceType === 'group' || sourceType === 'room';
   const conversationId = getConversationId(event);
 
+  if (event.type === 'message' && event.message && event.message.type === 'image') {
+    // 群組貼圖完全靜默；需另用原生引用 + #小浣 看圖 指定，無需保存圖片或建立配對狀態。
+    if (sourceType !== 'user') return;
+    const imageSet = event.message.imageSet;
+    // ponytail: 私訊一次多圖只看第一張；需要跨圖分析時再擴充 request contract。
+    if (imageSet && Number.isInteger(imageSet.index) && imageSet.index > 1) return;
+    const pendingImageReply = getAndDeletePendingReply(conversationId);
+    const imageReply = pendingImageReply && pendingImageReply.text
+      ? getBotTextPendingDelivery_(pendingImageReply.text, false) + '\n\n這張圖片尚未分析，請再傳一次。'
+      // 舊版 LINE 可能只提供 imageSet.id，不能把每張都誤當第一張。
+      : imageSet && imageSet.index !== 1 ? getBotTextImageError_('image_album_unknown_index')
+      : analyzeLineImage_(event, conversationId, event.message.id, '', aiExecutionContext) +
+        (imageSet && Number(imageSet.total) > 1 ? '\n\n這次只分析多圖中的第一張；其他圖片請分次傳送。' : '');
+    replyToLine(event.replyToken, imageReply);
+    logAssistantReplyToSheet(event, conversationId, imageReply, 'image_analysis');
+    return;
+  }
+
   if (event.type !== 'message' || !event.message || event.message.type !== 'text') {
     if (!isGroupLike) {
       replyToLine(event.replyToken, getBotTextUnsupportedMessage_());
@@ -131,8 +149,12 @@ function handleLineEvent(event, webhookStartedAtMs) {
     return;
   }
 
-  const userText = String(event.message.text || '').trim();
+  let userText = String(event.message.text || '').trim();
   if (!userText) return;
+
+  const commandInfo = parseCommand(userText);
+  // 看圖問題也屬圖片輸入；先遮蔽編碼，再交給 Sheet 或 Pending Reply 流程。
+  if (commandInfo.mode === 'image_analysis') userText = redactAiMediaText_(userText);
 
   logMessageToSheet({
     event: event,
@@ -149,8 +171,11 @@ function handleLineEvent(event, webhookStartedAtMs) {
   const pendingReply = getAndDeletePendingReply(conversationId);
 
   if (pendingReply && pendingReply.text) {
-    const enqueueResult = enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
-    const deliveryText = getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok));
+    // 看圖問題中的網址不是新聞收件；交付舊結果後請使用者重送明確看圖指令。
+    const enqueueResult = commandInfo.mode === 'image_analysis' ? null
+      : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
+    const deliveryText = getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
+      (commandInfo.mode === 'image_analysis' ? '\n\n這張圖片尚未分析，請重送看圖指令。' : '');
 
     replyToLine(event.replyToken, deliveryText);
     logAssistantReplyToSheet(event, conversationId, deliveryText, pendingReply.replyMode || 'pending_reply_delivery');
@@ -274,12 +299,15 @@ function handleLineEvent(event, webhookStartedAtMs) {
     return;
   }
 
-  const commandInfo = parseCommand(userText);
   let aiReply = '';
   let aiReplyMode = commandInfo.mode;
 
   try {
-    if (commandInfo.mode === 'integrate_topics') {
+    if (commandInfo.mode === 'image_analysis') {
+      // ID 只取 LINE 原生 quotedMessageId，不接受使用者輸入任意 message ID 或圖片網址。
+      aiReply = analyzeLineImage_(event, conversationId, event.message.quotedMessageId, commandInfo.userPrompt, aiExecutionContext);
+
+    } else if (commandInfo.mode === 'integrate_topics') {
       aiReply = integrateRecentTopics(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
 
     } else if (commandInfo.mode === 'weekly_news') {

@@ -2,7 +2,7 @@
 // 03_ResponseTexts.gs
 // Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.13.2 X Post Weekly Display Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -22,11 +22,23 @@
 // 15. v1.13.2 起，X status 的週新聞展示標題優先使用既有 Brief，raw NewsInbox Title 保持不變。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.13.2 X Post Weekly Display Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-08-12';
+const BOT_CURRENT_VERSION = 'v1.14.0 DeepSeek Flash Multimodal Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-09-10';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.14.0 DeepSeek Flash Multimodal Edition',
+    date: '2026-09-10',
+    summary: '正式使用 deepseek-flash，所有 AI task 統一 HIGH thinking，新增 LINE 圖片理解。',
+    changes: [
+      'model registry 改為 deepseek_flash，2026-09-10 對應 DeepSeek V4.1 Flash。',
+      '所有正式 task 明確設定 thinking enabled / high；依任務補足 reasoning 與最終輸出 token 預算。',
+      '私訊直接傳圖；群組回覆圖片並輸入 #小浣 看圖，可附問題，平常貼圖保持靜默。',
+      '單張 JPEG/PNG 上限 4 MiB；圖片不永久保存，記憶只留文字，逾時請重新傳送。',
+      '保留 webhook deadline、網址 Queue fallback、Sheet schema 與既有 Trigger；Gemini 仍不啟用。'
+    ]
+  },
   {
     version: 'v1.13.2 X Post Weekly Display Edition',
     date: '2026-08-12',
@@ -468,7 +480,28 @@ function getBotTextNewsQuestionNoData_(queryOptions) {
 // 一般系統提示
 // ======================================================
 
-function getBotTextUnsupportedMessage_() { return '目前我先支援文字訊息。圖片、貼圖、語音這些我還不能穩穩處理，之後可以再幫我加功能。'; }
+function getBotTextUnsupportedMessage_() { return '目前支援文字與 JPEG/PNG 圖片；貼圖、語音、影片與檔案還不能分析。私訊可以直接傳圖片。'; }
+
+function getBotTextImageError_(errorType) {
+  switch (errorType) {
+    case 'image_need_quote':
+      return '請用 LINE「回覆」選取那張圖片，再輸入 #小浣 看圖，也可以在後面加問題。私訊可直接傳圖片。';
+    case 'image_album_unknown_index':
+      return 'LINE 沒有提供這組圖片的順序，這次尚未分析。請單張分次傳送，或回覆其中一張圖片並輸入 #小浣 看圖。';
+    case 'image_too_large':
+      return '這張圖片超過 4 MiB 的處理上限，請裁切重點或縮小後重新傳送。';
+    case 'image_unsupported_format':
+      return '這份內容不是可辨識的 JPEG/PNG 圖片，請改傳 JPG 或 PNG 截圖。';
+    case 'image_unavailable':
+      return 'LINE 沒有提供這張圖片，可能已過期、被撤回，或引用的不是圖片。請重新傳圖；群組再回覆該圖輸入 #小浣 看圖。';
+    case 'ai_timeout':
+      return '這次看圖沒有在回覆時間內完成。圖片不會排入背景佇列，請稍後重新傳圖，或裁切重點後再試。';
+    case 'image_download_failed':
+      return '這次沒能從 LINE 下載圖片，請稍後重新傳圖再試。';
+    default:
+      return '這次圖片分析沒有完成，可能是服務忙碌或圖片無法解析。請裁切重點、縮小圖片，或稍後重試。';
+  }
+}
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }
 function getBotTextResetDone_() { return ['好，這個聊天室的短期記憶我先清掉了。', '剛剛腦袋裡暫存的小紙條會消失，但 Google Sheet 裡的長期紀錄還在，不會被我亂丟。'].join('\n'); }

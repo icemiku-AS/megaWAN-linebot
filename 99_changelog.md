@@ -1,3 +1,15 @@
+2026-09-10
+v1.14.0 DeepSeek Flash Multimodal Edition
+- 正式模型改為 deepseek-flash（當日對應 DeepSeek V4.1 Flash），registry key 改為 deepseek_flash；active runtime 不再依賴舊世代 alias。
+- 原有 12 個 task 與新增 image_analysis 全部 thinking enabled / reasoning_effort high；合併 fast_text、更名 fast_json、移除未使用 thinking_max，依 task 補足 reasoning + visible output 預算。
+- LINE 私訊直接傳圖片；群組保持貼圖靜默，回覆圖片輸入 #小浣 看圖 <問題> 才分析。使用原生 quotedMessageId / Get content，不建立 pairing 或永久圖片 queue。
+- 新增 07_LineImages.gs；僅單張 JPEG/PNG、raw 4 MiB、完整 AI body 8 MiB，驗證 ID/status/MIME/signature/bytes。下載最多 10 秒，並保留共同 webhook deadline 與既有網址 Queue fallback。
+- AiService 擴充 provider-neutral text/image bytes contract，DeepSeek adapter 才組 image_url / Base64；原圖不保存，memory / Sheet 只留 placeholder 與文字分析，錯誤 body 不外傳。
+- 新增圖片 prompt、繁中 fallback、help、版本文件與不連網的本機 smoke check；Gemini 仍 dormant。無新 Script Property、Trigger、Sheet schema、setup/migration 或 Node runtime。
+- 手動同步本版十個 .gs（含新增 07）；GAS 共 21 個 runtime source。25_WebTaskQueue / 35_WeeklyEditorialDigest 只同步 profile 註解；歷史內容保留。
+
+// ==================================================
+
 2026-08-12
 v1.13.2 X Post Weekly Display Edition
 - `#本週新聞` 對真正 X / Twitter 單篇 status 使用 presentation-only Display Title，優先顯示 `X｜Brief`，再依有效既有 StoryKey、raw Title 與既有標題 fallback 回退；一般新聞維持 raw Title。

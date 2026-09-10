@@ -1,14 +1,14 @@
 // ======================================================
 // 35_WeeklyEditorialDigest.gs
 // News／Editorial：本週編輯台的模型輸入、partition validator、render coverage、cache 與 fallback。
-// 小浣 LINE Bot v1.13.2 X Post Weekly Display Edition
+// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
 //
 // 責任邊界：
 // 1. GAS 建立固定 itemId、裁切模型輸入、保存原始 NewsInbox item 與網址。
 // 2. AI weekly_editorial_digest task 只回傳新聞聚類、未分組 ID 與群組對話話題 JSON。
 // 3. 本檔保守正規化模型結果，分開驗證資料 partition 與 LINE rendered coverage。
 // 4. 模型結果只用於當次顯示與 10 分鐘快取，不回寫 NewsInbox。
-// 5. 本檔不組 provider payload；fast_json profile 失敗、JSON/partition 違規都使用既有分類 fallback。
+// 5. 本檔不組 provider payload；thinking_json profile 失敗、JSON/partition 違規都使用既有分類 fallback。
 // 6. webhook execution context 只負責同步時間上限；預算不足或逾時仍走相同程式端 fallback。
 // 7. 主要 caller 是 30_NewsInbox.gs；WEEKLY_EDITORIAL_CACHE_VERSION 只跟資料 contract 變更，不跟 source layout 版本連動。
 // ======================================================
@@ -84,8 +84,8 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
 
     if (!cacheHit) {
       const prompt = buildWeeklyEditorialDigestPrompt_(newsPayload, conversationPayload);
-      // itemId、partition 與 rendered coverage 已有保守 validator；本版先使用 non-thinking fast_json，
-      // 不把週編輯台升級為高成本 thinking，也不在 webhook 內 retry。
+      // HIGH JSON 的 itemId、partition 與 rendered coverage 仍由保守 validator 驗證；
+      // 使用共用 webhook deadline，失敗走分類 fallback，不在 webhook 內 retry。
       const responseJson = requireAiJson_(runAiJsonTask(
         'weekly_editorial_digest',
         prompt,
