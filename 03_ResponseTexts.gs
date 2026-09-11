@@ -2,7 +2,7 @@
 // 03_ResponseTexts.gs
 // Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -22,11 +22,23 @@
 // 15. v1.13.2 起，X status 的週新聞展示標題優先使用既有 Brief，raw NewsInbox Title 保持不變。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.14.0 DeepSeek Flash Multimodal Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-09-10';
+const BOT_CURRENT_VERSION = 'v1.14.1 Codebase Simplification Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-09-11';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.14.1 Codebase Simplification Edition',
+    date: '2026-09-11',
+    summary: '共用表頭寫入與 Reader helper，清理不可達分支及重複資料組裝；既有功能行為不變。',
+    changes: [
+      'NewsInbox / WeeklySummary 共用表頭對位寫入；同步與背景新聞直接沿用已驗證的分析欄位。',
+      '共用 hostname 與 HTTP status 解析，移除重複 X status 判斷；PTT 重用已轉換正文。',
+      '移除弱分類不可達條件、週編輯台未使用的內部索引、Queue task 複製與重複 memory 修剪。',
+      '週編輯台沿用新聞潛力 normalizer；保留全部既有函式簽名、compatibility wrappers 與 Trigger。',
+      '仍有 21 個 runtime 檔案；DeepSeek Flash + HIGH、圖片、Sheet schema、Script Properties 與產品流程不變。'
+    ]
+  },
   {
     version: 'v1.14.0 DeepSeek Flash Multimodal Edition',
     date: '2026-09-10',

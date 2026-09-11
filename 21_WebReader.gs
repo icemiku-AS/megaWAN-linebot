@@ -2,7 +2,7 @@
 // 21_WebReader.gs
 // Reader／Web workflows：legacy raw HTML fetch、清理、AI extraction contract 與網頁分析 Prompt。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 設計說明：
 // 1. 20_ReaderLayer.gs 在 Jina 失敗時呼叫本檔；直接 URL helper 也由 Queue／News 流程使用。
@@ -68,15 +68,13 @@ function isSafePublicUrl(url) {
     return false;
   }
 
-  // 抓 hostname
-  const match = safeUrl.match(/^https?:\/\/([^\/?#:]+)(?::\d+)?(?:[\/?#]|$)/i);
+  // 與 Reader routing 共用相同 hostname parser；以下安全檢查仍在 URL 輸入邊界執行。
+  const hostname = getReaderLayerHostname_(safeUrl);
 
-  if (!match || !match[1]) {
+  if (!hostname) {
     console.log('isSafePublicUrl rejected: hostname parse failed:', safeUrl);
     return false;
   }
-
-  const hostname = String(match[1] || '').toLowerCase();
 
   // localhost / loopback
   if (

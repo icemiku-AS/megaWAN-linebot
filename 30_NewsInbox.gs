@@ -1,7 +1,7 @@
 // ======================================================
 // 30_NewsInbox.gs
 // News／Editorial：新聞素材池、靜默網址收件、NewsInbox AI 契約、狀態回報與新聞封存脈絡。
-// 小浣 LINE Bot v1.13.2 X Post Weekly Display Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
@@ -207,29 +207,18 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText, aiExecutio
 
   const source = event.source || {};
   try {
-    appendNewsInboxRow_({
+    // analysis 已是功能層驗證後的 NewsInbox 欄位；另加收件來源，不再逐欄複製分析結果。
+    appendNewsInboxRow_(Object.assign({}, analysis, {
       conversationId: conversationId,
       sourceType: source.type || '',
       userId: source.userId || '',
       groupId: source.groupId || '',
       roomId: source.roomId || '',
       url: url,
-      title: analysis.title,
-      category: analysis.category,
-      brief: analysis.brief,
-      angle: analysis.angle,
-      topicPotential: analysis.topicPotential,
       sourceMode: 'auto_url_sync',
       status: 'ok',
-      errorText: '',
-      outline: newsOutline,
-      specialTopic: analysis.specialTopic,
-      categoryReason: analysis.categoryReason,
-      categoryConfidence: analysis.categoryConfidence,
-      matchedEntities: analysis.matchedEntities,
-      classificationWarning: analysis.classificationWarning,
-      storyKey: analysis.storyKey
-    });
+      errorText: ''
+    }));
   } catch (error) {
     console.error('Direct news NewsInbox write failed:', error && error.stack ? error.stack : error);
     return enqueueDirectNewsUrlsForBackground_(
@@ -472,29 +461,17 @@ function processSingleNewsUrlTask_(task) {
       throw createAiValidationError_('weak_auto_classification: AI classification is insufficient for NewsInbox', true);
     }
 
-    appendNewsInboxRow_({
+    appendNewsInboxRow_(Object.assign({}, analysis, {
       conversationId: task.conversationId,
       sourceType: task.sourceType,
       userId: task.userId,
       groupId: task.groupId,
       roomId: task.roomId,
       url: task.url,
-      title: analysis.title,
-      category: analysis.category,
-      brief: analysis.brief,
-      angle: analysis.angle,
-      topicPotential: analysis.topicPotential,
       sourceMode: 'auto_url',
       status: 'ok',
-      errorText: '',
-      outline: analysis.outline,
-      specialTopic: analysis.specialTopic,
-      categoryReason: analysis.categoryReason,
-      categoryConfidence: analysis.categoryConfidence,
-      matchedEntities: analysis.matchedEntities,
-      classificationWarning: analysis.classificationWarning,
-      storyKey: analysis.storyKey
-    });
+      errorText: ''
+    }));
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'done');
@@ -551,9 +528,7 @@ function createNewsUrlReaderError_(webResult) {
   error.readerRoute = result.readerRoute || '';
   if (typeof result.retryable === 'boolean') error.retryable = result.retryable;
   // 明確的 httpStatus=0 代表沒有 provider HTTP response，不可因 0 為 falsy 而退回 raw page 的 200。
-  error.httpStatus = Object.prototype.hasOwnProperty.call(result, 'httpStatus')
-    ? Number(result.httpStatus || 0)
-    : Number(result.statusCode || 0);
+  error.httpStatus = getReaderFailureHttpStatus_(result);
   return error;
 }
 
@@ -802,10 +777,6 @@ function isWeakAutoNewsClassification_(classification, url) {
   if (!title || !brief || !outline) return true;
   if (!isAllowedNewsCategory_(category)) return true;
 
-  const normalizedTitle = title.replace(/\s+/g, '');
-  const normalizedUrl = String(url || '').replace(/\s+/g, '');
-  if (normalizedTitle && normalizedUrl && normalizedUrl.indexOf(normalizedTitle) !== -1 && !brief) return true;
-
   if (title === '未取得標題' && !angle) return true;
 
   return false;
@@ -823,7 +794,6 @@ function isLegacyPersonCategory_(category) {
 function normalizeNewsCategory_(category) {
   const raw = String(category || '').trim();
   if (NEWS_PRIMARY_CATEGORIES.indexOf(raw) >= 0) return raw;
-  if (isLegacyPersonCategory_(raw)) return '待分類';
   return '待分類';
 }
 
@@ -1184,15 +1154,7 @@ function appendNewsInboxRow_(item) {
   };
 
   // 依實際表頭對位，避免舊 Sheet 補上 Outline 後因欄位位置不同而寫錯資料。
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const row = headers.map(function(header) {
-    const key = String(header || '').trim();
-    return Object.prototype.hasOwnProperty.call(valuesByHeader, key)
-      ? valuesByHeader[key]
-      : '';
-  });
-
-  sheet.appendRow(row);
+  appendRowByHeaders_(sheet, valuesByHeader);
 }
 
 function classifyNewsUrlError_(errorText) {

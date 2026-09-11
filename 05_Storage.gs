@@ -2,7 +2,7 @@
 // 05_Storage.gs
 // Storage／Shared foundation：負責共用 Sheet 入口、表頭建立與跨領域基礎讀寫。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 責任與 contract：
 // 1. 01_Main.gs 的 setupLogSheet() 與 Memory、Reader、News、Topic、Queue 功能都會呼叫本檔。
@@ -119,6 +119,19 @@ function setCellByHeader_(sheet, rowNumber, headerMap, headerName, value) {
   sheet.getRange(rowNumber, columnIndex).setValue(value);
 }
 
+// NewsInbox 與 WeeklySummary 共用表頭對位；只讀自己的欄位值，保留 0 / false / 空字串。
+// 未知欄位寫空白，不重排表頭；各資料表的欄位驗證與預設值仍由 caller 負責。
+function appendRowByHeaders_(sheet, valuesByHeader) {
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const row = headers.map(function(header) {
+    const key = String(header || '').trim();
+    return Object.prototype.hasOwnProperty.call(valuesByHeader, key)
+      ? valuesByHeader[key]
+      : '';
+  });
+  sheet.appendRow(row);
+}
+
 // ======================================================
 // 各資料表初始化
 // ======================================================
@@ -189,15 +202,7 @@ function appendWeeklySummaryRow_(item) {
 
   // v1.12.0 起 WeeklySummary 同時保存話題封存與新聞封存。
   // 這裡依實際表頭寫入，讓既有 Sheet 只追加新欄位，不需要重排或 migration。
-  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
-  const row = headers.map(function(header) {
-    const key = String(header || '').trim();
-    return Object.prototype.hasOwnProperty.call(valuesByHeader, key)
-      ? valuesByHeader[key]
-      : '';
-  });
-
-  sheet.appendRow(row);
+  appendRowByHeaders_(sheet, valuesByHeader);
 }
 
 function ensureWebTaskQueueSheet_() {

@@ -1,7 +1,7 @@
 // ======================================================
 // 35_WeeklyEditorialDigest.gs
 // News／Editorial：本週編輯台的模型輸入、partition validator、render coverage、cache 與 fallback。
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 責任邊界：
 // 1. GAS 建立固定 itemId、裁切模型輸入、保存原始 NewsInbox item 與網址。
@@ -574,8 +574,7 @@ function putCachedWeeklyEditorialResult_(cacheKey, normalizedResult) {
 }
 
 function normalizeWeeklyEditorialPotential_(value) {
-  const text = String(value || '').trim();
-  return NEWS_TOPIC_POTENTIAL_VALUES.indexOf(text) >= 0 ? text : '中';
+  return normalizeTopicPotential_(value);
 }
 
 function getWeeklyEditorialPotentialScore_(value) {
@@ -683,8 +682,7 @@ function normalizeWeeklyEditorialNewsClusters_(rawClusters, rawUngroupedIds, kno
 
     candidates.push({
       title: normalizedTitle,
-      itemIds: itemIds,
-      sourceIndex: clusterIndex
+      itemIds: itemIds
     });
   });
 
@@ -729,8 +727,7 @@ function normalizeWeeklyEditorialNewsClusters_(rawClusters, rawUngroupedIds, kno
 
     validClusters.push({
       title: candidate.title,
-      itemIds: cleanedIds,
-      sourceIndex: candidate.sourceIndex
+      itemIds: cleanedIds
     });
   });
 

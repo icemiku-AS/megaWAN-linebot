@@ -2,7 +2,7 @@
 // 20_ReaderLayer.gs
 // Reader／Web workflows：統一 FxTwitter、PTT、Jina 與 legacy raw HTML fallback routing。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 本檔是 Reader Layer 的核心檔案，目標是把「讀網頁」與後續 LLM 整理拆開。
 // 下游 NewsInbox、WebSummary 與 AI task 只需要吃穩定的 webResult：
@@ -174,7 +174,6 @@ function isTwitterLikeHostname_(hostname) {
     host.endsWith('.x.com') ||
     host === 'twitter.com' ||
     host.endsWith('.twitter.com') ||
-    host === 'mobile.twitter.com' ||
     host === 'fxtwitter.com' ||
     host.endsWith('.fxtwitter.com') ||
     host === 'fixupx.com' ||
@@ -184,16 +183,11 @@ function isTwitterLikeHostname_(hostname) {
 function extractTwitterStatusIdFromUrl_(url) {
   const text = String(url || '').trim();
 
-  // 常見格式：/user/status/123、/i/web/status/123。
+  // /status/ 同時涵蓋 /user/status/{id} 與 /i/web/status/{id}，不需第二次匹配。
   // 只抓 snowflake 數字 ID，不處理搜尋頁、個人頁、列表頁。
   const statusMatch = text.match(/\/status\/(\d{5,})(?:[/?#]|$)/i);
   if (statusMatch && statusMatch[1]) {
     return statusMatch[1];
-  }
-
-  const webStatusMatch = text.match(/\/i\/web\/status\/(\d{5,})(?:[/?#]|$)/i);
-  if (webStatusMatch && webStatusMatch[1]) {
-    return webStatusMatch[1];
   }
 
   return '';
@@ -666,8 +660,8 @@ function fetchPttPageWithOver18Cookie_(url, executionContext) {
       );
     }
 
-    const title = extractPttTitle_(html) || inferTitleFromReadableText_(htmlToReadableText_(html));
     const mainText = htmlToReadableText_(html);
+    const title = extractPttTitle_(html) || inferTitleFromReadableText_(mainText);
 
     if (!isReadableTextUsable_(mainText, MIN_PTT_MAIN_TEXT_LENGTH)) {
       return buildReaderLayerErrorResult_(
