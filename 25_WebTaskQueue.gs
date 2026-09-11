@@ -2,7 +2,7 @@
 // 25_WebTaskQueue.gs
 // Background jobs／Web workflows：WebTaskQueue、#懶人包、PendingReplies 與快讀契約。
 //
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 設計說明：
 // 1. 對外 Trigger 是 processWebTaskQueue()；installWebTaskQueueTrigger() 位於 01_Main.gs，名稱不可變更。
@@ -153,17 +153,6 @@ function processSingleWebTask_(task) {
   const sheet = ensureWebTaskQueueSheet_();
   const headerMap = getHeaderMap_(sheet);
 
-  const taskRowData = {
-    taskId: task.taskId,
-    conversationId: task.conversationId,
-    sourceType: task.sourceType,
-    userId: task.userId,
-    groupId: task.groupId,
-    roomId: task.roomId,
-    userPrompt: task.userPrompt,
-    taskType: task.taskType
-  };
-
   try {
     console.log('Processing web task:', task.taskId, 'taskType:', task.taskType);
 
@@ -178,7 +167,7 @@ function processSingleWebTask_(task) {
     }
 
     // 任務成功：寫入 PendingReplies，等待下次訊息交付
-    createPendingReplyFromTask(taskRowData, resultText, task.taskType);
+    createPendingReplyFromTask(task, resultText, task.taskType);
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', new Date());
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'done');
@@ -193,7 +182,7 @@ function processSingleWebTask_(task) {
     const errorText = getBotTextWebTaskFailed_(taskError && taskError.message ? taskError.message : taskError);
 
     // 任務失敗也寫入 PendingReplies，讓使用者下次知道失敗原因
-    createPendingReplyFromTask(taskRowData, errorText, task.taskType);
+    createPendingReplyFromTask(task, errorText, task.taskType);
 
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', new Date());
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'failed');

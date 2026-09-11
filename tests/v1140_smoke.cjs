@@ -1,4 +1,4 @@
-// 本機開發檢查：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.14.0 基礎 + v1.14.1 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -45,7 +45,7 @@ const png = Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC
 const imagePart = { type: 'image', mimeType: 'image/png', bytes: png };
 const message = { role: 'user', content: [{ type: 'text', text: '解釋截圖' }, imagePart] };
 function response(status, body, headers = {}, bytes = []) {
-  return { getResponseCode: () => status, getContentText: () => typeof body === 'string' ? body : JSON.stringify(body), getAllHeaders: () => headers, getContent: () => bytes };
+  return { getResponseCode: () => status, getContentText: () => typeof body === 'string' ? body : JSON.stringify(body), getAllHeaders: () => headers, getHeaders: () => headers, getContent: () => bytes };
 }
 function completion(text = '看見可辨識的錯誤訊息。', finish = 'stop') {
   return response(200, { choices: [{ message: { content: text, reasoning_content: 'never persist reasoning' }, finish_reason: finish }], usage: { prompt_tokens: 1200, completion_tokens: 2600, completion_tokens_details: { reasoning_tokens: 2200 }, total_tokens: 3800 } });
@@ -349,4 +349,191 @@ check('Gemini stays dormant and wrappers remain available', () => {
   for (const name of ['callDeepSeekWithMemory', 'callDeepSeekDirect', 'callGeminiWebExtractor', 'buildSystemPrompt', 'processNewsUrlQueue', 'processWebTaskQueue']) assert.equal(typeof context[name], 'function');
   assert(!calls.some(call => call.url.includes('googleapis')));
 });
+// v1.14.1：只替換外部服務或不在本次檢查範圍的耗時流程；finally 還原，避免測試互相污染。
+function withStubs(stubs, run) {
+  const saved = Object.fromEntries(Object.keys(stubs).map(key => [key, context[key]]));
+  Object.assign(context, stubs);
+  try { run(); } finally { Object.assign(context, saved); }
+}
+function headerSheet(headers) {
+  const appended = [];
+  return {
+    appended,
+    getLastColumn: () => headers.length,
+    getRange: (row, column, rowCount, columnCount) => {
+      assert.deepEqual([row, column, rowCount, columnCount], [1, 1, 1, headers.length]);
+      return { getValues: () => [headers.slice()] };
+    },
+    appendRow: row => appended.push(Array.from(row))
+  };
+}
+
+check('header writer preserves column order, unknown columns and falsy own values', () => {
+  const headers = [' Flag ', 'Zero', 'Empty', 'Missing', 'Inherited', 'constructor', 'When', 'Zero'];
+  const sheet = headerSheet(headers);
+  const fields = Object.assign(Object.create({ Inherited: 'must not write' }), {
+    Flag: false, Zero: 0, Empty: '', When: new Date(0)
+  });
+  context.appendRowByHeaders_(sheet, fields);
+  assert.deepEqual(sheet.appended[0], [false, 0, '', '', '', '', fields.When, 0]);
+  assert.equal(headers[0], ' Flag ', 'writing must not rewrite headers');
+  const weekly = headerSheet(['Summary', 'ConversationId', 'ArchiveType', 'SourceItemCount', 'RawMessageCount', 'Custom', 'PeriodStart']);
+  withStubs({ ensureWeeklySummarySheet_: () => weekly }, () => {
+    context.appendWeeklySummaryRow_({ conversationId: 'group:a', summary: '字'.repeat(30001), rawMessageCount: 4, archiveType: 'news', periodStart: '2026-09-04' });
+    assert.deepEqual(weekly.appended[0], ['字'.repeat(30000), 'group:a', 'news', 4, 4, '', '2026-09-04']);
+  });
+});
+
+check('memory saving keeps the last six pairs and leaves other conversations unchanged', () => {
+  const seed = Array.from({ length: 16 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: 'message ' + i }));
+  const snapshot = JSON.stringify(seed);
+  context.saveConversationHistory('group:other', seed);
+  const otherBefore = cache.get(context.getHistoryCacheKey('group:other'));
+  context.saveConversationHistory('user:current', seed.concat([{ role: 'user', content: ' ' }, { role: 'system', content: 'reject' }]));
+  assert(context.runAiMemoryTask('general_chat', 'user:current', 'new question', 'new question').ok);
+  const history = JSON.parse(cache.get(context.getHistoryCacheKey('user:current')));
+  assert.equal(history.length, 12); assert.equal(history[0].content, 'message 6');
+  assert.equal(history.at(-2).content, 'new question'); assert.equal(history.at(-1).role, 'assistant');
+  assert.equal(cache.get(context.getHistoryCacheKey('group:other')), otherBefore);
+  assert.equal(JSON.stringify(seed), snapshot);
+});
+
+check('URL safety, X status routing and weekly display share existing hostname semantics', () => {
+  for (const url of ['https://example.org/path', ' HTTPS://EXAMPLE.ORG:8443?q=1 ', 'http://sub.example.org#fragment']) assert(context.isSafePublicUrl(url), url);
+  for (const url of ['', 'ftp://example.org', 'https:///path', 'https://example.org:bad/', 'http://localhost', 'http://127.0.0.1', 'http://10.2.3.4', 'http://172.16.0.1', 'http://192.168.1.2', 'http://169.254.169.254', 'http://metadata.google.internal']) assert(!context.isSafePublicUrl(url), url);
+  for (const host of ['x.com', 'twitter.com', 'mobile.twitter.com', 'sub.twitter.com', 'fxtwitter.com', 'fixupx.com']) {
+    for (const route of ['/user/status/12345', '/i/web/status/12345?x=1', '/user/status/12345/photo/1']) {
+      const url = 'https://' + host + route;
+      assert.equal(context.extractTwitterStatusIdFromUrl_(url), '12345');
+      assert.equal(context.detectWebReaderRoute_(url), 'fxtwitter_api');
+      assert.equal(context.getWeeklyNewsDisplayTitle_({ url, title: 'raw', brief: '既有簡介' }), 'X｜既有簡介');
+    }
+  }
+  for (const route of ['/user', '/search?q=a', '/i/lists/12345', '/user/status/1234', '/user/status/12345x']) assert.equal(context.detectWebReaderRoute_('https://x.com' + route), 'unsupported_social_platform');
+  for (const host of ['eviltwitter.com', 'twitter.com.evil.org']) assert(!context.isTwitterLikeHostname_(host));
+  assert.equal(context.detectWebReaderRoute_('https://example.org/status/12345'), 'jina_reader');
+  assert.equal(context.detectWebReaderRoute_('https://www.ptt.cc/bbs/C_Chat/M.123.html'), 'ptt_over18_cookie');
+});
+
+check('PTT explicit title, inferred title, over18 gate and short text keep their outcomes', () => {
+  const body = '<div id="main-content">正文第一行<br>' + '有效文章內容'.repeat(30) + '</div>';
+  for (const [html, title] of [[body, '正文第一行'], ['<title>測試標題 - 看板 C_Chat</title>' + body, '測試標題']]) {
+    fetchImpl = () => response(200, html, { 'Content-Type': 'text/html' });
+    const result = context.fetchPttPageWithOver18Cookie_('https://www.ptt.cc/bbs/C_Chat/M.123.html');
+    assert(result.ok); assert.equal(result.title, title);
+    assert.equal(result.mainText, context.htmlToReadableText_(html));
+    assert.equal(calls.at(-1).options.headers.Cookie, 'over18=1');
+  }
+  fetchImpl = () => response(200, '我同意，我已年滿十八歲');
+  assert.equal(context.fetchPttPageWithOver18Cookie_('https://ptt.cc').errorType, 'ptt_over18_failed');
+  fetchImpl = () => response(200, '<div id="main-content">短</div>');
+  assert.equal(context.fetchPttPageWithOver18Cookie_('https://ptt.cc').errorType, 'ptt_empty_content');
+});
+
+check('Reader error metadata keeps explicit zero and retry decisions', () => {
+  for (const [result, expected] of [[{ statusCode: 503 }, 503], [{ httpStatus: 0, statusCode: 200 }, 0], [{ httpStatus: null, statusCode: 503 }, 0], [{ httpStatus: 429, statusCode: 200 }, 429], [{}, 0]]) {
+    const error = context.createNewsUrlReaderError_({ ...result, errorType: 'reader_error', retryable: true });
+    assert.equal(error.httpStatus, expected); assert.equal(error.retryable, true);
+  }
+  for (const status of [400, 404, 408, 429, 500, 599, 600]) assert.equal(context.isReaderHttpStatusRetryable_(status), [408, 429, 500, 599].includes(status));
+  assert.equal(context.resolveCombinedReaderFailureHttpStatus_({ httpStatus: 500 }, { httpStatus: 404 }, true), 500);
+  assert.equal(context.resolveCombinedReaderFailureHttpStatus_({ httpStatus: 404 }, { httpStatus: 0, retryable: true }, true), 0);
+});
+
+check('synchronous and queued news persist the same analysis in reordered columns', () => {
+  const analysis = { title: '測試新聞', outline: '完整新聞內容'.repeat(20), category: '科技與 AI', brief: '新聞的自然簡介', angle: '可聊切角', topicPotential: '高', specialTopic: '無', categoryReason: '測試分類理由', categoryConfidence: 0, matchedEntities: '測試公司', classificationWarning: '', storyKey: '測試公司產品更新事件' };
+  const fieldHeaders = { title: 'Title', outline: 'Outline', category: 'Category', brief: 'Brief', angle: 'Angle', topicPotential: 'TopicPotential', specialTopic: 'SpecialTopic', categoryReason: 'CategoryReason', categoryConfidence: 'CategoryConfidence', matchedEntities: 'MatchedEntities', classificationWarning: 'ClassificationWarning', storyKey: 'StoryKey' };
+  const headers = ['SourceMode', 'ConversationId', 'Url', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'Custom'].concat(Object.values(fieldHeaders).reverse());
+  const sheet = headerSheet(headers), queue = headerSheet(['Status']), changes = {};
+  const url = 'https://example.org/news';
+  fetchImpl = () => completion(JSON.stringify(analysis));
+  withStubs({ ensureNewsInboxSheet_: () => sheet, ensureNewsUrlQueueSheet_: () => queue,
+    fetchAndExtractWebPageByReaderLayer_: () => ({ ok: true, mainText: '正文', readerRoute: 'jina_reader' }),
+    setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
+  }, () => {
+    const direct = context.handleDirectNewsUrlMessage_(event('text'), 'user:user1', url);
+    assert.equal(direct.replyText, analysis.brief); assert.equal(direct.queued, false);
+    context.processSingleNewsUrlTask_({ sheetRowNumber: 2, conversationId: 'user:user1', sourceType: 'user', userId: 'user1', groupId: 'group1', roomId: 'room1', url });
+    assert.equal(changes.Status, 'done'); assert.equal(sheet.appended.length, 2);
+    for (const [i, row] of sheet.appended.entries()) {
+      const record = Object.fromEntries(headers.map((header, j) => [header, row[j]]));
+      assert.equal(record.SourceMode, i ? 'auto_url' : 'auto_url_sync');
+      assert.equal(record.ConversationId, 'user:user1'); assert.equal(record.Url, url); assert.equal(record.Custom, '');
+      assert.deepEqual([record.SourceType, record.UserId, record.GroupId, record.RoomId], ['user', 'user1', 'group1', 'room1']);
+      for (const [key, header] of Object.entries(fieldHeaders)) assert.equal(record[header], key === 'classificationWarning' ? '分類信心偏低' : analysis[key], header);
+    }
+  });
+});
+
+check('WebTask success and failure preserve PendingReplies source fields and task type', () => {
+  const queue = headerSheet(['Status']), pendingSheet = headerSheet([]), changes = {};
+  const task = Object.freeze({ sheetRowNumber: 2, taskId: 'task', conversationId: 'room:r', sourceType: 'room', userId: 'u', groupId: '', roomId: 'r', userPrompt: 'prompt', urls: 'https://example.org', taskType: 'web_lazy_summary' });
+  for (const failed of [false, true]) withStubs({ ensureWebTaskQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
+    processWebLazySummaryTask_: () => { if (failed) throw new Error('test failure'); return '快讀完成'; },
+    setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
+  }, () => {
+    context.processSingleWebTask_(task);
+    const row = pendingSheet.appended.at(-1);
+    assert.deepEqual(row.slice(2, 7), ['room:r', 'room', 'u', '', 'r']);
+    assert.equal(row[8], 'pending'); assert.equal(row[10], 'web_lazy_summary');
+    assert.equal(row[7], failed ? context.getBotTextWebTaskFailed_('test failure') : '快讀完成');
+    assert.equal(changes.Status, failed ? 'failed' : 'done');
+  });
+});
+
+check('NewsUrlQueue retains permanent failure, retry backoff and retry exhaustion', () => {
+  for (const [status, retryCount, shouldRetry] of [[404, 0, false], [408, 0, true], [429, 1, true], [503, 2, false], [0, 0, true]]) {
+    const queue = headerSheet(['Status']), pendingSheet = headerSheet([]), changes = {};
+    withStubs({ ensureNewsUrlQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
+      fetchAndExtractWebPageByReaderLayer_: () => ({ ok: false, httpStatus: status, statusCode: 200, retryable: true, errorType: 'reader_error', error: 'read failed' }),
+      setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
+    }, () => {
+      context.processSingleNewsUrlTask_({ sheetRowNumber: 2, conversationId: 'group:a', url: 'https://example.org', retryCount });
+      assert.equal(changes.Status, shouldRetry ? 'pending' : 'failed'); assert.equal(changes.RetryCount, retryCount + 1);
+      if (shouldRetry) assert.equal(changes.NextRunAt.getTime() - changes.UpdatedAt.getTime(), (retryCount + 1) * 120000);
+      assert.equal(pendingSheet.appended.length, shouldRetry ? 0 : 1);
+      if (!shouldRetry) assert.equal(pendingSheet.appended[0][10], 'news_url_failed');
+    });
+  }
+});
+
+check('classification guards and shared potential normalization retain defaults', () => {
+  const news = { title: 'https://example.org', brief: '簡介', outline: '大綱', category: '待分類', angle: '' };
+  assert.equal(context.isWeakAutoNewsClassification_(news, news.title), false);
+  for (const field of ['title', 'brief', 'outline']) assert(context.isWeakAutoNewsClassification_({ ...news, [field]: '' }, news.title));
+  assert(context.isWeakAutoNewsClassification_({ ...news, category: '非法分類' }));
+  assert(context.isWeakAutoNewsClassification_({ ...news, title: '未取得標題' }));
+  for (const category of ['馬斯克', '川普', '未知', null]) assert.equal(context.normalizeNewsCategory_(category), '待分類');
+  assert.equal(context.normalizeNewsCategory_(' 科技與 AI '), '科技與 AI');
+  for (const [input, expected] of [[' 高 ', '高'], ['低', '低'], ['中', '中'], ['', '中'], [null, '中'], [0, '中'], ['未知', '中']]) {
+    assert.equal(context.normalizeTopicPotential_(input), expected); assert.equal(context.normalizeWeeklyEditorialPotential_(input), expected);
+  }
+});
+
+check('weekly clusters keep conflict repair, cache revalidation and rendered coverage', () => {
+  const items = Array.from({ length: 5 }, (_, i) => ({ title: '新聞 ' + i, category: '科技與 AI', url: 'https://example.org/' + i, brief: '簡介', topicPotential: '高' }));
+  const identified = context.assignWeeklyEditorialItemIds_(items), ids = identified.map(entry => entry.itemId);
+  const raw = { newsClusters: [{ title: '完整事件', itemIds: ['N001', 'N002', 'N002', 'unknown'] }, { title: '衝突事件', itemIds: ['N003', 'N004'] }], ungroupedNewsIds: ['N003'], conversationTopics: [] };
+  const validated = context.normalizeAndValidateWeeklyEditorialResult_(JSON.stringify(raw), ids, identified, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(validated.normalizedResult)), { newsClusters: [{ title: '完整事件', itemIds: ['N001', 'N002'] }], ungroupedNewsIds: ['N003', 'N004', 'N005'], conversationTopics: [] });
+  const options = { viewMode: 'compact', onlyHighPotential: false, days: 7 };
+  withStubs({ getRecentWeeklyEditorialConversationItems_: () => [], buildWeeklyEditorialCacheKey_: () => 'test-weekly' }, () => {
+    fetchImpl = () => completion(JSON.stringify(raw));
+    const first = context.tryBuildWeeklyEditorialDigest_('group:a', items, options);
+    assert(first.includes('完整事件')); const callCount = calls.length;
+    assert.equal(context.tryBuildWeeklyEditorialDigest_('group:a', items, options), first); assert.equal(calls.length, callCount);
+    cache.set('test-weekly', '{"broken":true}');
+    assert.equal(context.tryBuildWeeklyEditorialDigest_('group:a', items, options), first); assert.equal(calls.length, callCount + 1);
+    for (const item of items) assert.equal(first.split(item.url).length - 1, 1);
+  });
+  const oversized = context.assignWeeklyEditorialItemIds_(items.concat([{ title: 'too long', url: 'https://example.org/' + 'x'.repeat(5000) }]));
+  const partition = { newsClusters: [], otherItemIds: oversized.map(entry => entry.itemId), conversationTopics: [] };
+  const rendered = context.formatWeeklyEditorialDigest_(oversized, partition, options);
+  assert(rendered.includes('尚有 1 則未顯示')); assert(!rendered.includes('x'.repeat(5000)));
+  for (const item of items) assert.equal(rendered.split(item.url).length - 1, 1);
+  const split = context.splitTextForLineMessagesWithMeta_(rendered); assert(!split.wasTruncated);
+  assert.throws(() => context.assertWeeklyEditorialPartitionCoverage_(['N001'], [], []));
+  assert.throws(() => context.assertWeeklyEditorialRenderedCoverage_(['N001'], ['N001', 'N001'], [], 0));
+});
+
 process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed. No live GAS/LINE/DeepSeek calls.\n`);

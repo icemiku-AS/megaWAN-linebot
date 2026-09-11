@@ -1,3 +1,14 @@
+2026-09-11
+v1.14.1 Codebase Simplification Edition
+- 合併 NewsInbox / WeeklySummary 表頭對位寫入；同步與背景新聞重用已驗證 analysis，保留所有來源、狀態與分類稽核欄位。
+- URL 安全檢查與 Queue error 重用 Reader hostname / HTTP status helper；顯式 httpStatus=0、Reader priority、retry/backoff/deadline 均不變。
+- 移除已被涵蓋的 X status / mobile hostname 判斷、不可達弱分類分支、相同 category fallback、週編輯台未使用 sourceIndex；PTT 重用已轉換正文。
+- WebTaskQueue 移除 PendingReplies 前的 task 投影；memory 由保存端統一修剪；週編輯台共用既有新聞潛力 normalizer。
+- 13 項局部精簡；未刪除既有函式或全域常數，保留所有 compatibility / manual / Trigger contract、Gemini dormant、DeepSeek Flash + HIGH、圖片驗證與產品行為。
+- 仍為 21 個 runtime source；無 Sheet schema / migration、Script Property、Trigger、Prompt 或新功能變更。手動同步本版八個 .gs；本機 smoke 由 39 項擴充至 49 項，未呼叫真實 GAS / LINE / DeepSeek。
+
+// ==================================================
+
 2026-09-10
 v1.14.0 DeepSeek Flash Multimodal Edition
 - 正式模型改為 deepseek-flash（當日對應 DeepSeek V4.1 Flash），registry key 改為 deepseek_flash；active runtime 不再依賴舊世代 alias。

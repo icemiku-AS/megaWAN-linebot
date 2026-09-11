@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+# 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -52,7 +52,19 @@ v1.13.2 改善 `#本週新聞` 的 X / Twitter 單篇 status 顯示：週新聞 
 
 ---
 
-## 2. v1.14.0 本版重點
+## 2. v1.14.1 本版重點
+
+v1.14.1 是 Codebase Simplification Edition，以 v1.14.0 為基線，完成 13 項局部精簡，既有產品行為與外部 contract 不變：
+
+- NewsInbox / WeeklySummary 共用表頭對位 writer；保留欄序與空值。同一份新聞 analysis 直接供同步／背景入庫使用。
+- WebTaskQueue 移除 PendingReplies 前的 task 投影；AiService 由保存端統一修剪 memory，不重複處理。
+- URL 安全檢查與 Queue error 重用 Reader hostname / HTTP status helper，保留顯式 status zero。
+- 移除多餘 X `/i/web/status/` 分支、mobile hostname 比較、不可達弱分類判斷與相同 category fallback；PTT 重用已轉換正文。
+- 週編輯台共用新聞潛力 normalizer，移除未使用的內部 `sourceIndex`；partition / coverage / cache 驗證保留。
+
+仍有 21 個 runtime `.gs`；未刪除任何既有函式或全域常數，所有公開簽名、compatibility wrappers、Trigger、DeepSeek Flash + HIGH、圖片安全、Prompt、Reader priority、Queue、Sheet schema、Script Properties 與 memory/cache contract 保留。沒有新功能、migration/setup 或獨立產品 bugfix。現有 smoke test 保留原名，擴充至 49 項。
+
+### v1.14.0 multimodal baseline（沿用）
 
 v1.14.0 是 DeepSeek Flash Multimodal Edition：正式模型改為 `deepseek-flash`（2026-09-10 對應 DeepSeek V4.1 Flash），internal registry key 為 `deepseek_flash`。舊 `deepseek-v4-flash` alias 不再用於 active runtime；所有 13 個正式 AI task 都明確設定 thinking enabled + reasoning_effort high，並正式支援 LINE 圖片理解。
 
@@ -87,7 +99,7 @@ v1.13.1 是 Source Layout & File Ordering Edition。
 
 ### v1.14.0 AI runtime
 
-v1.13.0 建立的 provider-neutral 分層由 `10_AiService.gs`、`11_AiProfiles.gs`、`15_DeepSeekProvider.gs` 與 `16_GeminiProvider.gs` 承接；本版擴充 content contract 並更新模型／profile。Gemini 仍是 dormant provider、不是 fallback，缺少 `GEMINI_API_KEY` 不影響正常功能。
+v1.13.0 建立的 provider-neutral 分層由 `10_AiService.gs`、`11_AiProfiles.gs`、`15_DeepSeekProvider.gs` 與 `16_GeminiProvider.gs` 承接；v1.14.0 擴充 content contract 並更新模型／profile，v1.14.1 沿用。Gemini 仍是 dormant provider、不是 fallback，缺少 `GEMINI_API_KEY` 不影響正常功能。
 
 ### AI call flow
 
@@ -359,20 +371,22 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 
 ---
 
-## 10. v1.14.0 GAS rollout 與建議測試流程
+## 10. v1.14.1 GAS rollout 與建議測試流程
 
-本版修改模型、profile、圖片路由與 multimodal contract；不修改 Sheet schema、Reader routing、cache payload、Trigger 或 Script Properties，不需要 migration/setup。既有 weekly cache contract 不變，最多 10 分鐘舊結果可自然到期；cache miss 後全部使用 HIGH。GAS 仍由維護者手動同步。
+本版只精簡 runtime 冗餘；模型、profile、圖片路由、Sheet schema、Reader routing、cache payload、Trigger 與 Script Properties 均沿用 v1.14.0，不需要 migration/setup 或清除 cache。GAS 仍由維護者手動同步。
 
 GAS 手動同步順序：
 
-1. 先備份目前 Apps Script version；由 v1.13.2 升級時原有 20 個 `.gs`，新增圖片檔後應有 21 個。
-2. 手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、新增 `07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`25_WebTaskQueue.gs`、`35_WeeklyEditorialDigest.gs`。`25/35` 只有檔頭與 profile 註解同步。
+1. 先備份目前 Apps Script version；由 v1.14.0 升級前後都應有 21 個 `.gs`。
+2. 手動同步 `03_ResponseTexts.gs`、`05_Storage.gs`、`10_AiService.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`；共用 writer 與 caller 應在同一次 source 同步中完成。
 3. 不暫停或重建 Trigger；在 Trigger 畫面確認仍綁定原 handler，並在函式選單確認主要入口仍存在。
-4. 完成 smoke tests 後建立 v1.14.0 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
+4. 完成 smoke tests 後建立 v1.14.1 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
 
-若同步或 smoke test 發現問題，先讓 Web App deployment 保持在上一個穩定 Apps Script version，再檢查本版同步的十個 runtime 檔案。
+若同步或 smoke test 發現問題，先讓 Web App deployment 保持在上一個穩定 Apps Script version，再檢查本版同步的八個 runtime 檔案。
 
-本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。它檢查 21 個 GAS source 與 mock 路由／payload／大小／隱私／deadline／JSON／業務 validator。未能本機執行 GAS，亦未用真實 API key 執行 LINE/DeepSeek；真實延遲與圖片辨識品質需部署後驗證。
+本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。保留 v1.14.0 原 39 項並新增 10 項回歸，共 49 項；檢查 21 個 GAS source、mock 路由／payload／大小／隱私／deadline／JSON／業務 validator，以及表頭寫入、memory、Reader、Queue、新聞入庫與週編輯台。未能本機執行 GAS，亦未用真實 API key 執行 LINE/DeepSeek；真實延遲與圖片辨識品質需部署後驗證。
+
+本版特別回歸：同步貼網址與 NewsUrlQueue 的 Title / Brief / Outline / StoryKey / 分類稽核欄位一致；話題／新聞封存寫入正確欄位；快讀成功／失敗 PendingReplies 維持同聊天室與 mode；X `/i/web/status/`、mobile.twitter.com、PTT 缺標題 fallback、status zero retry 及週編輯台 cache hit / fallback 都維持原行為。以下完整功能 smoke checklist 繼續適用。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 

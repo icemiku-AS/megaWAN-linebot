@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.14.0 DeepSeek Flash Multimodal Edition`
-Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display Edition`
+Version represented by this Git ref: `v1.14.1 Codebase Simplification Edition`
+Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimodal Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display 
 
 ## Active Runtime Source Files
 
-以下 21 個檔案代表 v1.14.0 DeepSeek Flash Multimodal Edition 的 active GAS runtime source：
+以下 21 個檔案代表 v1.14.1 Codebase Simplification Edition 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -123,7 +123,43 @@ Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display 
 
 ---
 
-## v1.14.0 Version Boundary
+## v1.14.1 Version Boundary
+
+本版是 Codebase Simplification Edition，正式基線為 main 的 v1.14.0（`75decaa`）。現行 source of truth 是目前 Git ref 的實際 `.gs`；本地修改不代表已 merge、發布或部署到 GAS。
+
+### Included
+
+1. `05_Storage.gs` 新增 `appendRowByHeaders_()`，合併 WeeklySummary / NewsInbox 完全相同的表頭對位寫入，保留欄序、未知欄位空白及 0 / false / 空字串。
+2. 同步與背景新聞收件以 `Object.assign` 沿用已驗證 analysis，再明確設定來源與狀態；不再逐欄重建相同分析物件，人工補充的獨立預設值保留。
+3. WebTaskQueue 直接把 task 交給只讀取所需欄位的 PendingReplies writer，移除不必要的中間投影。
+4. AiService 移除保存前重複的 `trimHistory()`；保存端驗證、六輪上限、讀取端驗證與 conversation isolation 保留。
+5. URL 安全檢查沿用 Reader hostname parser；NewsUrlQueue error 沿用 `getReaderFailureHttpStatus_()`，顯式 `httpStatus=0` 不退回 200。
+6. 移除已被通用 `/status/` regex 涵蓋的 `/i/web/status/` 分支，以及已被 `.twitter.com` 涵蓋的 mobile hostname 比較。PTT title fallback 重用已轉換正文。
+7. 移除弱分類檢查中不可能再成立的 `!brief` 分支與其兩個局部變數，以及 category normalizer 中與最終 fallback 相同的 return。
+8. 週編輯台潛力 normalization 共用既有 `normalizeTopicPotential_()`；移除只在內部物件複製、從未參與結果的 `sourceIndex`。
+9. 延伸既有 `tests/v1140_smoke.cjs`，保留原 39 項並新增 10 項回歸；版本文字與三份版本文件同步。
+
+共採用 13 項局部清理；未刪除任何既有全域函式或常數，389 個既有函式簽名全部保留，新增一個共用 writer。runtime 仍為 21 檔，沒有 rename 或合併檔案。
+
+### Preserved contracts and rejected cleanup
+
+`01_Main.gs` 的 parse / Pending Reply / text / image / command routing 不變。13 個 AI task、deepseek-flash、explicit HIGH、provider-neutral service、Gemini dormant、圖片驗證與隱私、所有 Prompt / JSON business validators、Reader priority / deadline / retry、Sheet headers / 欄序、StoryKey、memory / cache payload、cleanup 二段確認均保留。
+
+保留全部 compatibility wrappers、手動 setup / 診斷入口、`doPost`、`setupLogSheet`、`installWebTaskQueueTrigger`、`processWebTaskQueue`、`processNewsUrlQueue`。`deleteConversationLogs()`、舊 StoryKey grouping / formatting helpers、`isAiErrorRetryable_()` 等 repo 內無 caller 的項目仍可能被外部或 GAS 手動使用，不能只因搜尋不到 caller 就刪除。`formatWeeklyNewsDefaultDigest_()` 依既有文件明確保留。
+
+不同 trust boundary 的驗證、不同規則的 URL / title normalizer、provider adapter、週編輯台 partition / rendered coverage 與 cache revalidation 不強行合併；本版不包含獨立產品 bugfix、新功能、模型、Prompt 改版或架構 redesign。
+
+### Migration, deployment and verification
+
+沒有 Sheet migration、setup、新 Script Property 或 Trigger 變更；`WEEKLY_EDITORIAL_CACHE_VERSION` 仍為 `v1.13.0`。從 v1.14.0 手動同步 `03_ResponseTexts.gs`、`05_Storage.gs`、`10_AiService.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`。同步後仍為 21 個 `.gs`，建立 v1.14.1 Apps Script version 並更新既有 deployment，保留 Web App URL 與既有 Trigger。文件和 tests 不部署。
+
+本機 `node tests/v1140_smoke.cjs` 共 49 項通過，涵蓋 syntax、原 13 routes / 圖片 / privacy / deadline 防線，以及表頭對位、memory 上限、X/PTT、status zero、同步／背景 NewsInbox 入庫、PendingReplies、Queue retry/backoff、分類 defaults、週編輯台 cache / partition / rendered coverage。
+
+未能本機執行 GAS；未呼叫真實 LINE / DeepSeek。部署前依 README 第 10 節測試，特別比對新聞與封存寫入的所有欄位、背景成功／失敗交付、X/PTT 與週編輯台 fallback。runtime 行為相容性的結論來自靜態檢查與 mock regression，仍需維護者完成 live smoke tests。
+
+---
+
+## v1.14.0 Version Boundary（歷史基線）
 
 本版為 DeepSeek Flash Multimodal Edition，基線 v1.13.2。現行 source of truth 是目前 Git ref 的實際 .gs；本地修改不代表已 merge、發布或部署到 GAS。
 
@@ -156,7 +192,7 @@ Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display 
 
 ---
 
-以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.0 實作。
+以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.1 實作。
 
 ## v1.13.2 Version Boundary
 
@@ -612,7 +648,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Historical Smoke Tests for v1.13.2 X Post Weekly Display
 
-以下保留 v1.13.2 當時的檢查紀錄；v1.14.0 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
+以下保留 v1.13.2 當時的檢查紀錄；v1.14.1 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
 
 本版只修改週新聞 presentation 與 Diagnostic title duplicate decision，不修改 Sheet、Reader、AI、cache payload、router 或 Trigger contract，也不需要 migration、setup、新 Trigger 或新增 Script Properties。
 
@@ -679,7 +715,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.14.0 DeepSeek Flash Multimodal Edition`
-Previous stable baseline described in this file: `v1.13.2 X Post Weekly Display Edition`
-Last Confirmed Date: `2026-09-10`
-Last Documentation Note: deepseek-flash / HIGH thinking / LINE image understanding implemented in this Git ref; local mock verification only, manual GAS deployment and live smoke tests required.
+Last Confirmed Version at this Git ref: `v1.14.1 Codebase Simplification Edition`
+Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimodal Edition`
+Last Confirmed Date: `2026-09-11`
+Last Documentation Note: shared header writer / Reader helpers, redundant branch and object cleanup; all existing signatures and product contracts retained. 49 local mock checks pass; manual GAS deployment and live smoke tests required.

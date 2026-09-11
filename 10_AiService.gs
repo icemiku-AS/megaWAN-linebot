@@ -1,7 +1,7 @@
 // ======================================================
 // 10_AiService.gs
 // AI orchestration：provider-neutral 的正式 AI service 與唯一 provider dispatch 入口。
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
 //
 // 主要責任：
 // 1. 提供 provider-neutral AI task 入口與 task/profile resolution。
@@ -112,7 +112,8 @@ function runAiMemoryTask(task, conversationId, userTextForHistory, aiUserContent
         : String(userTextForHistory || '') },
       { role: 'assistant', content: result.text }
     ]);
-    saveConversationHistory(conversationId, trimHistory(updatedHistory));
+    // 寫入端統一驗證與修剪，不在同一保存流程重複 trimHistory。
+    saveConversationHistory(conversationId, updatedHistory);
     return result;
 
   } catch (error) {
