@@ -42,9 +42,9 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
     ], requireAiCallOptionsForExecutionContext_(executionContext));
     if (!result.ok) return getBotTextImageError_(result.errorType);
 
-    // 官方 Web Search tool 暫不可用時仍可做可靠 Vision，但不得把圖片判讀包裝成已上網查證。
+    // 本流程只有 Vision；明確查證要求必須區分圖片判讀與尚未完成的網路搜尋。
     return result.text + (isExplicitWebSearchRequest_(safeQuestion)
-      ? '\n\n' + getBotTextWebSearchUnavailable_()
+      ? '\n\n目前圖片已分析，但即時網路查證未完成。'
       : '');
   } catch (error) {
     // 不記錄 exception：下載錯誤可能包含 URL/token，序列化錯誤可能包含圖片。

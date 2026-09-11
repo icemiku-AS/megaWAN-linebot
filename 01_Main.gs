@@ -333,6 +333,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
 
   let aiReply = '';
   let aiReplyMode = commandInfo.mode;
+  let aiFinalMessage = '';
 
   try {
     if (commandInfo.mode === 'image_analysis') {
@@ -379,17 +380,25 @@ function handleLineEvent(event, webhookStartedAtMs) {
         const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
         aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
         aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
-      } else if (isExplicitWebSearchRequest_(commandInfo.userPrompt)) {
-        // 最新官方 Responses contract 會忽略 web_search；先固定誠實失敗，避免模型假裝已搜尋。
-        aiReply = getBotTextWebSearchUnavailable_();
       } else {
-        aiReply = requireAiText_(runAiMemoryTask(
+        const explicitWebSearch = isExplicitWebSearchRequest_(commandInfo.userPrompt);
+        const generalChatResult = runAiMemoryTask(
           'general_chat',
           conversationId,
           commandInfo.userPrompt,
           commandInfo.userPrompt,
-          requireAiCallOptionsForExecutionContext_(aiExecutionContext)
-        ));
+          requireAiCallOptionsForExecutionContext_(aiExecutionContext, { forceWebSearch: explicitWebSearch })
+        );
+        if (!generalChatResult.ok) {
+          aiReply = getBotTextWebSearchError_(generalChatResult.errorType);
+          aiReplyMode = 'web_search_error';
+        } else {
+          aiReply = generalChatResult.text;
+          if (generalChatResult.usedWebSearch) {
+            aiFinalMessage = buildWebSearchSourcesBubble_(generalChatResult.sources);
+            aiReplyMode = 'general_chat_search';
+          }
+        }
       }
     }
 
@@ -399,7 +408,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
     aiReply = getBotTextAiError_();
   }
 
-  replyToLine(event.replyToken, aiReply);
+  replyToLine(event.replyToken, aiReply, false, aiFinalMessage);
   logAssistantReplyToSheet(event, conversationId, aiReply, aiReplyMode);
 }
 

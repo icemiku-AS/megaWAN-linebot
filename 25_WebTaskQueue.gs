@@ -486,7 +486,8 @@ function createPendingReplyFromTask(taskRowData, replyText, replyMode) {
 /**
  * Pending Reply 的 at-least-not-lost 交付邊界：在同一把 ScriptLock 內讀取、送 LINE、成功後刪除。
  * LINE 非 2xx／exception 時 replyToLine() 會拋錯，row 因此保留；若送達後程序在刪除前中斷，
- * 下次可能重送一次，但不會先刪後遺失。ponytail: 全域鎖最多涵蓋 10 秒 transport；高併發時才升級 per-conversation lease。
+ * 下次可能重送一次，但不會先刪後遺失。ponytail: 全域鎖涵蓋 Sheet／callback 與 10 秒 transport cap；
+ * 若併發量需要改善，再設計可恢復的同聊天室 claim，不能只把 HTTP 移出鎖造成正常路徑重送。
  */
 function deliverPendingReply_(conversationId, replyToken, buildDeliveryText) {
   const lock = LockService.getScriptLock();

@@ -23,20 +23,20 @@
 // ======================================================
 
 const BOT_CURRENT_VERSION = 'v1.14.2 Natural Search & Vision Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-09-11';
+const BOT_CURRENT_VERSION_DATE = '2026-09-12';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
   {
     version: 'v1.14.2 Natural Search & Vision Edition',
-    date: '2026-09-11',
-    summary: '引用圖片可用自然文字分析，補強 URL authority 與 Pending Reply 交付安全；Web Search 等待 DeepSeek 官方重新開放。',
+    date: '2026-09-12',
+    summary: '一般聊天可自動或依明確要求使用 Web Search；引用圖片自然提問與安全修正同步完成。',
     changes: [
       '私訊回覆圖片可直接提問；群組回覆圖片並用 #小浣 觸發即可，不再要求「看圖」關鍵字。',
       '舊 #小浣 看圖 完整相容；沒有 quotedMessageId 不猜上一張圖，群組普通回覆圖片仍保持靜默。',
       '拒絕 URL userinfo、IPv6 與非 canonical numeric authority，直接 UrlFetch 不跟隨未驗證 redirect。',
       'Pending Reply 改為 LINE Reply 成功後才刪除；傳送失敗保留供下次再交付。',
-      'DeepSeek V4.1 最新 Responses contract 會忽略 web_search，本版不送無效 payload、不假裝已搜尋，也不產生假來源。'
+      '一般聊天改走 Responses Web Search：普通問題由模型 auto 判斷，明確搜尋要求會強制執行並依正式 metadata 顯示最多三個來源。'
     ]
   },
   {
@@ -526,7 +526,15 @@ function getBotTextImageError_(errorType) {
       return '這次圖片分析沒有完成，可能是服務忙碌或圖片無法解析。請裁切重點、縮小圖片，或稍後重試。';
   }
 }
-function getBotTextWebSearchUnavailable_() { return '這次無法完成即時網路搜尋。DeepSeek 目前的官方 API 尚未提供可用的 Web Search tool；我不會把模型既有知識假裝成最新查證結果，請稍後再試。'; }
+function getBotTextWebSearchError_(errorType) {
+  if (errorType === 'ai_timeout') {
+    return '這次網路搜尋沒有在回覆時間內完成。我不會改用舊知識假裝查證成功，請稍後再試。';
+  }
+  if (errorType === 'ai_configuration_error' || errorType === 'ai_auth_error') {
+    return '目前網路搜尋服務尚未正確啟用。我不會改用舊知識假裝查證成功，請通知維護者檢查 DeepSeek Responses 設定。';
+  }
+  return '這次網路搜尋沒有完成，可能是 Search provider 或 Responses API 暫時異常。我不會改用舊知識假裝查證成功，請稍後再試。';
+}
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }
 function getBotTextResetDone_() { return ['好，這個聊天室的短期記憶我先清掉了。', '剛剛腦袋裡暫存的小紙條會消失，但 Google Sheet 裡的長期紀錄還在，不會被我亂丟。'].join('\n'); }

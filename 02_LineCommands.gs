@@ -40,12 +40,10 @@ function hasTriggerPrefix(text) {
   });
 }
 
-// DeepSeek V4.1 目前沒有可用的官方 Web Search tool；這個小範圍判斷只攔截
-// 使用者明確要求上網的語句，確保不會把模型既有知識假裝成搜尋結果。
-// 它不是「最新／今天」等時效性問題的 keyword router；官方 tool 可用後應刪除並改用 tool metadata。
+// 只辨識非常明確的上網要求，決定是否強制 Web Search；「最近／今天」等時效判斷交給模型 auto。
 function isExplicitWebSearchRequest_(text) {
   const value = String(text || '').replace(/\s+/g, ' ').trim();
-  return /(?:上網|網路|網絡|網上).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上)|(?:搜尋|搜索)(?:一下|看看)?|幫我查一下/.test(value);
+  return /(?:上網|網路|網絡|網上).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上)|(?:搜尋|搜索)(?:一下|看看)?|(?:幫我)?查一下/.test(value);
 }
 
 function getUserLogMode(text) {
@@ -155,10 +153,13 @@ function getConversationId(event) {
   return 'unknown';
 }
 
-function replyToLine(replyToken, text, throwOnHttpError) {
+function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
   const token = getRequiredScriptProperty_('LINE_CHANNEL_ACCESS_TOKEN');
-  const messageTexts = splitTextForLineMessages_(text);
+  const finalText = String(finalMessageText || '').trim();
+  const mainMessageLimit = LINE_REPLY_MAX_MESSAGE_COUNT - (finalText ? 1 : 0);
+  const messageTexts = splitTextForLineMessagesWithMeta_(text, mainMessageLimit).messages;
   const safeMessageTexts = messageTexts.length ? messageTexts : [getBotTextEmptyReply_()];
+  if (finalText) safeMessageTexts.push(finalText.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH));
 
   const payload = {
     replyToken: replyToken,
@@ -205,7 +206,7 @@ function splitTextForLineMessages_(text) {
 // 保留 splitTextForLineMessages_(text) 的既有簽名、回傳型別與分段行為。
 // 週編輯台額外讀取截斷狀態、切點與各訊息長度，判斷 block fitter
 // 是否還要先省略完整區塊；其他既有呼叫者不需要修改。
-function splitTextForLineMessagesWithMeta_(text) {
+function splitTextForLineMessagesWithMeta_(text, maxMessageCount) {
   const rawText = String(text || '').trim();
   if (!rawText) {
     return {
@@ -217,7 +218,10 @@ function splitTextForLineMessagesWithMeta_(text) {
   }
 
   const maxLength = LINE_TEXT_MESSAGE_MAX_LENGTH;
-  const maxCount = LINE_REPLY_MAX_MESSAGE_COUNT;
+  const requestedMaxCount = Number(maxMessageCount);
+  const maxCount = isFinite(requestedMaxCount) && requestedMaxCount > 0
+    ? Math.min(LINE_REPLY_MAX_MESSAGE_COUNT, Math.floor(requestedMaxCount))
+    : LINE_REPLY_MAX_MESSAGE_COUNT;
   const omittedNotice = '內容太多，後面已省略。可以用 #本週新聞 分類 <分類名>、#本週新聞 詳細 或 #新聞問答 追問。';
   const messages = [];
   const splitIndexes = [];
@@ -270,6 +274,31 @@ function splitTextForLineMessagesWithMeta_(text) {
       return message.length;
     })
   };
+}
+
+function buildWebSearchSourcesBubble_(sources) {
+  const seen = {};
+  const safeSources = [];
+  (Array.isArray(sources) ? sources : []).forEach(function(source) {
+    const url = String(source && source.url || '').trim();
+    if (!url || url.length > 2048 || seen[url] || !isSafePublicUrl(url) || safeSources.length >= 3) return;
+    seen[url] = true;
+    safeSources.push({
+      title: String(source && source.title || '').replace(/\s+/g, ' ').trim().slice(0, 160),
+      url: url
+    });
+  });
+
+  if (!safeSources.length) {
+    return '本次已使用網路搜尋，但 DeepSeek API 未提供可列出的來源連結。';
+  }
+
+  let bubble = '參考來源：';
+  safeSources.forEach(function(source) {
+    const entry = '• ' + (source.title || getReaderLayerHostname_(source.url) || '來源') + '\n' + source.url;
+    if ((bubble + '\n\n' + entry).length <= LINE_TEXT_MESSAGE_MAX_LENGTH) bubble += '\n\n' + entry;
+  });
+  return bubble;
 }
 
 function findLineMessageSplitIndex_(text, maxLength) {
@@ -349,6 +378,7 @@ function getHelpText() {
     '常用功能：',
     '・私訊直接傳圖片；群組請回覆該圖片並輸入 #小浣 看圖 <問題>。',
     '・看圖支援 JPEG/PNG、每張最多 4 MiB；不永久保存原圖，逾時請重送。',
+    '・一般聊天需要最新資訊時，小浣可自行使用網路搜尋；有搜尋會另附來源訊息。',
     '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
     '・#本週新聞：整合最近 7 天群組話題、焦點故事線與其他分類新聞。',
     '・#本週新聞 高潛力：只看高潛力素材，依分類精簡顯示。',

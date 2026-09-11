@@ -1,7 +1,7 @@
 // ======================================================
 // 11_AiProfiles.gs
 // AI configuration：provider/model registry、execution profiles、task routes 與 retry metadata。
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 主要責任：
 // 1. 集中登記 AI provider、model、execution profile 與 task route。
@@ -106,7 +106,7 @@ const AI_TASK_ROUTES = {
   // 短回覆原有 1200 加 3600 reasoning 空間；不放大同步 timeout。
   general_chat: {
     provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 4800, timeoutSeconds: 45
+    maxOutputTokens: 4800, timeoutSeconds: 45, allowsWebSearch: true
   },
 
   // 3200 → 8000，為分類稽核與 StoryKey 推理留空間；schema/normalizer 不變。
@@ -243,6 +243,7 @@ function resolveAiTaskConfig_(task) {
     model: modelEntry.model,
     modelRegistryKey: route.model,
     supportsImages: modelEntry.supportsImages === true,
+    allowsWebSearch: route.allowsWebSearch === true,
     profile: route.profile,
     thinking: { type: thinkingType },
     reasoningEffort: profile.reasoningEffort || '',
