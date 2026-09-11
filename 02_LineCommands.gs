@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // LINE transport：處理指令解析、Help、Reply API 與長文字分段。
 //
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 維護原則：
 // 1. 主要 caller 是 01_Main.gs；本檔只做 transport/router，不擁有 AI、Reader、News 或 Sheet contract。
@@ -38,6 +38,14 @@ function hasTriggerPrefix(text) {
   return TRIGGER_PREFIXES.some(function(prefix) {
     return text.startsWith(prefix);
   });
+}
+
+// DeepSeek V4.1 目前沒有可用的官方 Web Search tool；這個小範圍判斷只攔截
+// 使用者明確要求上網的語句，確保不會把模型既有知識假裝成搜尋結果。
+// 它不是「最新／今天」等時效性問題的 keyword router；官方 tool 可用後應刪除並改用 tool metadata。
+function isExplicitWebSearchRequest_(text) {
+  const value = String(text || '').replace(/\s+/g, ' ').trim();
+  return /(?:上網|網路|網絡|網上).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上)|(?:搜尋|搜索)(?:一下|看看)?|幫我查一下/.test(value);
 }
 
 function getUserLogMode(text) {
@@ -147,7 +155,7 @@ function getConversationId(event) {
   return 'unknown';
 }
 
-function replyToLine(replyToken, text) {
+function replyToLine(replyToken, text, throwOnHttpError) {
   const token = getRequiredScriptProperty_('LINE_CHANNEL_ACCESS_TOKEN');
   const messageTexts = splitTextForLineMessages_(text);
   const safeMessageTexts = messageTexts.length ? messageTexts : [getBotTextEmptyReply_()];
@@ -178,7 +186,12 @@ function replyToLine(replyToken, text) {
 
     if (statusCode < 200 || statusCode >= 300) {
       console.error('LINE Reply API error:', statusCode);
+      // PendingReplies 只有在 transport 確認成功後才能 consume；非 2xx 必須向 caller 明確失敗。
+      if (throwOnHttpError) throw new Error('LINE Reply API request failed.');
+      return false;
     }
+
+    return true;
   } catch (error) {
     // 保留既有拋錯行為，但不讓含 request/token 的外部例外流入上層 stack log。
     throw new Error('LINE Reply API request failed.');

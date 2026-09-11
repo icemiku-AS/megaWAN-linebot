@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+# 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -52,17 +52,21 @@ v1.13.2 改善 `#本週新聞` 的 X / Twitter 單篇 status 顯示：週新聞 
 
 ---
 
-## 2. v1.14.1 本版重點
+## 2. v1.14.2 本版重點
 
-v1.14.1 是 Codebase Simplification Edition，以 v1.14.0 為基線，完成 13 項局部精簡，既有產品行為與外部 contract 不變：
+v1.14.2 是 Natural Search & Vision Edition，以 v1.14.1 為基線：
 
-- NewsInbox / WeeklySummary 共用表頭對位 writer；保留欄序與空值。同一份新聞 analysis 直接供同步／背景入庫使用。
-- WebTaskQueue 移除 PendingReplies 前的 task 投影；AiService 由保存端統一修剪 memory，不重複處理。
-- URL 安全檢查與 Queue error 重用 Reader hostname / HTTP status helper，保留顯式 status zero。
-- 移除多餘 X `/i/web/status/` 分支、mobile hostname 比較、不可達弱分類判斷與相同 category fallback；PTT 重用已轉換正文。
-- 週編輯台共用新聞潛力 normalizer，移除未使用的內部 `sourceIndex`；partition / coverage / cache 驗證保留。
+- 私訊回覆圖片後可直接自然提問；群組／room 只需「引用圖片 + `#小浣`」，不再要求「看圖」關鍵字。舊 `#小浣 看圖` 保持相容，沒有 quote 不猜上一張圖片。
+- DeepSeek V4.1 的最新官方 Responses contract 目前只執行 function tools，會忽略 `web_search`。本版不送無效 Search payload、不假裝已上網、不偽造來源；明確搜尋要求會回覆目前不可用，Vision 仍可先做圖片判讀。
+- URL parser 拒絕 userinfo、IPv6 authority、非法 port／numeric host，並關閉 PTT／legacy direct fetch 的未驗證 redirect，補上 SSRF trust boundary。
+- Pending Reply 改為 LINE Reply 成功後才刪除；失敗保留供下次重試，以 at-least-not-lost 為目標。
+- 13 個既有 AI task 全部維持 Chat Completions、`deepseek-flash`、HIGH thinking；AiService/provider-neutral contract、Reader／Queue、Sheet／Trigger／memory／privacy 不變。
 
-仍有 21 個 runtime `.gs`；未刪除任何既有函式或全域常數，所有公開簽名、compatibility wrappers、Trigger、DeepSeek Flash + HIGH、圖片安全、Prompt、Reader priority、Queue、Sheet schema、Script Properties 與 memory/cache contract 保留。沒有新功能、migration/setup 或獨立產品 bugfix。現有 smoke test 保留原名，擴充至 49 項。
+仍有 21 個 runtime `.gs`；沒有新增 Script Property、Sheet schema／migration、Trigger、Web App URL、外部 Search credential 或圖片保存。現有 smoke test 保留原名，擴充至 54 項。
+
+### v1.14.1 simplification baseline（沿用）
+
+NewsInbox／WeeklySummary 共用表頭 writer、同步／背景新聞共用 analysis、Reader hostname／HTTP status helper、memory 保存端修剪，以及週編輯台既有 partition／coverage／cache 驗證都完整沿用。
 
 ### v1.14.0 multimodal baseline（沿用）
 
@@ -137,11 +141,11 @@ maxOutputTokens 是 reasoning + visible output 的共用上限，並非保證保
 
 ### 看圖片：私訊與群組
 
-- 私訊：直接傳 JPEG/PNG 圖片，小浣會描述內容。要指定問題，可用 LINE「回覆」選取圖片，再輸入 `#小浣 看圖 這個錯誤怎麼處理？`。
-- 群組／多人聊天室：單純貼圖不下載、不回覆、不記錄圖片；要分析時，回覆該圖片並輸入 `#小浣 看圖 <問題>`，不附問題則描述重點。普通 @mention、只引用圖片但沒有這個指令，都不會啟動看圖。
-- LINE 的 `quotedMessageId` 直接用來下載指定圖片，不另外保存 message pairing。只能取得 LINE 仍保有的內容；過期、撤回、external content、非圖片引用或缺引用，都會提示重新傳圖／正確引用。
+- 私訊：直接傳 JPEG/PNG 圖片仍會自動分析；也可用 LINE「回覆」選取圖片，再直接輸入「這是什麼？」、「哪裡出錯？」等任意自然文字，不需要 `#小浣` 或「看圖」。
+- 群組／多人聊天室：單純貼圖不下載、不回覆、不記錄圖片；普通使用者引用圖片聊天也保持靜默。要分析時，回覆該圖片並以 `#小浣` 開頭提問，例如 `#小浣 這是真的假的？`。舊 `#小浣 看圖 <問題>` 繼續有效。
+- LINE 的 `quotedMessageId` 直接用來探測／下載指定圖片，不另外保存 message pairing。LINE quote 不附原訊息型別；只有安全取得 JPEG/PNG 才進 Vision，非圖片或不可取得的自然引用回到普通文字流程。明確舊看圖指令遇到過期、撤回、非圖片或缺引用時，仍顯示既有操作提示。
 - 私訊一次多圖（imageSet）只處理 index=1，並提示其他圖片分次傳送；舊版 LINE 若未提供有效 index，會提示單張傳送／明確引用，不自動逐張分析。群組可單獨引用其中一張。不做多圖比較，也不將先前／下一則文字自動配成 caption。
-- 既有 Pending Reply 優先交付；私訊此時傳圖會收到「圖片尚未分析，請再傳一次」。文字看圖指令也會提示交付完成後重送，問題中的網址不會被當成新聞收件。
+- 既有 Pending Reply 優先交付；私訊此時傳圖會收到「圖片尚未分析，請再傳一次」。自然／舊看圖問題也會提示交付完成後重新回覆圖片，問題中的網址不會被當成新聞收件。
 - 成功後只保存「使用者提供圖片」placeholder、問題與分析文字；後續文字聊天可延續這些描述。重新查細節須重新傳圖或引用仍可下載的原圖。
 
 圖片輸入僅接受一張 JPEG/PNG、raw bytes ≤ 4 MiB（4,194,304 bytes），包含 Content-Type、檔案 signature、非空 bytes、整數 byte、HTTP 200 與 Content-Length／實際長度防線；不信任副檔名。完整 DeepSeek JSON body（含 Base64）另限 8 MiB；4 MiB 原圖編碼約 5.34 MiB。此上限刻意低於 DeepSeek 48 MiB request body / 32 MiB inline image 及 GAS 50 MB POST/response 限制。GAS fetch 會先緩衝回應，無法在下載途中以 raw ceiling 截流。
@@ -151,6 +155,17 @@ DeepSeek 官方另支援 GIF/WebP，但本版入口只開放 JPEG/PNG。尺寸�
 流程：`LINE image event / quotedMessageId → 07_LineImages 下載與驗證 → runAiMemoryTask(image_analysis) → normalizeAiMessages_ → DeepSeek Provider → normalized text → LINE / 文字 memory`。
 
 AiService content 沿用字串，只有 user message 可另用 `[{type:'text', text:'問題'}, {type:'image', mimeType:'image/png', bytes:[...]}]`；system／assistant 保持字串，純 text parts 也不接受。Base64、`image_url` 與 data URL 只在 DeepSeek adapter 組 request 時產生，不寫 Sheet、Cache 或 console。不保存原圖，也不使用 Drive、Cloud Storage 或 DeepSeek Files API；分析文字與 placeholder 仍依原本 ConversationLog／Cache 政策保存。看圖問題在寫入 ConversationLog 前、模型結果在文字出口，都會移除 data URL／大段編碼；LINE Reply 失敗只記 HTTP status 或固定訊息，不記外部 error body／exception。
+
+### 自然對話與即時 Web Search 狀態
+
+2026-09-11 的 DeepSeek V4.1 最新官方 Responses guide/reference 明確標示：目前 `tools` 只支援 function tool，`web_search` built-in tool 會被忽略。小浣因此暫不啟用 Responses Web Search，也不從模型文字猜 `usedWebSearch`、source 或 citation。
+
+- 一般不需要即時資料的對話照常走 `general_chat` Chat Completions。
+- 明確要求「上網查／搜尋」時，固定回覆即時搜尋目前不可用；不會用模型既有知識假裝已查。
+- 涉及「最近／後續」但未明說搜尋時，system prompt 也禁止宣稱已查證最新狀態。
+- 引用圖片要求查證時，仍可先完成可靠 Vision，並明確補充沒有完成網路查證。
+- 因沒有實際 Search，本版不顯示來源 bubble；不會 hallucinate URL。最多 3 個來源、去重與預留 LINE message slot 的需求，待官方重新提供可執行 tool 與正式 source metadata 後實作。
+- 不新增 Search Queue、外部 Search API、API key、reasoning/tool trace persistence 或 raw search log。
 
 ### 直接貼網址
 
@@ -306,7 +321,7 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 - WebSummary：保存網址快讀摘要。
 - NewsUrlQueue：保存多網址、同步處理過慢或失敗時的新聞網址待處理佇列。
 - NewsInbox：新聞素材池；Brief 供快速瀏覽，Outline 供 `#統整話題` 深度統整，StoryKey 是單篇新聞的候選事件提示；SpecialTopic / CategoryReason / CategoryConfidence / MatchedEntities / ClassificationWarning 供分類稽核、診斷與 `#新聞問答` 使用。v1.13.2 的 Display Title 只在 render 時計算，不新增欄位、不改 raw Title / Brief / Outline contract，也不回寫週編輯台聚類。
-- PendingReplies：背景任務完成後，等待下次訊息交付的回覆。
+- PendingReplies：背景任務完成後，等待下次訊息交付的回覆；v1.14.2 起只有 LINE Reply HTTP 2xx 後才刪除，失敗會保留供下次再交付。
 
 ---
 
@@ -371,31 +386,35 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 
 ---
 
-## 10. v1.14.1 GAS rollout 與建議測試流程
+## 10. v1.14.2 GAS rollout 與建議測試流程
 
-本版只精簡 runtime 冗餘；模型、profile、圖片路由、Sheet schema、Reader routing、cache payload、Trigger 與 Script Properties 均沿用 v1.14.0，不需要 migration/setup 或清除 cache。GAS 仍由維護者手動同步。
+本版修改自然圖片 routing、URL safety 與 Pending Reply 交付；Search transport 因官方 contract 不可用而沒有啟用。Sheet schema、AI profile、cache payload、Trigger 與 Script Properties 不變，不需要 migration/setup 或清除 cache。GAS 仍由維護者手動同步。
 
 GAS 手動同步順序：
 
-1. 先備份目前 Apps Script version；由 v1.14.0 升級前後都應有 21 個 `.gs`。
-2. 手動同步 `03_ResponseTexts.gs`、`05_Storage.gs`、`10_AiService.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`；共用 writer 與 caller 應在同一次 source 同步中完成。
+1. 先備份目前 Apps Script version；由 v1.14.1 升級前後都應有 21 個 `.gs`。
+2. 手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`12_Prompts.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`；routing、transport、Pending Reply acknowledge 與 caller 註解應在同一次 source 同步中完成。
 3. 不暫停或重建 Trigger；在 Trigger 畫面確認仍綁定原 handler，並在函式選單確認主要入口仍存在。
-4. 完成 smoke tests 後建立 v1.14.1 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
+4. 完成 smoke tests 後建立 v1.14.2 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
 
-若同步或 smoke test 發現問題，先讓 Web App deployment 保持在上一個穩定 Apps Script version，再檢查本版同步的八個 runtime 檔案。
+若同步或 smoke test 發現問題，先讓 Web App deployment 保持在上一個穩定 Apps Script version，再檢查本版同步的九個 runtime 檔案。
 
-本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。保留 v1.14.0 原 39 項並新增 10 項回歸，共 49 項；檢查 21 個 GAS source、mock 路由／payload／大小／隱私／deadline／JSON／業務 validator，以及表頭寫入、memory、Reader、Queue、新聞入庫與週編輯台。未能本機執行 GAS，亦未用真實 API key 執行 LINE/DeepSeek；真實延遲與圖片辨識品質需部署後驗證。
+本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。保留原 49 項並新增 5 項情境回歸，共 54 項；既有 URL 測試亦擴充 userinfo、authority、redirect 與 non-public address case。未能本機執行 GAS，亦未用真實 API key 執行 LINE/DeepSeek；真實延遲、圖片辨識品質與 API contract 變動需部署後驗證。
 
-本版特別回歸：同步貼網址與 NewsUrlQueue 的 Title / Brief / Outline / StoryKey / 分類稽核欄位一致；話題／新聞封存寫入正確欄位；快讀成功／失敗 PendingReplies 維持同聊天室與 mode；X `/i/web/status/`、mobile.twitter.com、PTT 缺標題 fallback、status zero retry 及週編輯台 cache hit / fallback 都維持原行為。以下完整功能 smoke checklist 繼續適用。
+本版特別回歸：自然 quoted image、群組 quiet、沒有 quote 不猜圖、Search honesty、userinfo/IPv4/IPv6/port/redirect 防線，以及 Pending Reply LINE failure 保留、retry 成功才 consume。原有 NewsInbox／Queue／X／PTT／週編輯台／memory／deadline 回歸全數繼續適用。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
 - 私訊傳一般圖片、中文截圖、錯誤訊息、新聞圖卡與表格，確認能分析；模糊字應標示看不清楚。
-- 群組貼圖確認完全靜默；回覆圖片輸入 `#小浣 看圖 哪裡出錯？` 後才分析；不帶引用時顯示操作提示。
+- 私訊回覆圖片輸入任意自然問題，確認啟動 Vision；引用非圖片時應回到普通文字對話。
+- 群組貼圖與普通引用圖片聊天確認完全靜默；回覆圖片輸入 `#小浣 哪裡出錯？` 會分析，舊 `#小浣 看圖` 仍可用；沒有引用時不猜上一張圖。
+- 明確要求上網時，確認回覆 Search unavailable，沒有「我查到」或來源 bubble；引用圖片要求查證時可先做 Vision，但清楚標示未完成網路查證。
 - 檢查超過 4 MiB、非 JPEG/PNG、過期引用與下載／AI timeout 的繁中 fallback；私訊多圖只回第一張。
 - 測試缺少 imageSet.index 的舊版多圖事件：提示單張／引用且不呼叫 AI；有 Pending Reply 時，帶網址的看圖問題不可進 NewsUrlQueue。
 - 圖片分析後文字追問，檢查 Cache 與 ConversationLog 只有 placeholder／問題／分析文字，console 沒有圖片、data URL 或 secret。
 - 模擬圖片下載耗時、memory lock 耗時與同批多 events，確認共用 40 秒 deadline；預算不足不發後續 fetch，也不排圖片 queue。
+- 模擬 LINE Reply 非 2xx／exception，確認 PendingReplies row 保留；下一次 2xx 後才刪除，其他 conversation 不受影響。
+- 測試 userinfo、localhost、127/8、private/link-local/metadata、IPv6、非法 port 與公開 X/PTT URL；確認 direct raw/PTT fetch 不跟隨 redirect。
 
 - 執行 `#版本`、`#版本紀錄` 與 `#help`，確認顯示與指令內容正確。
 
@@ -451,11 +470,12 @@ GAS 手動同步順序：
 - 檢查 `AI_CALL_METADATA` 含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；所有 task 成功時確認 thinking=enabled、reasoningEffort=high、model=deepseek-flash 與 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。
 
 
-## 11. 2026-09-10 官方規格核對
+## 11. 2026-09-11 官方規格核對
 
 - [DeepSeek 更新日誌](https://api-docs.deepseek.com/updates/)與[模型資料](https://api-docs.deepseek.com/quick_start/pricing/)：正式 `deepseek-flash` 對應 V4.1 Flash，支援文字、Vision 與 JSON。
 - [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：送 `thinking:{type:'enabled'}` 與 `reasoning_effort:'high'`；官方目前明列 temperature／presence_penalty／frequency_penalty 在 thinking 無效，`top_p` 雖可用但低於 0.95 會被提升至 0.95。本版刻意省略全部 sampling 欄位。
 - [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)：system content 是 string、assistant 是 string/null、user 可用 string/content parts。JSON task 保留 `response_format:{type:'json_object'}`、明確 JSON prompt 與 finish reason 檢查；`aborted`／`insufficient_system_resource` 在 adapter 分類為可重試中斷，保留 finish／usage metadata，部分輸出不進記憶。
 - [Vision](https://api-docs.deepseek.com/guides/vision/)：user content 中使用 text + image_url 區塊，inline image 是 Base64 data URL；本地限制詳見看圖說明。
+- [Responses API guide](https://api-docs.deepseek.com/guides/responses_api/)與[Create a response reference](https://api-docs.deepseek.com/api/create-response/)：`deepseek-flash` 可接收 image input，但目前 tools 只執行 function；其他 built-in types 會被忽略，guide 明列 `web_search` 現階段被忽略。因此本版不建立 unsupported Search transport，也不產生假 source metadata。
 - [LINE Get content／quotedMessageId](https://developers.line.biz/en/reference/messaging-api/nojs/)：原生 content API 使用 api-data.line.me；replyToken 應在收到 webhook 一分鐘內使用，圖片保存時間不保證。
 - [GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)與[配額](https://developers.google.com/apps-script/guides/services/quotas)：使用 timeoutSeconds；POST／response 上限 50 MB，本版採更小的應用上限。

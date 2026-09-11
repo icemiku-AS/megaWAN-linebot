@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.14.1 Codebase Simplification Edition`
-Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimodal Edition`
+Version represented by this Git ref: `v1.14.2 Natural Search & Vision Edition`
+Previous stable baseline described in this file: `v1.14.1 Codebase Simplification Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimo
 
 ## Active Runtime Source Files
 
-以下 21 個檔案代表 v1.14.1 Codebase Simplification Edition 的 active GAS runtime source：
+以下 21 個檔案代表 v1.14.2 Natural Search & Vision Edition 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -120,6 +120,43 @@ Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimo
 * `99_changelog.md`：歷史版本紀錄。
 
 修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
+
+---
+
+## v1.14.2 Version Boundary
+
+本版是 Natural Search & Vision Edition，正式基線為 main 的 v1.14.1。現行 source of truth 是目前 Git ref 的實際 `.gs`；本地修改不代表已 merge、發布或部署到 GAS。
+
+### DeepSeek official contract and Search boundary
+
+2026-09-11 重新核對 DeepSeek 最新官方 release、Responses guide 與 API reference：V4.1 Flash 的 canonical model 仍為 `deepseek-flash`，Chat Completions 與 Responses 都支援文字／圖片輸入；但最新 Responses contract 的 `tools` 目前只支援 function tools，其他 built-in tool type 會被忽略，guide 亦明確說目前的 `web_search` tool 會被忽略。這和過渡期曾出現的舊 Web Search 文件不同，本版依最新 release/reference 判定。
+
+因此本版沒有送出無效的 `/responses` + `web_search` payload，也沒有以模型自然文字偽造 `usedWebSearch`、來源 annotation 或 URL。13 個正式 AI task 全部維持既有 `/chat/completions`、provider-neutral AiService、`deepseek-flash` 與 thinking enabled / reasoning_effort high。一般聊天或圖片問題若明確要求上網，會誠實回覆即時搜尋目前不可用；system prompt 也禁止宣稱已搜尋或捏造來源。沒有實際 Search 就沒有來源 bubble；最多 3 個來源、來源去重與保留 LINE slot 的 UX 要等官方重新提供可執行 tool 與正式 source metadata 後才啟用。
+
+### Natural quoted-image Vision
+
+1. 私訊直接傳 JPEG/PNG 仍會自動分析；私訊用 LINE Reply 引用圖片後，可直接輸入任意自然問題，不需要 `#小浣` 或「看圖」。
+2. 群組／room 單純貼圖與普通引用圖片聊天仍完全靜默；只有引用圖片且文字以 `#小浣` 觸發時才探測並分析。舊 `#小浣 看圖 <問題>` 完整相容。
+3. LINE `quotedMessageId` 不提供原訊息型別；自然路由只向固定 Get message content endpoint 安全探測。確定取得 JPEG/PNG 才進 Vision，非圖片／不可取得的自然引用回到普通文字流程；明確舊看圖指令仍顯示既有圖片錯誤提示。
+4. 沒有 `quotedMessageId` 絕不猜上一張圖，不新增圖片 cache、配對 Sheet、媒體資料庫或永久保存。圖片 bytes、Base64、data URL、reasoning 仍不進 Sheet、Cache、LINE 或 console；memory 只保存 placeholder、問題與分析文字。
+5. Vision 仍走 `image_analysis` Chat Completions。若問題要求上網查證，會保留可靠圖片判讀並附上搜尋不可用說明，不宣稱完成外部查證；Vision + Web Search 尚未正式支援。
+
+### Reliability and security fixes
+
+1. `getReaderLayerHostname_()` 先解析完整 authority，拒絕所有 userinfo、IPv6 authority、非法 port、非法 label 與非 canonical numeric host；`isSafePublicUrl()` 擴充 all-127 loopback、localhost suffix、private/link-local/CGNAT/multicast 與 metadata host 防線。拒絕時不把可能含帳密的 raw URL 寫入 console。
+2. PTT 與 legacy raw HTML 的直接 UrlFetch 關閉自動 redirect，避免已通過檢查的公開 URL 轉向內網／metadata host。Jina 與 FxTwitter 仍只呼叫固定 provider endpoint。
+3. Pending Reply 改由 `deliverPendingReply_()` 在 ScriptLock 內取得資料、呼叫既有 LINE Reply transport，確認 HTTP 2xx 後才 delete。非 2xx／exception 會保留 row，下一次可再交付；程序若在成功送達後、刪除前中斷，可能 at-least-once 重送，但不會 delete-before-send 永久遺失。
+4. PendingReplies schema、conversationId isolation、ReplyMode、image pending priority 與既有清理指令均不變。沒有承諾 exactly-once，也沒有新增 distributed transaction 或平行 Queue。
+
+### Preserved contracts
+
+同一 webhook batch 仍共用 40 秒 absolute deadline；AI 30 秒 cap、Reader 12 秒 cap、最小 request budget、圖片下載 10 秒、LINE Reply 10 秒與背景 task timeout 均未放大。AiService 不 retry；Search 不會啟動，因此不會產生 continuation 或額外同步 fetch。NewsInbox、Weekly Editorial、NewsUrlQueue、WebTaskQueue、Reader priority、PTT/FxTwitter/Jina、JSON validators、Sheet schema、Script Properties、Trigger handlers、compatibility wrappers、Gemini dormant、cleanup 二段確認與 memory/cache contract 保留。
+
+### Migration, deployment and verification
+
+沒有新增 runtime file、Script Property、Sheet migration、setup、Trigger、Web App URL 或外部 service credential；仍只需既有 `DEEPSEEK_API_KEY`。手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`12_Prompts.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`，再建立 v1.14.2 Apps Script version 並更新既有 deployment。文件與 test 不部署。
+
+本機 `node tests/v1140_smoke.cjs` 由 49 項擴充至 54 項，未呼叫真實 GAS／LINE／DeepSeek。新增回歸涵蓋私訊／群組自然 quote、非圖片 quote fallback、沒有 quote 不猜圖、舊看圖相容、搜尋誠實失敗、URL userinfo／port／IPv4／IPv6／redirect，以及 Pending Reply success/failure/retry/conversation isolation。官方 Search success、source metadata／bubble、Vision + Search 無法以離線 mock 宣稱完成，需待 DeepSeek 正式 tool contract 可用後另版實作與 live smoke。
 
 ---
 
@@ -192,7 +229,7 @@ Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimo
 
 ---
 
-以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.1 實作。
+以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.2 實作。
 
 ## v1.13.2 Version Boundary
 
@@ -648,7 +685,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Historical Smoke Tests for v1.13.2 X Post Weekly Display
 
-以下保留 v1.13.2 當時的檢查紀錄；v1.14.1 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
+以下保留 v1.13.2 當時的檢查紀錄；v1.14.2 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
 
 本版只修改週新聞 presentation 與 Diagnostic title duplicate decision，不修改 Sheet、Reader、AI、cache payload、router 或 Trigger contract，也不需要 migration、setup、新 Trigger 或新增 Script Properties。
 
@@ -715,7 +752,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.14.1 Codebase Simplification Edition`
-Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimodal Edition`
+Last Confirmed Version at this Git ref: `v1.14.2 Natural Search & Vision Edition`
+Previous stable baseline described in this file: `v1.14.1 Codebase Simplification Edition`
 Last Confirmed Date: `2026-09-11`
-Last Documentation Note: shared header writer / Reader helpers, redundant branch and object cleanup; all existing signatures and product contracts retained. 49 local mock checks pass; manual GAS deployment and live smoke tests required.
+Last Documentation Note: natural quoted-image routing, Web Search honesty boundary, URL authority hardening and Pending Reply acknowledge-after-send. 54 local mock checks pass; manual GAS deployment and live smoke tests required.

@@ -2,7 +2,7 @@
 // 01_Main.gs
 // Core／LINE transport：主要入口、首次設定、Trigger 安裝與 Webhook 事件主流程。
 //
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 維護原則：
 // 1. 對外入口是 doPost()、setupLogSheet() 與 Trigger 安裝函式；公開 handler 名稱不得因分檔調整而改變。
@@ -125,16 +125,20 @@ function handleLineEvent(event, webhookStartedAtMs) {
   const conversationId = getConversationId(event);
 
   if (event.type === 'message' && event.message && event.message.type === 'image') {
-    // 群組貼圖完全靜默；需另用原生引用 + #小浣 看圖 指定，無需保存圖片或建立配對狀態。
+    // 群組貼圖完全靜默；需另用原生引用 + #小浣 觸發，無需保存圖片或建立配對狀態。
     if (sourceType !== 'user') return;
     const imageSet = event.message.imageSet;
     // ponytail: 私訊一次多圖只看第一張；需要跨圖分析時再擴充 request contract。
     if (imageSet && Number.isInteger(imageSet.index) && imageSet.index > 1) return;
-    const pendingImageReply = getAndDeletePendingReply(conversationId);
-    const imageReply = pendingImageReply && pendingImageReply.text
-      ? getBotTextPendingDelivery_(pendingImageReply.text, false) + '\n\n這張圖片尚未分析，請再傳一次。'
-      // 舊版 LINE 可能只提供 imageSet.id，不能把每張都誤當第一張。
-      : imageSet && imageSet.index !== 1 ? getBotTextImageError_('image_album_unknown_index')
+    const pendingImageDelivery = deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
+      return getBotTextPendingDelivery_(pendingReply.text, false) + '\n\n這張圖片尚未分析，請再傳一次。';
+    });
+    if (pendingImageDelivery) {
+      logAssistantReplyToSheet(event, conversationId, pendingImageDelivery.text, pendingImageDelivery.replyMode || 'pending_reply_delivery');
+      return;
+    }
+    // 舊版 LINE 可能只提供 imageSet.id，不能把每張都誤當第一張。
+    const imageReply = imageSet && imageSet.index !== 1 ? getBotTextImageError_('image_album_unknown_index')
       : analyzeLineImage_(event, conversationId, event.message.id, '', aiExecutionContext) +
         (imageSet && Number(imageSet.total) > 1 ? '\n\n這次只分析多圖中的第一張；其他圖片請分次傳送。' : '');
     replyToLine(event.replyToken, imageReply);
@@ -153,8 +157,18 @@ function handleLineEvent(event, webhookStartedAtMs) {
   if (!userText) return;
 
   const commandInfo = parseCommand(userText);
+  const quotedMessageId = event.message.quotedMessageId;
+  // LINE quote 不附原訊息型別：私訊自然文字可探測圖片；群組只有明確 #小浣 才探測，維持安靜原則。
+  // 明確的其他 # 指令仍照原功能執行；沒有 quotedMessageId 就絕不猜上一張圖片。
+  const isNaturalQuotedImageRequest = commandInfo.mode === 'chat' && !!quotedMessageId &&
+    !/^#小浣\s+(?:版本(?:紀錄)?|reset)$/.test(userText) && (
+    sourceType === 'user'
+      ? (!hasTriggerPrefix(userText) || userText.startsWith('#小浣'))
+      : (isGroupLike && userText.startsWith('#小浣'))
+  );
+  const isQuotedImageRequest = commandInfo.mode === 'image_analysis' || isNaturalQuotedImageRequest;
   // 看圖問題也屬圖片輸入；先遮蔽編碼，再交給 Sheet 或 Pending Reply 流程。
-  if (commandInfo.mode === 'image_analysis') userText = redactAiMediaText_(userText);
+  if (isQuotedImageRequest) userText = redactAiMediaText_(userText);
 
   logMessageToSheet({
     event: event,
@@ -168,17 +182,16 @@ function handleLineEvent(event, webhookStartedAtMs) {
   // Pending Reply 優先交付
   // ======================================================
 
-  const pendingReply = getAndDeletePendingReply(conversationId);
-
-  if (pendingReply && pendingReply.text) {
-    // 看圖問題中的網址不是新聞收件；交付舊結果後請使用者重送明確看圖指令。
-    const enqueueResult = commandInfo.mode === 'image_analysis' ? null
+  const pendingDelivery = deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
+    // 看圖問題中的網址不是新聞收件；交付舊結果後請使用者重送圖片問題。
+    const enqueueResult = isQuotedImageRequest ? null
       : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
-    const deliveryText = getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
-      (commandInfo.mode === 'image_analysis' ? '\n\n這張圖片尚未分析，請重送看圖指令。' : '');
+    return getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
+      (isQuotedImageRequest ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' : '');
+  });
 
-    replyToLine(event.replyToken, deliveryText);
-    logAssistantReplyToSheet(event, conversationId, deliveryText, pendingReply.replyMode || 'pending_reply_delivery');
+  if (pendingDelivery) {
+    logAssistantReplyToSheet(event, conversationId, pendingDelivery.text, pendingDelivery.replyMode || 'pending_reply_delivery');
     return;
   }
 
@@ -299,6 +312,25 @@ function handleLineEvent(event, webhookStartedAtMs) {
     return;
   }
 
+  if (isNaturalQuotedImageRequest) {
+    const naturalImageQuestion = userText.startsWith('#小浣')
+      ? userText.replace(/^#小浣\s*/, '').trim()
+      : userText;
+    const naturalImageReply = analyzeLineImage_(
+      event,
+      conversationId,
+      quotedMessageId,
+      naturalImageQuestion,
+      aiExecutionContext,
+      true
+    );
+    if (naturalImageReply !== null) {
+      replyToLine(event.replyToken, naturalImageReply);
+      logAssistantReplyToSheet(event, conversationId, naturalImageReply, 'image_analysis');
+      return;
+    }
+  }
+
   let aiReply = '';
   let aiReplyMode = commandInfo.mode;
 
@@ -347,6 +379,9 @@ function handleLineEvent(event, webhookStartedAtMs) {
         const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
         aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
         aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
+      } else if (isExplicitWebSearchRequest_(commandInfo.userPrompt)) {
+        // 最新官方 Responses contract 會忽略 web_search；先固定誠實失敗，避免模型假裝已搜尋。
+        aiReply = getBotTextWebSearchUnavailable_();
       } else {
         aiReply = requireAiText_(runAiMemoryTask(
           'general_chat',

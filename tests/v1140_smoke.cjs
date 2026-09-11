@@ -1,4 +1,4 @@
-// v1.14.0 基礎 + v1.14.1 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.14.0 基礎 + v1.14.1/v1.14.2 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -28,7 +28,7 @@ const context = vm.createContext({
   },
   PropertiesService: { getScriptProperties: () => ({ getProperty: () => 'test-only-placeholder' }) },
   CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value), remove: key => cache.delete(key) }) },
-  LockService: { getScriptLock: () => ({ waitLock: () => { now += lockDelay; }, releaseLock() {} }) },
+  LockService: { getScriptLock: () => ({ tryLock: () => { now += lockDelay; return true; }, waitLock: () => { now += lockDelay; }, releaseLock() {} }) },
   UrlFetchApp: { fetch: (url, options) => { calls.push({ url, options }); return fetchImpl(url, options); } },
   HtmlService: { createHtmlOutput: value => value }
 });
@@ -36,7 +36,15 @@ vm.runInContext(source, context);
 // 保留實際 ConversationLog writer 和 Cache memory，只替換 Google 服務的資料來源。
 context.ensureLogSheet_ = () => ({ appendRow: row => rows.push(row) });
 context.getRecentWeeklySummaryText = () => '';
-context.getAndDeletePendingReply = () => { const value = pending; pending = null; return value; };
+const pendingDelivery = context.deliverPendingReply_;
+context.deliverPendingReply_ = (conversationId, replyToken, buildDeliveryText) => {
+  if (!pending) return null;
+  const current = pending;
+  const deliveryText = buildDeliveryText(current);
+  context.replyToLine(replyToken, deliveryText);
+  pending = null;
+  return { text: deliveryText, replyMode: current.replyMode || '' };
+};
 const transportReply = context.replyToLine;
 context.replyToLine = (token, text) => replies.push({ token, text });
 const value = expression => vm.runInContext(expression, context);
@@ -118,6 +126,48 @@ check('group and room images stay silent, explicit quote carries question', () =
   assert(calls[0].url.endsWith('/99999/content'));
   assert.equal(JSON.parse(calls[1].options.payload).messages.at(-1).content[0].text, '哪裡出錯？');
   assert.equal(replies.length, 1);
+  context.handleLineEvent(event('text', 'room', { text: '#小浣 這張圖在講什麼？', quotedMessageId: '88888' }), now);
+  assert(calls[2].url.endsWith('/88888/content'));
+  assert.equal(JSON.parse(calls[3].options.payload).messages.at(-1).content[0].text, '這張圖在講什麼？');
+  assert.equal(replies.length, 2);
+});
+check('private quoted image accepts natural text and never guesses without quote', () => {
+  context.handleLineEvent(event('text', 'user', { text: '這是什麼？', quotedMessageId: '77777' }), now);
+  assert(calls[0].url.endsWith('/77777/content'));
+  assert.equal(JSON.parse(calls[1].options.payload).messages.at(-1).content[0].text, '這是什麼？');
+  context.handleLineEvent(event('text', 'user', { text: '這是真的嗎？' }), now);
+  assert(!calls.slice(2).some(call => call.url.includes('api-data.line.me')), 'no quote never guesses a previous image');
+  assert.equal(JSON.parse(calls.at(-1).options.payload).messages.at(-1).content, '這是真的嗎？');
+  const callCount = calls.length;
+  context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
+  assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
+  assert(replies.at(-1).text.includes('v1.14.2'));
+});
+check('non-image quote falls back to ordinary private chat', () => {
+  fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : completion('一般文字回答');
+  context.handleLineEvent(event('text', 'user', { text: '接著說', quotedMessageId: '66666' }), now);
+  assert.equal(calls.length, 2); assert(calls[0].url.includes('api-data.line.me'));
+  assert(calls[1].url.endsWith('/chat/completions'));
+  assert.equal(replies[0].text, '一般文字回答');
+});
+check('unsupported official Web Search stays honest and does not fabricate sources', () => {
+  context.handleLineEvent(event('text', 'user', { text: '幫我上網查 DeepSeek 最新消息' }), now);
+  assert.equal(calls.length, 0, 'explicit search does not send a web_search payload that the official API ignores');
+  assert(replies[0].text.includes('無法完成即時網路搜尋'));
+  assert(!replies[0].text.includes('參考來源')); assert(!/https?:\/\//.test(replies[0].text));
+  const generalPrompt = context.buildAiSystemPrompt_('general_chat');
+  const imagePrompt = context.buildAiSystemPrompt_('image_analysis');
+  assert(generalPrompt.includes('不得聲稱已上網搜尋'));
+  assert(imagePrompt.includes('不得聲稱已上網搜尋'));
+  assert(!source.includes('/responses')); assert(!source.includes("type: 'web_search'"));
+});
+check('quoted image can still be analyzed when Web Search is unavailable', () => {
+  context.handleLineEvent(event('text', 'group', { text: '#小浣 幫我查一下這張圖', quotedMessageId: '55555' }), now);
+  assert.equal(calls.length, 2); assert(calls[0].url.includes('api-data.line.me'));
+  assert(calls[1].url.endsWith('/chat/completions'));
+  assert(replies[0].text.includes('看見可辨識'));
+  assert(replies[0].text.includes('無法完成即時網路搜尋'));
+  assert(!replies[0].text.includes('參考來源'));
 });
 check('untriggered quote, missing quote, external image, album', () => {
   context.handleLineEvent(event('text', 'group', { text: '哪裡出錯？', quotedMessageId: '99999' }), now);
@@ -152,7 +202,7 @@ check('pending image question URL is not collected as news', () => {
     pending = { text: '先前結果' };
     context.handleLineEvent(event('text', 'group', { text: '#小浣 看圖 https://example.org 是來源嗎？', quotedMessageId: '123' }), now);
     assert.equal(intakeCount, 0); assert.equal(calls.length, 0);
-    assert(replies[0].text.includes('請重送看圖指令')); assert(!replies[0].text.includes('新網址'));
+    assert(replies[0].text.includes('重新回覆圖片')); assert(!replies[0].text.includes('新網址'));
     pending = { text: '另一份先前結果' };
     context.handleLineEvent(event('text', 'group', { text: 'https://example.org/news' }), now);
     assert.equal(intakeCount, 1, 'ordinary pending URL intake is preserved');
@@ -173,7 +223,8 @@ check('album without a valid index requires explicit image selection', () => {
 check('LINE transport bounds timeout and never exposes external failures', () => {
   const sensitive = 'external-error-sentinel data:image/png;base64,token-sentinel';
   fetchImpl = () => response(400, sensitive);
-  transportReply('test-reply', 'safe analysis');
+  assert.equal(transportReply('test-reply', 'safe analysis'), false, 'legacy callers keep non-throwing HTTP failure behavior');
+  assert.throws(() => transportReply('test-reply', 'safe analysis', true), error => error.message === 'LINE Reply API request failed.');
   assert.equal(calls[0].options.timeoutSeconds, 10);
   assert(logs.join('').includes('400')); assert(!logs.join('').includes('sentinel'));
   fetchImpl = () => { throw new Error(sensitive); };
@@ -368,6 +419,44 @@ function headerSheet(headers) {
   };
 }
 
+function pendingReplySheet(records) {
+  const headers = ['PendingId', 'CreatedAt', 'ConversationId', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'ReplyText', 'Status', 'DeliveredAt', 'ReplyMode'];
+  const data = records.map(record => headers.map(header => record[header] || ''));
+  return {
+    data,
+    getLastColumn: () => headers.length,
+    getLastRow: () => data.length + 1,
+    getRange: (row, column, rowCount, columnCount) => ({
+      getValues: () => {
+        if (row === 1) return [headers.slice(column - 1, column - 1 + columnCount)];
+        return data.slice(row - 2, row - 2 + rowCount).map(values => values.slice(column - 1, column - 1 + columnCount));
+      }
+    }),
+    deleteRow: row => data.splice(row - 2, 1)
+  };
+}
+
+check('Pending Reply consumes only after LINE success and survives failure for retry', () => {
+  const sheet = pendingReplySheet([
+    { PendingId: 'other', ConversationId: 'group:other', ReplyText: '別組結果', Status: 'pending', ReplyMode: 'web_lazy_summary' },
+    { PendingId: 'target', ConversationId: 'group:a', ReplyText: '圖片任務結果', Status: 'pending', ReplyMode: 'image_analysis' }
+  ]);
+  let attempts = 0;
+  withStubs({
+    ensurePendingRepliesSheet_: () => sheet,
+    replyToLine: () => { attempts++; if (attempts === 1) throw new Error('LINE Reply API request failed.'); return true; }
+  }, () => {
+    assert.throws(() => pendingDelivery('group:a', 'token', item => item.text), /LINE Reply API request failed/);
+    assert.equal(sheet.data.length, 2, 'failed transport keeps pending row');
+    assert.equal(context.getAndDeletePendingReply('group:a').text, '圖片任務結果');
+    assert.equal(sheet.data.length, 2, 'legacy getter is now non-destructive');
+    const delivered = pendingDelivery('group:a', 'token', item => '交付：' + item.text);
+    assert.equal(delivered.text, '交付：圖片任務結果'); assert.equal(delivered.replyMode, 'image_analysis');
+    assert.equal(sheet.data.length, 1, 'successful retry consumes target row');
+    assert.equal(sheet.data[0][2], 'group:other', 'conversation isolation retained');
+  });
+});
+
 check('header writer preserves column order, unknown columns and falsy own values', () => {
   const headers = [' Flag ', 'Zero', 'Empty', 'Missing', 'Inherited', 'constructor', 'When', 'Zero'];
   const sheet = headerSheet(headers);
@@ -399,8 +488,15 @@ check('memory saving keeps the last six pairs and leaves other conversations unc
 });
 
 check('URL safety, X status routing and weekly display share existing hostname semantics', () => {
-  for (const url of ['https://example.org/path', ' HTTPS://EXAMPLE.ORG:8443?q=1 ', 'http://sub.example.org#fragment']) assert(context.isSafePublicUrl(url), url);
-  for (const url of ['', 'ftp://example.org', 'https:///path', 'https://example.org:bad/', 'http://localhost', 'http://127.0.0.1', 'http://10.2.3.4', 'http://172.16.0.1', 'http://192.168.1.2', 'http://169.254.169.254', 'http://metadata.google.internal']) assert(!context.isSafePublicUrl(url), url);
+  for (const url of ['https://example.org/path', ' HTTPS://EXAMPLE.ORG:8443?q=1 ', 'http://sub.example.org#fragment', 'https://8.8.8.8:443/', 'https://x.com/user/status/12345', 'https://www.ptt.cc/bbs/C_Chat/M.123.html']) assert(context.isSafePublicUrl(url), url);
+  for (const url of ['', 'ftp://example.org', 'https:///path', 'https://example.org:bad/', 'https://example.org:0/', 'https://example.org:65536/',
+    'https://public.example@127.0.0.1/', 'https://username@127.0.0.1/', 'https://username:password@127.0.0.1/', 'HTTPS://USER@LOCALHOST:8080/',
+    'http://localhost', 'http://sub.localhost', 'http://127.0.0.1', 'http://127.0.0.2:8080', 'http://127.1', 'http://127.000.000.001',
+    'http://0177.0.0.1', 'http://2130706433', 'http://0x7f000001', 'http://0x7f.0.0.1',
+    'http://10.2.3.4', 'http://100.64.0.1', 'http://172.31.255.255', 'http://192.168.1.2', 'http://169.254.169.254', 'http://224.0.0.1',
+    'http://metadata.google.internal', 'http://metadata.google.internal.', 'http://[::1]/', 'http://[fe80::1]/']) assert(!context.isSafePublicUrl(url), url);
+  assert.equal(context.getReaderLayerHostname_('https://public.example@127.0.0.1/'), '');
+  assert(!logs.join(' ').includes('username:password'), 'userinfo must not enter URL safety logs');
   for (const host of ['x.com', 'twitter.com', 'mobile.twitter.com', 'sub.twitter.com', 'fxtwitter.com', 'fixupx.com']) {
     for (const route of ['/user/status/12345', '/i/web/status/12345?x=1', '/user/status/12345/photo/1']) {
       const url = 'https://' + host + route;
@@ -423,11 +519,15 @@ check('PTT explicit title, inferred title, over18 gate and short text keep their
     assert(result.ok); assert.equal(result.title, title);
     assert.equal(result.mainText, context.htmlToReadableText_(html));
     assert.equal(calls.at(-1).options.headers.Cookie, 'over18=1');
+    assert.equal(calls.at(-1).options.followRedirects, false);
   }
   fetchImpl = () => response(200, '我同意，我已年滿十八歲');
   assert.equal(context.fetchPttPageWithOver18Cookie_('https://ptt.cc').errorType, 'ptt_over18_failed');
   fetchImpl = () => response(200, '<div id="main-content">短</div>');
   assert.equal(context.fetchPttPageWithOver18Cookie_('https://ptt.cc').errorType, 'ptt_empty_content');
+  fetchImpl = () => response(302, '', { Location: 'http://127.0.0.1/' });
+  assert.equal(context.fetchRawWebPage('https://example.org/redirect').errorType, 'raw_html_fetch_failed');
+  assert.equal(calls.at(-1).options.followRedirects, false);
 });
 
 check('Reader error metadata keeps explicit zero and retry decisions', () => {
