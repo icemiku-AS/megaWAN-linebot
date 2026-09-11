@@ -390,8 +390,9 @@ function handleLineEvent(event, webhookStartedAtMs) {
           requireAiCallOptionsForExecutionContext_(aiExecutionContext, { forceWebSearch: explicitWebSearch })
         );
         if (!generalChatResult.ok) {
-          aiReply = getBotTextWebSearchError_(generalChatResult.errorType);
-          aiReplyMode = 'web_search_error';
+          const isSearchFailure = explicitWebSearch || generalChatResult.errorType === 'ai_web_search_failed';
+          aiReply = isSearchFailure ? getBotTextWebSearchError_(generalChatResult.errorType) : getBotTextAiError_();
+          aiReplyMode = isSearchFailure ? 'web_search_error' : 'general_chat_error';
         } else {
           aiReply = generalChatResult.text;
           if (generalChatResult.usedWebSearch) {

@@ -165,10 +165,11 @@ AiService content 沿用字串，只有 user message 可另用 `[{type:'text', t
 - output 實際出現 `web_search_call` 才是 `usedWebSearch=true`。明確搜尋若沒有 call、Responses 失敗或 timeout，會誠實回錯，不 fallback 到 Chat Completions 或舊知識。
 - Search 發生時，來源獨立放在同一次 LINE Reply 最後一則；主回答最多 4 則，來源 1 則。來源限 provider action／`url_citation` metadata 的公開 HTTP(S) URL，去重後最多 3 個；沒有可靠 URL 時明示 provider 未提供，不從回答猜網址。
 - Search raw result、action、annotation、reasoning 與來源頁面不進 memory、Sheet 或 console；conversation memory 只保存最終主回答文字。
+- 明確搜尋或 provider 回報 `ai_web_search_failed` 時使用搜尋錯誤文案；普通 auto 對話若只是 Responses HTTP、auth、timeout 或 generic provider failure，使用一般 AI 服務錯誤，不會臆測搜尋已開始。
 - 引用圖片仍由 Chat Completions Vision 處理；要求圖片查證時可先完成圖片判讀，但本版不再追加第二次 HIGH Responses call，因此會明示即時網路查證未完成。
 - 不新增 Search Queue、外部 Search API、API key、Agent framework 或 raw search log。
 
-DeepSeek 官方頁面目前有版本落差：Responses reference／搜尋索引列出 server-side Search、forced tool choice 與 `web_search_call`，但直接取得的 guide 仍可讀到 built-in `web_search` ignored。精確修改時間與 production endpoint 尚未以 live probe 證實，詳見 [CURRENT_VERSION.md](CURRENT_VERSION.md#deepseek-official-contract-and-search-boundary)。本機沒有 API key，未要求提供；部署後需手動做最小 Search smoke test。
+DeepSeek 官方頁面目前有版本落差：先前搜尋索引／已發布 contract 列出 server-side Search、forced tool choice 與 `web_search_call`，但 2026-09-12 直接取得的 Responses reference 與 guide 都仍寫 built-in `web_search` ignored。精確修改時間與 production endpoint 尚未以 live probe 證實，詳見 [CURRENT_VERSION.md](CURRENT_VERSION.md#deepseek-official-contract-and-search-boundary)。本機沒有 API key，未要求提供；部署後需手動做最小 Search smoke test。
 
 ### 直接貼網址
 
@@ -402,7 +403,7 @@ GAS 手動同步順序：
 
 若同步或 smoke test 發現問題，先讓 Web App deployment 保持在上一個穩定 Apps Script version，再檢查本版同步的十二個 runtime 檔案。
 
-本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。共 59 項；涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、`web_search_call`、來源驗證／獨立 bubble／第 5 則 slot、honest failure、memory privacy，以及既有 URL authority／redirect、Natural Vision、業務流程與 Pending transport／lock／acknowledge。未能本機執行 GAS，亦未用真實 API key 執行 LINE/DeepSeek；離線 mock 不證明 production endpoint 已部署同一 Search contract。
+本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。共 60 項；涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、`web_search_call`、來源驗證／獨立 bubble／第 5 則 slot、情境化錯誤文案、honest failure、memory privacy，以及既有 URL authority／redirect、Natural Vision、業務流程與 Pending transport／lock／acknowledge。未能本機執行 GAS，亦未用真實 API key 執行 LINE/DeepSeek；離線 mock 不證明 production endpoint 已部署同一 Search contract。
 
 本版特別回歸：Search auto／forced、實際 call 判定、最多三來源、長回答保留來源 bubble、失敗不 fallback；Natural quoted image、群組 quiet、沒有 quote 不猜圖；userinfo/IPv4/IPv6/port/redirect 防線；以及 Pending Reply LINE failure 保留、retry 成功才 consume。原有 NewsInbox／Queue／X／PTT／週編輯台／memory／deadline 回歸全數繼續適用。
 
@@ -480,6 +481,6 @@ GAS 手動同步順序：
 - [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：Chat Completions 送 `thinking:{type:'enabled'}` 與 `reasoning_effort:'high'`；general_chat Responses 轉為 `reasoning:{effort:'high'}`。官方目前明列 temperature／presence_penalty／frequency_penalty 在 thinking 無效，`top_p` 雖可用但低於 0.95 會被提升至 0.95。本版刻意省略全部 sampling 欄位。
 - [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)：system content 是 string、assistant 是 string/null、user 可用 string/content parts。JSON task 保留 `response_format:{type:'json_object'}`、明確 JSON prompt 與 finish reason 檢查；`aborted`／`insufficient_system_resource` 在 adapter 分類為可重試中斷，保留 finish／usage metadata，部分輸出不進記憶。
 - [Vision](https://api-docs.deepseek.com/guides/vision/)：user content 中使用 text + image_url 區塊，inline image 是 Base64 data URL；本地限制詳見看圖說明。
-- [Responses API guide](https://api-docs.deepseek.com/guides/responses_api/)與[Create a response reference](https://api-docs.deepseek.com/api/create-response/)：reference／搜尋索引列 `web_search` 為 server-side tool，支援 `auto`／`required`／特定 tool choice，並以 `web_search_call` 表示實際搜尋；直接 guide 頁面仍可讀到 built-in Search ignored。兩者沒有可比較的精確更新時間，本版依 Search contract 實作並用實際 call fail closed；未宣稱 production endpoint 已 live 驗證。
+- [Responses API guide](https://api-docs.deepseek.com/guides/responses_api/)與[Create a response reference](https://api-docs.deepseek.com/api/create-response/)：兩個直接頁面目前都以 canonical `deepseek-flash` 示範 Responses，並仍寫 built-in `web_search` ignored；這和先前官方搜尋索引／已發布 Search contract 不一致。本版保留 Search transport並以實際 `web_search_call` fail closed；未宣稱 production endpoint 已 live 驗證。
 - [LINE Get content／quotedMessageId](https://developers.line.biz/en/reference/messaging-api/nojs/)：原生 content API 使用 api-data.line.me；replyToken 應在收到 webhook 一分鐘內使用，圖片保存時間不保證。
 - [GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)與[配額](https://developers.google.com/apps-script/guides/services/quotas)：使用 timeoutSeconds；POST／response 上限 50 MB，本版採更小的應用上限。

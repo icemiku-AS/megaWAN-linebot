@@ -129,9 +129,9 @@ Previous stable baseline described in this file: `v1.14.1 Codebase Simplificatio
 
 ### DeepSeek official contract and Search boundary
 
-2026-09-12 重新核對的 Responses reference／搜尋索引 contract 包含 `function` 與 server-side `web_search`，`tool_choice` 支援 `auto`、`required` 及特定 `{type:"web_search"}`；真正執行搜尋時，output 會出現 `web_search_call`。Responses 是 stateless，本版每次仍完整送入 system、trimmed user/assistant history、WeeklySummary memory 與當次 user message，並使用 `reasoning.effort=high`、`max_output_tokens`，不依賴 `previous_response_id`、`conversation` 或 `store`。
+本版依已發布的 Responses Search contract 提供 server-side `web_search`；`tool_choice` 使用 `auto` 或特定 `{type:"web_search"}`，真正執行搜尋時 output 必須出現 `web_search_call`。Responses 是 stateless，本版每次仍完整送入 system、trimmed user/assistant history、WeeklySummary memory 與當次 user message，並使用 `reasoning.effort=high`、`max_output_tokens`，不依賴 `previous_response_id`、`conversation` 或 `store`。
 
-官方頁面目前仍存在發布時間差：同一個 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) 的直接頁面仍可讀到 built-in `web_search` ignored，但 [Responses reference](https://api-docs.deepseek.com/api/create-response/) 的搜尋索引／contract 已列 server-side Search 與上述 tool choice。頁面沒有提供足以排序兩份內容的精確更新時間；因此程式依已發布的 Search contract 實作，同時以實際 `web_search_call` fail closed，不能把「模型說有搜尋」當成功。本機 process environment 沒有 `DEEPSEEK_API_KEY`，未要求提供 secret，也未執行 live probe；正式部署仍需手動確認 endpoint 已套用新版 contract。
+2026-09-12 直接取得的 [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) 目前都仍寫 built-in `web_search` ignored，和先前官方搜尋索引／已發布 Search contract 有落差；頁面沒有提供足以排序內容的精確更新時間。程式保留已完成的 Search transport，但只以實際 `web_search_call` fail closed，不能把「模型說有搜尋」當成功。本機 process environment 沒有 `DEEPSEEK_API_KEY`，未要求提供 secret，也未執行 live probe；正式部署必須手動確認 production endpoint 的 Search capability。
 
 [V4.1 Flash updates](https://api-docs.deepseek.com/updates/)與[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)以 `deepseek-flash` 為 canonical name；`deepseek-v4-flash` 與 `deepseek-v4-flash-vision-exp` 是暫時 compatibility aliases。Responses 文件已列 canonical name，因此本版所有 transport 都送 `deepseek-flash`，不需要 alias mapping；舊名沒有進入 registry、feature layer 或 runtime payload。[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)與[Vision](https://api-docs.deepseek.com/guides/vision/)的現行 HIGH／圖片 contract 保留。
 
@@ -139,7 +139,7 @@ Previous stable baseline described in this file: `v1.14.1 Codebase Simplificatio
 
 `usedWebSearch` 只在 output 真的有 `web_search_call` 時為 true。來源只從 `web_search_call.action.sources`、action URL 或 `output_text.annotations[type=url_citation]` 取得，經 public HTTP(S)／SSRF 驗證、URL 去重後最多 3 個；不從回答文字 regex 猜網址。實際搜尋會把來源獨立放在同一次 LINE Reply 的最後一則；主回答最多占 4 則。Search metadata、raw action、annotations、reasoning 與網頁內容不進 memory、Sheet 或 console。若 provider 未提供可靠 URL，最後一則會誠實說明沒有可列來源。
 
-明確 Search 未產生 `web_search_call`、Responses HTTP／provider failure、timeout、malformed output 或截斷都不會 fallback 到 Chat Completions 或舊知識。AiService 不 retry，DeepSeek server-side continuation 只限單一 request，仍受 webhook absolute deadline 與現行 request timeout 約束。
+明確 Search 未產生 `web_search_call`、Responses HTTP／provider failure、timeout、malformed output 或截斷都不會 fallback 到 Chat Completions 或舊知識。明確搜尋或 provider 回報 `ai_web_search_failed` 才顯示 Search-specific 錯誤；普通 auto 對話若只是 HTTP、auth、timeout 或 generic provider failure，改顯示一般 AI 服務錯誤，不臆測搜尋已開始。AiService 不 retry，DeepSeek server-side continuation 只限單一 request，仍受 webhook absolute deadline 與現行 request timeout 約束。
 
 ### Natural quoted-image Vision
 
@@ -166,7 +166,7 @@ Lock review：保留讀取→LINE→acknowledge 同一 ScriptLock；只把 HTTP 
 
 沒有新增 runtime file、Script Property、Sheet migration、setup、Trigger、Web App URL 或外部 service credential；仍只需既有 `DEEPSEEK_API_KEY`。手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`，再建立 v1.14.2 Apps Script version 並更新既有 deployment。文件與 test 不部署。
 
-本機 `node tests/v1140_smoke.cjs` 共 59 項通過，未呼叫真實 GAS／LINE／DeepSeek。新增回歸涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、實際 `web_search_call`、來源 metadata 驗證／去重／最多三筆／獨立 bubble／保留第 5 則、fail-closed、memory／reasoning privacy；原有 Natural Vision、舊看圖、沒有 quote 不猜圖、SSRF、Pending Reply、deadline、Reader／Queue 回歸皆通過。離線 mock 證明本地 contract，不證明 DeepSeek production endpoint 已部署同一文件版本。
+本機 `node tests/v1140_smoke.cjs` 共 60 項通過，未呼叫真實 GAS／LINE／DeepSeek。新增回歸涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、實際 `web_search_call`、來源 metadata 驗證／去重／最多三筆／獨立 bubble／保留第 5 則、情境化錯誤文案、fail-closed、memory／reasoning privacy；原有 Natural Vision、舊看圖、沒有 quote 不猜圖、SSRF、Pending Reply、deadline、Reader／Queue 回歸皆通過。離線 mock 證明本地 contract，不證明 DeepSeek production endpoint 已部署同一文件版本。
 
 ---
 

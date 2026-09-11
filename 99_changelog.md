@@ -1,4 +1,13 @@
 2026-09-12
+v1.14.2 Natural Search & Vision Edition（final corrective pass）
+- 最新 Updates、Models & Pricing、Responses reference 與 guide 均以 canonical `deepseek-flash` 為正式名稱；不需要 compatibility alias，registry、Responses 與 Chat Completions 都不改回舊名。
+- 修正 `#help` 的 Natural Vision 文案；明確搜尋或 `ai_web_search_failed` 才顯示 Search-specific 錯誤，普通 auto 對話的 HTTP／auth／timeout／generic provider failure 改用一般 AI 服務錯誤。
+- 直接 Responses reference 與 guide 目前都仍寫 built-in `web_search` ignored，和先前官方搜尋索引／已發布 Search contract 有落差；無本機 API key 可 probe，保留實際 `web_search_call` fail-closed 並要求部署前驗證 production capability。
+- 本機 60 項 smoke 全過；未新增 runtime file、Script Property、Sheet migration 或 Trigger，也未呼叫真實 GAS／LINE／DeepSeek。
+
+// ==================================================
+
+2026-09-12
 v1.14.2 Natural Search & Vision Edition（Search contract correction）
 - 撤回前一輪「Responses 不執行 Web Search」的主流程判定：general_chat 改走 `/responses`，提供 server-side `web_search`；一般對話 `tool_choice=auto`，明確上網／搜尋要求強制 `{type:"web_search"}`。
 - Search 僅以 response output 的實際 `web_search_call` 判定；forced Search 沒有 call、provider failure、timeout、malformed output 或截斷均誠實失敗，不 fallback 到 Chat Completions 或舊知識。

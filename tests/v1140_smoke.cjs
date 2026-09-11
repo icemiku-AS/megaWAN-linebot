@@ -230,17 +230,30 @@ check('Search success comes only from web_search_call and never invents source U
   result = context.runAiTextTask('general_chat', '最近如何');
   assert.equal(result.errorType, 'ai_web_search_failed'); assert.equal(result.text, '');
 });
-check('required and auto Responses failures stay honest without stale fallback', () => {
+check('Search and ordinary Responses failures use honest context-specific wording', () => {
   fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('未搜尋的舊知識') : completion();
   context.handleLineEvent(event('text', 'user', { text: '幫我搜尋一下最新消息' }), now);
   assert(replies[0].text.includes('網路搜尋沒有完成')); assert(!replies[0].text.includes('未搜尋的舊知識'));
   assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
   assert.equal(rows.length, 2); assert(!JSON.stringify(rows).includes('未搜尋的舊知識'));
   reset();
+  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('不可採用', { searched: true, searchStatus: 'failed' }) : completion();
+  context.handleLineEvent(event('text', 'user', { text: '最近有什麼消息' }), now);
+  assert(replies[0].text.includes('網路搜尋沒有完成')); assert(!replies[0].text.includes('不可採用'));
+  reset();
   fetchImpl = url => url.endsWith('/responses') ? response(503, { error: { message: 'provider secret' } }) : completion();
   context.handleLineEvent(event('text', 'user', { text: '最近有什麼消息' }), now);
-  assert(replies[0].text.includes('網路搜尋沒有完成')); assert.equal(replies[0].finalText, '');
+  assert(replies[0].text.includes('連接 AI')); assert(!replies[0].text.includes('網路搜尋')); assert.equal(replies[0].finalText, '');
   assert(!JSON.stringify([...cache.values(), rows, logs, replies]).includes('provider secret'));
+  reset();
+  fetchImpl = () => { throw new Error('request timed out'); };
+  context.handleLineEvent(event('text', 'user', { text: '幫我想五個標題' }), now);
+  assert(replies[0].text.includes('連接 AI')); assert(!replies[0].text.includes('網路搜尋'));
+});
+check('Help documents Natural Vision and keeps the legacy image command', () => {
+  const help = context.getHelpText();
+  assert(help.includes('群組請回覆圖片並用 #小浣 <問題>'));
+  assert(help.includes('舊 #小浣 看圖 仍可使用'));
 });
 check('Search metadata stays out of memory and source bubble keeps the fifth LINE slot', () => {
   const sourceUrl = 'https://source-metadata.example.org/story';
