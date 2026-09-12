@@ -129,11 +129,11 @@ Previous stable baseline described in this file: `v1.14.1 Codebase Simplificatio
 
 ### DeepSeek official contract and Search boundary
 
-本版依已發布的 Responses Search contract 提供 server-side `web_search`；`tool_choice` 使用 `auto` 或特定 `{type:"web_search"}`，真正執行搜尋時 output 必須出現 `web_search_call`。Responses 是 stateless，本版每次仍完整送入 system、trimmed user/assistant history、WeeklySummary memory 與當次 user message，並使用 `reasoning.effort=high`、`max_output_tokens`，不依賴 `previous_response_id`、`conversation` 或 `store`。
+現行 [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) 明確支援 server-side `web_search`；`tool_choice` 使用 `auto` 或特定 `{type:"web_search"}`，真正執行搜尋時 output 會出現 `web_search_call`。Responses 是 stateless，本版每次仍完整送入 system、trimmed user/assistant history、WeeklySummary memory 與當次 user message，並使用 `reasoning.effort=high`、`max_output_tokens`，不依賴 `previous_response_id`、`conversation` 或 `store`。
 
-2026-09-12 直接取得的 [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) 目前都仍寫 built-in `web_search` ignored，和先前官方搜尋索引／已發布 Search contract 有落差；頁面沒有提供足以排序內容的精確更新時間。程式保留已完成的 Search transport，但只以實際 `web_search_call` fail closed，不能把「模型說有搜尋」當成功。本機 process environment 沒有 `DEEPSEEK_API_KEY`，未要求提供 secret，也未執行 live probe；正式部署必須手動確認 production endpoint 的 Search capability。
+普通一般聊天使用 `tool_choice:"auto"`，由模型判斷是否需要搜尋；非常明確的上網／搜尋要求使用 `{type:"web_search"}` 強制執行。`usedWebSearch` 只以正式 response output 中實際存在的 `web_search_call` 判定，不能把 Prompt、回答文字或模型自述當成搜尋成功。
 
-[V4.1 Flash updates](https://api-docs.deepseek.com/updates/)與[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)以 `deepseek-flash` 為 canonical name；`deepseek-v4-flash` 與 `deepseek-v4-flash-vision-exp` 是暫時 compatibility aliases。Responses 文件已列 canonical name，因此本版所有 transport 都送 `deepseek-flash`，不需要 alias mapping；舊名沒有進入 registry、feature layer 或 runtime payload。[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)與[Vision](https://api-docs.deepseek.com/guides/vision/)的現行 HIGH／圖片 contract 保留。
+[DeepSeek updates](https://api-docs.deepseek.com/updates/)與[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)所列現行 API model 為 `deepseek-flash`。本專案統一稱為 DeepSeek Flash；舊文件或 compatibility alias 中的 V4／V4.1 名稱不再作為本專案模型世代判定依據。registry、Responses 與 Chat Completions 均維持 `deepseek-flash`。[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)與[Vision](https://api-docs.deepseek.com/guides/vision/)的現行 HIGH／圖片 contract 保留。
 
 `general_chat` 現在由 provider-neutral AiService 路由到 DeepSeek `/responses`，一律提供 `tools:[{type:"web_search"}]`。普通對話使用 `tool_choice:"auto"`；只有非常明確的上網／搜尋要求才強制 `{type:"web_search"}`，「最近／今天／現在」仍交給模型 auto 判斷。其他 12 個 task 全部維持 `/chat/completions`、thinking enabled／high 與既有 JSON／Vision contract。
 
@@ -166,7 +166,7 @@ Lock review：保留讀取→LINE→acknowledge 同一 ScriptLock；只把 HTTP 
 
 沒有新增 runtime file、Script Property、Sheet migration、setup、Trigger、Web App URL 或外部 service credential；仍只需既有 `DEEPSEEK_API_KEY`。手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`，再建立 v1.14.2 Apps Script version 並更新既有 deployment。文件與 test 不部署。
 
-本機 `node tests/v1140_smoke.cjs` 共 60 項通過，未呼叫真實 GAS／LINE／DeepSeek。新增回歸涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、實際 `web_search_call`、來源 metadata 驗證／去重／最多三筆／獨立 bubble／保留第 5 則、情境化錯誤文案、fail-closed、memory／reasoning privacy；原有 Natural Vision、舊看圖、沒有 quote 不猜圖、SSRF、Pending Reply、deadline、Reader／Queue 回歸皆通過。離線 mock 證明本地 contract，不證明 DeepSeek production endpoint 已部署同一文件版本。
+本機 `node tests/v1140_smoke.cjs` 共 60 項通過，未呼叫真實 GAS／LINE／DeepSeek。新增回歸涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、實際 `web_search_call`、來源 metadata 驗證／去重／最多三筆／獨立 bubble／保留第 5 則、情境化錯誤文案、fail-closed、memory／reasoning privacy；原有 Natural Vision、舊看圖、沒有 quote 不猜圖、SSRF、Pending Reply、deadline、Reader／Queue 回歸皆通過。
 
 ---
 
@@ -212,7 +212,7 @@ Lock review：保留讀取→LINE→acknowledge 同一 ScriptLock；只把 HTTP 
 
 ### Included
 
-1. 正式 model 使用 `deepseek-flash`，internal key 使用 `deepseek_flash`；2026-09-10 對應 DeepSeek V4.1 Flash。舊 `deepseek-v4-flash` alias 不再供 active runtime 使用。
+1. 正式 model 使用 `deepseek-flash`，internal key 使用 `deepseek_flash`；本專案統一稱為 DeepSeek Flash，不以舊文件或 compatibility alias 判定模型世代。
 2. 原有 12 個 task 加上 `image_analysis` 共 13 個，全部 thinking enabled / reasoning_effort high。profiles 只保留 `thinking_high`（text）、`thinking_json`（JSON）、`long_extraction_json`（長文 HIGH JSON）；各 route 顯式驗證 thinking/effort，預算詳見 README task 表。
 3. 因 reasoning 與最終輸出共用 max_tokens，原 non-thinking task 分別補足預算；既有 HIGH task 不放大。所有舊 task timeout、40 秒共同 webhook deadline、30 秒 AI cap、12 秒 Reader cap、8/20 秒啟動門檻保留。
 4. 私訊直接傳 JPEG/PNG 圖；群組貼圖靜默，使用 LINE 原生「回覆圖片」+ `#小浣 看圖 <問題>` 指定。沒有 caption pairing／永久圖片 queue；私訊多圖僅處理 index=1，舊版 LINE 缺有效 index 時提示單張／引用。Pending Reply 優先交付後提示重送看圖指令，問題中的 URL 不作新聞收件。
@@ -235,7 +235,7 @@ Lock review：保留讀取→LINE→acknowledge 同一 ScriptLock；只把 HTTP 
 
 本地只接收 JPEG/PNG；GIF/WebP 雖為 DeepSeek 官方格式，但本版未啟用。原圖每邊的官方上限為 8192 px，由 DeepSeek 解碼驗證；本地限制 raw bytes，不引入 image decoder。GAS 先緩衝下載，無法在 HTTP 過程提早截流。引用圖片取決於 LINE 尚可提供內容，不保證永久可取；後續文字記憶不代表能重新查看原圖。
 
-官方規格（2026-09-10）：[Model / V4.1 Flash](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。官方目前明列 thinking 的 temperature／presence_penalty／frequency_penalty 無效，top_p 可用但低於 0.95 會被提升至 0.95；本版仍不送任何 sampling fields。
+官方規格（2026-09-10）：[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。官方目前明列 thinking 的 temperature／presence_penalty／frequency_penalty 無效，top_p 可用但低於 0.95 會被提升至 0.95；本版仍不送任何 sampling fields。
 
 ---
 
