@@ -2,7 +2,7 @@
 // 02_LineCommands.gs
 // LINE transport：處理指令解析、Help、Reply API 與長文字分段。
 //
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 小浣 LINE Bot v1.14.3 Search Reliability Hotfix
 //
 // 維護原則：
 // 1. 主要 caller 是 01_Main.gs；本檔只做 transport/router，不擁有 AI、Reader、News 或 Sheet contract。
@@ -40,10 +40,10 @@ function hasTriggerPrefix(text) {
   });
 }
 
-// 只辨識非常明確的上網要求，決定是否強制 Web Search；「最近／今天」等時效判斷交給模型 auto。
+// 「幫我查」已是使用者明確要求查找；只有「最近／今天」等單純時效詞才交給模型 auto。
 function isExplicitWebSearchRequest_(text) {
   const value = String(text || '').replace(/\s+/g, ' ').trim();
-  return /(?:上網|網路|網絡|網上).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上)|(?:搜尋|搜索)(?:一下|看看)?|(?:幫我)?查一下/.test(value);
+  return /(?:上網|網路|網絡|網上).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上)|(?:搜尋|搜索)(?:一下|看看)?|(?:幫我)?查一下|(?:請|麻煩)?\s*幫我\s*(?:(?:上網|去網路)\s*)?(?:查(?!看)|找|搜尋|搜索)/.test(value);
 }
 
 function getUserLogMode(text) {

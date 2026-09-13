@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.14.2 Natural Search & Vision Edition`
-Previous stable baseline described in this file: `v1.14.1 Codebase Simplification Edition`
+Version represented by this Git ref: `v1.14.3 Search Reliability Hotfix`
+Previous stable baseline described in this file: `v1.14.2 Natural Search & Vision Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.14.1 Codebase Simplificatio
 
 ## Active Runtime Source Files
 
-以下 21 個檔案代表 v1.14.2 Natural Search & Vision Edition 的 active GAS runtime source：
+以下 21 個檔案代表 v1.14.3 Search Reliability Hotfix 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -120,6 +120,20 @@ Previous stable baseline described in this file: `v1.14.1 Codebase Simplificatio
 * `99_changelog.md`：歷史版本紀錄。
 
 修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
+
+---
+
+## v1.14.3 Version Boundary
+
+v1.14.3 是以 main `4e9b676` 的 v1.14.2 為唯一 baseline 的 production patch release，只修正一般文字 Search reliability，不是 v1.15.0 功能開發。
+
+1. `isExplicitWebSearchRequest_()` 補強「幫我查／請幫我查／麻煩幫我查／幫我搜尋」等明確搜尋自然句型；「最近／今天／現在／最新」本身仍維持 `tool_choice:"auto"`。
+2. DeepSeek Responses normalization 不再無條件信任 `output_text`。若文字含明確 DSML／invoke／tool-call／reasoning protocol tag，即使 HTTP response completed 也會 fail closed；Search markup 分類為 `ai_web_search_failed`，其他 internal protocol 分類為 `ai_invalid_provider_response`。
+3. `usedWebSearch` 仍只看正式 `web_search_call`。正常搜尋回答與最多三個來源 bubble 不變；被拒絕的 provider markup 不進 LINE、ConversationLog、memory、PendingReplies、Sheet 或原文 log。
+
+Search architecture、Natural Vision、Vision + Search 延後邊界、SSRF、Pending Reply、其他 12 個 AI task transport、deadline 與 model/profile 全部不變。沒有新 runtime file、Script Property、Sheet migration、setup、Trigger、Queue、外部 Search API 或 runtime dependency。維護者只需手動同步 `02_LineCommands.gs`、`03_ResponseTexts.gs`、`15_DeepSeekProvider.gs`，建立 v1.14.3 Apps Script version 並更新既有 deployment。
+
+本機 `node tests/v1140_smoke.cjs` 共 61 項通過；包含 production 句型、required／auto DSML leakage、一般 DSML／web_search 文字不誤殺，以及既有 Natural Vision、來源最多三筆、SSRF、Pending Reply 與 deadline 回歸。未能本機執行 GAS，未呼叫真實 LINE／DeepSeek。
 
 ---
 
@@ -239,7 +253,7 @@ Lock review：保留讀取→LINE→acknowledge 同一 ScriptLock；只把 HTTP 
 
 ---
 
-以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.2 實作。
+以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.3 實作。
 
 ## v1.13.2 Version Boundary
 
@@ -762,7 +776,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.14.2 Natural Search & Vision Edition`
-Previous stable baseline described in this file: `v1.14.1 Codebase Simplification Edition`
-Last Confirmed Date: `2026-09-12`
-Last Documentation Note: general_chat Responses Web Search is implemented with actual-call verification and 59 local mock checks. Official reference/index and direct guide content still differ; manual GAS deployment and a live Search smoke test are required.
+Last Confirmed Version at this Git ref: `v1.14.3 Search Reliability Hotfix`
+Previous stable baseline described in this file: `v1.14.2 Natural Search & Vision Edition`
+Last Confirmed Date: `2026-09-13`
+Last Documentation Note: explicit Search natural phrasing and provider tool-protocol fail-closed checks are implemented with 61 local mock checks; manual GAS deployment and live Search smoke tests remain required.
