@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.14.1 Codebase Simplification Edition`
-Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimodal Edition`
+Version represented by this Git ref: `v1.14.2 Natural Search & Vision Edition`
+Previous stable baseline described in this file: `v1.14.1 Codebase Simplification Edition`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimo
 
 ## Active Runtime Source Files
 
-以下 21 個檔案代表 v1.14.1 Codebase Simplification Edition 的 active GAS runtime source：
+以下 21 個檔案代表 v1.14.2 Natural Search & Vision Edition 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -123,6 +123,53 @@ Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimo
 
 ---
 
+## v1.14.2 Version Boundary
+
+本版是 Natural Search & Vision Edition，正式基線為 main 的 v1.14.1。現行 source of truth 是目前 Git ref 的實際 `.gs`；本地修改不代表已 merge、發布或部署到 GAS。
+
+### DeepSeek official contract and Search boundary
+
+現行 [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) 明確支援 server-side `web_search`；`tool_choice` 使用 `auto` 或特定 `{type:"web_search"}`，真正執行搜尋時 output 會出現 `web_search_call`。Responses 是 stateless，本版每次仍完整送入 system、trimmed user/assistant history、WeeklySummary memory 與當次 user message，並使用 `reasoning.effort=high`、`max_output_tokens`，不依賴 `previous_response_id`、`conversation` 或 `store`。
+
+普通一般聊天使用 `tool_choice:"auto"`，由模型判斷是否需要搜尋；非常明確的上網／搜尋要求使用 `{type:"web_search"}` 強制執行。`usedWebSearch` 只以正式 response output 中實際存在的 `web_search_call` 判定，不能把 Prompt、回答文字或模型自述當成搜尋成功。
+
+[DeepSeek updates](https://api-docs.deepseek.com/updates/)與[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)所列現行 API model 為 `deepseek-flash`。本專案統一稱為 DeepSeek Flash；舊文件或 compatibility alias 中的 V4／V4.1 名稱不再作為本專案模型世代判定依據。registry、Responses 與 Chat Completions 均維持 `deepseek-flash`。[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)與[Vision](https://api-docs.deepseek.com/guides/vision/)的現行 HIGH／圖片 contract 保留。
+
+`general_chat` 現在由 provider-neutral AiService 路由到 DeepSeek `/responses`，一律提供 `tools:[{type:"web_search"}]`。普通對話使用 `tool_choice:"auto"`；只有非常明確的上網／搜尋要求才強制 `{type:"web_search"}`，「最近／今天／現在」仍交給模型 auto 判斷。其他 12 個 task 全部維持 `/chat/completions`、thinking enabled／high 與既有 JSON／Vision contract。
+
+`usedWebSearch` 只在 output 真的有 `web_search_call` 時為 true。來源只從 `web_search_call.action.sources`、action URL 或 `output_text.annotations[type=url_citation]` 取得，經 public HTTP(S)／SSRF 驗證、URL 去重後最多 3 個；不從回答文字 regex 猜網址。實際搜尋會把來源獨立放在同一次 LINE Reply 的最後一則；主回答最多占 4 則。Search metadata、raw action、annotations、reasoning 與網頁內容不進 memory、Sheet 或 console。若 provider 未提供可靠 URL，最後一則會誠實說明沒有可列來源。
+
+明確 Search 未產生 `web_search_call`、Responses HTTP／provider failure、timeout、malformed output 或截斷都不會 fallback 到 Chat Completions 或舊知識。明確搜尋或 provider 回報 `ai_web_search_failed` 才顯示 Search-specific 錯誤；普通 auto 對話若只是 HTTP、auth、timeout 或 generic provider failure，改顯示一般 AI 服務錯誤，不臆測搜尋已開始。AiService 不 retry，DeepSeek server-side continuation 只限單一 request，仍受 webhook absolute deadline 與現行 request timeout 約束。
+
+### Natural quoted-image Vision
+
+1. 私訊直接傳 JPEG/PNG 仍會自動分析；私訊用 LINE Reply 引用圖片後，可直接輸入任意自然問題，不需要 `#小浣` 或「看圖」。
+2. 群組／room 單純貼圖與普通引用圖片聊天仍完全靜默；只有引用圖片且文字以 `#小浣` 觸發時才探測並分析。舊 `#小浣 看圖 <問題>` 完整相容。
+3. LINE `quotedMessageId` 不提供原訊息型別；自然路由只向固定 Get message content endpoint 安全探測。確定取得 JPEG/PNG 才進 Vision，非圖片／不可取得的自然引用回到普通文字流程；明確舊看圖指令仍顯示既有圖片錯誤提示。
+4. 沒有 `quotedMessageId` 絕不猜上一張圖，不新增圖片 cache、配對 Sheet、媒體資料庫或永久保存。圖片 bytes、Base64、data URL、reasoning 仍不進 Sheet、Cache、LINE 或 console；memory 只保存 placeholder、問題與分析文字。
+5. Vision 仍走 `image_analysis` Chat Completions。引用圖片要求查證時會先完成可靠圖片判讀，再明示即時網路查證未完成；本版沒有把圖片 raw bytes 再送入 Responses，也沒有加入可能撞上 40 秒同步 deadline 的第二次 HIGH 呼叫。Vision + Search 尚未正式支援。
+
+### Reliability and security fixes
+
+1. `getReaderLayerHostname_()` 先解析完整 authority，拒絕所有 userinfo、IPv6 authority、非法 port、非法 label 與非 canonical numeric host；`isSafePublicUrl()` 擴充 all-127 loopback、localhost suffix、private/link-local/CGNAT/multicast 與 metadata host 防線。拒絕時不把可能含帳密的 raw URL 寫入 console。
+2. PTT 與 legacy raw HTML 的直接 UrlFetch 關閉自動 redirect，避免已通過檢查的公開 URL 轉向內網／metadata host。Jina 與 FxTwitter 仍只呼叫固定 provider endpoint。
+3. Pending Reply 改由 `deliverPendingReply_()` 在 ScriptLock 內取得資料、呼叫既有 LINE Reply transport，確認 HTTP 2xx 後才 delete。非 2xx／exception 會保留 row，下一次可再交付；程序若在成功送達後、刪除前中斷，可能 at-least-once 重送，但不會 delete-before-send 永久遺失。
+4. PendingReplies schema、conversationId isolation、ReplyMode、image pending priority 與既有清理指令均不變。沒有承諾 exactly-once，也沒有新增 distributed transaction 或平行 Queue。
+
+Lock review：保留讀取→LINE→acknowledge 同一 ScriptLock；只把 HTTP 移出鎖會允許同聊天室同時取到同一 pending。沒有導入 claim／lease 狀態，避免中斷後卡住交付。代價是其他聊天室、memory 與 Queue 會競爭全域鎖；持鎖時間包含 Sheet、callback 與 LINE 的 10 秒 request cap，不能宣稱整段最多 10 秒。取鎖失敗會略過本次 pending，row 留待下次；LINE 已送達但刪除失敗可能重送。人工直接改 Sheet 與未取同鎖的 cleanup 不受這把鎖保護，不能視作完整資料庫交易。
+
+### Preserved contracts
+
+同一 webhook batch 仍共用 40 秒 absolute deadline；AI 30 秒 cap、Reader 12 秒 cap、最小 request budget、圖片下載 10 秒、LINE Reply 10 秒與背景 task timeout 均未放大。AiService 不 retry；Search 是單一 Responses request，不建立 client continuation loop。NewsInbox、Weekly Editorial、NewsUrlQueue、WebTaskQueue、Reader priority、PTT/FxTwitter/Jina、JSON validators、Sheet schema、Script Properties、Trigger handlers、compatibility wrappers、Gemini dormant、cleanup 二段確認與 memory/cache contract 保留。
+
+### Migration, deployment and verification
+
+沒有新增 runtime file、Script Property、Sheet migration、setup、Trigger、Web App URL 或外部 service credential；仍只需既有 `DEEPSEEK_API_KEY`。手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`，再建立 v1.14.2 Apps Script version 並更新既有 deployment。文件與 test 不部署。
+
+本機 `node tests/v1140_smoke.cjs` 共 60 項通過，未呼叫真實 GAS／LINE／DeepSeek。新增回歸涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、實際 `web_search_call`、來源 metadata 驗證／去重／最多三筆／獨立 bubble／保留第 5 則、情境化錯誤文案、fail-closed、memory／reasoning privacy；原有 Natural Vision、舊看圖、沒有 quote 不猜圖、SSRF、Pending Reply、deadline、Reader／Queue 回歸皆通過。
+
+---
+
 ## v1.14.1 Version Boundary
 
 本版是 Codebase Simplification Edition，正式基線為 main 的 v1.14.0（`75decaa`）。現行 source of truth 是目前 Git ref 的實際 `.gs`；本地修改不代表已 merge、發布或部署到 GAS。
@@ -165,7 +212,7 @@ Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimo
 
 ### Included
 
-1. 正式 model 使用 `deepseek-flash`，internal key 使用 `deepseek_flash`；2026-09-10 對應 DeepSeek V4.1 Flash。舊 `deepseek-v4-flash` alias 不再供 active runtime 使用。
+1. 正式 model 使用 `deepseek-flash`，internal key 使用 `deepseek_flash`；本專案統一稱為 DeepSeek Flash，不以舊文件或 compatibility alias 判定模型世代。
 2. 原有 12 個 task 加上 `image_analysis` 共 13 個，全部 thinking enabled / reasoning_effort high。profiles 只保留 `thinking_high`（text）、`thinking_json`（JSON）、`long_extraction_json`（長文 HIGH JSON）；各 route 顯式驗證 thinking/effort，預算詳見 README task 表。
 3. 因 reasoning 與最終輸出共用 max_tokens，原 non-thinking task 分別補足預算；既有 HIGH task 不放大。所有舊 task timeout、40 秒共同 webhook deadline、30 秒 AI cap、12 秒 Reader cap、8/20 秒啟動門檻保留。
 4. 私訊直接傳 JPEG/PNG 圖；群組貼圖靜默，使用 LINE 原生「回覆圖片」+ `#小浣 看圖 <問題>` 指定。沒有 caption pairing／永久圖片 queue；私訊多圖僅處理 index=1，舊版 LINE 缺有效 index 時提示單張／引用。Pending Reply 優先交付後提示重送看圖指令，問題中的 URL 不作新聞收件。
@@ -188,11 +235,11 @@ Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimo
 
 本地只接收 JPEG/PNG；GIF/WebP 雖為 DeepSeek 官方格式，但本版未啟用。原圖每邊的官方上限為 8192 px，由 DeepSeek 解碼驗證；本地限制 raw bytes，不引入 image decoder。GAS 先緩衝下載，無法在 HTTP 過程提早截流。引用圖片取決於 LINE 尚可提供內容，不保證永久可取；後續文字記憶不代表能重新查看原圖。
 
-官方規格（2026-09-10）：[Model / V4.1 Flash](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。官方目前明列 thinking 的 temperature／presence_penalty／frequency_penalty 無效，top_p 可用但低於 0.95 會被提升至 0.95；本版仍不送任何 sampling fields。
+官方規格（2026-09-10）：[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。官方目前明列 thinking 的 temperature／presence_penalty／frequency_penalty 無效，top_p 可用但低於 0.95 會被提升至 0.95；本版仍不送任何 sampling fields。
 
 ---
 
-以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.1 實作。
+以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.2 實作。
 
 ## v1.13.2 Version Boundary
 
@@ -648,7 +695,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Historical Smoke Tests for v1.13.2 X Post Weekly Display
 
-以下保留 v1.13.2 當時的檢查紀錄；v1.14.1 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
+以下保留 v1.13.2 當時的檢查紀錄；v1.14.2 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
 
 本版只修改週新聞 presentation 與 Diagnostic title duplicate decision，不修改 Sheet、Reader、AI、cache payload、router 或 Trigger contract，也不需要 migration、setup、新 Trigger 或新增 Script Properties。
 
@@ -715,7 +762,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.14.1 Codebase Simplification Edition`
-Previous stable baseline described in this file: `v1.14.0 DeepSeek Flash Multimodal Edition`
-Last Confirmed Date: `2026-09-11`
-Last Documentation Note: shared header writer / Reader helpers, redundant branch and object cleanup; all existing signatures and product contracts retained. 49 local mock checks pass; manual GAS deployment and live smoke tests required.
+Last Confirmed Version at this Git ref: `v1.14.2 Natural Search & Vision Edition`
+Previous stable baseline described in this file: `v1.14.1 Codebase Simplification Edition`
+Last Confirmed Date: `2026-09-12`
+Last Documentation Note: general_chat Responses Web Search is implemented with actual-call verification and 59 local mock checks. Official reference/index and direct guide content still differ; manual GAS deployment and a live Search smoke test are required.

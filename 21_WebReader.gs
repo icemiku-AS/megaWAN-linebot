@@ -2,7 +2,7 @@
 // 21_WebReader.gs
 // Reader／Web workflows：legacy raw HTML fetch、清理、AI extraction contract 與網頁分析 Prompt。
 //
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 設計說明：
 // 1. 20_ReaderLayer.gs 在 Jina 失敗時呼叫本檔；直接 URL helper 也由 Queue／News 流程使用。
@@ -64,7 +64,7 @@ function isSafePublicUrl(url) {
 
   // 只允許 http / https
   if (!/^https?:\/\//i.test(safeUrl)) {
-    console.log('isSafePublicUrl rejected: protocol not http/https:', safeUrl);
+    console.log('isSafePublicUrl rejected: protocol not http/https');
     return false;
   }
 
@@ -72,36 +72,41 @@ function isSafePublicUrl(url) {
   const hostname = getReaderLayerHostname_(safeUrl);
 
   if (!hostname) {
-    console.log('isSafePublicUrl rejected: hostname parse failed:', safeUrl);
+    // parser 也會拒絕 userinfo 與 IPv6 authority；不要把可能含帳密的原始 URL 寫入 console。
+    console.log('isSafePublicUrl rejected: hostname parse failed');
     return false;
   }
 
-  // localhost / loopback
-  if (
-    hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '0.0.0.0' ||
-    hostname === '::1'
-  ) {
+  if (hostname === 'localhost' || hostname.endsWith('.localhost')) {
     console.log('isSafePublicUrl rejected: localhost/loopback:', hostname);
     return false;
   }
 
-  // IPv4 內網
-  if (
-    hostname.startsWith('10.') ||
-    hostname.startsWith('192.168.') ||
-    hostname.match(/^172\.(1[6-9]|2[0-9]|3[0-1])\./)
-  ) {
-    console.log('isSafePublicUrl rejected: private IPv4:', hostname);
+  const ipv4Match = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const octets = ipv4Match.slice(1).map(Number);
+    // 前導零可能被底層 resolver 當成八進位；只接受標準十進位 dotted-quad。
+    if (octets.some(function(value) { return value < 0 || value > 255; }) || octets.join('.') !== hostname) {
+      console.log('isSafePublicUrl rejected: non-canonical numeric host');
+      return false;
+    }
+    const first = octets[0];
+    const second = octets[1];
+    if (first === 0 || first === 10 || first === 127 ||
+        (first === 100 && second >= 64 && second <= 127) ||
+        (first === 169 && second === 254) ||
+        (first === 172 && second >= 16 && second <= 31) ||
+        (first === 192 && second === 168) || first >= 224) {
+      console.log('isSafePublicUrl rejected: non-public IPv4:', hostname);
+      return false;
+    }
+  } else if (/^(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+))*$/i.test(hostname)) {
+    // 拒絕 127.1、整數與混合十六進位等非 canonical IP 表示，避免 URL parser 解讀差異。
+    console.log('isSafePublicUrl rejected: non-canonical numeric host');
     return false;
   }
 
-  // link-local / metadata 類型
-  if (
-    hostname.startsWith('169.254.') ||
-    hostname === 'metadata.google.internal'
-  ) {
+  if (hostname === 'metadata.google.internal' || hostname.endsWith('.metadata.google.internal')) {
     console.log('isSafePublicUrl rejected: metadata/link-local:', hostname);
     return false;
   }
@@ -129,7 +134,8 @@ function fetchRawWebPage(url, executionContext) {
   const options = {
     method: 'get',
     muteHttpExceptions: true,
-    followRedirects: true,
+    // 直接 UrlFetch 不跟隨未重新驗證的 Location；Reader fallback 寧可回失敗，也不跨越 SSRF 邊界。
+    followRedirects: false,
     headers: {
       // 有些網站會拒絕空 User-Agent 或疑似機器人的請求
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.0; LINE Web Reader)'

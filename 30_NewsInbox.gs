@@ -1,7 +1,7 @@
 // ======================================================
 // 30_NewsInbox.gs
 // News／Editorial：新聞素材池、靜默網址收件、NewsInbox AI 契約、狀態回報與新聞封存脈絡。
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 維護重點：
 // 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
@@ -512,7 +512,7 @@ function processSingleNewsUrlTask_(task) {
     // v1.10.7 修正：
     // 舊版誤呼叫不存在的 createPendingReply()，導致 queue 已 failed 但 PendingReplies 沒有建立。
     // 這裡復用 25_WebTaskQueue.gs 既有的 createPendingReplyFromTask()，
-    // 讓下一次同 conversationId 有訊息進來時，01_Main.gs 可透過 getAndDeletePendingReply() 交付錯誤通知。
+    // 讓下一次同 conversationId 有訊息進來時，01_Main.gs 可透過 deliverPendingReply_() 安全交付錯誤通知。
     createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, errorText), 'news_url_failed');
   }
 }

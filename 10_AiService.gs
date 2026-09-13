@@ -1,7 +1,7 @@
 // ======================================================
 // 10_AiService.gs
 // AI orchestration：provider-neutral 的正式 AI service 與唯一 provider dispatch 入口。
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 主要責任：
 // 1. 提供 provider-neutral AI task 入口與 task/profile resolution。
@@ -160,6 +160,12 @@ function runAiMessagesTask(task, messages, options) {
       executionDeadlineAtMs: options && options.executionDeadlineAtMs,
       minimumRequestSeconds: options && options.minimumRequestSeconds
     };
+    if (options && options.forceWebSearch === true && !config.allowsWebSearch) {
+      throw createAiConfigurationError_('Selected AI task does not allow Web Search.');
+    }
+    request.webSearchMode = config.allowsWebSearch
+      ? (options && options.forceWebSearch === true ? 'required' : 'auto')
+      : '';
     let providerResult = null;
 
     // 明確 switch 可讓 GAS 維護者快速看出可用 provider，也避免引入 class / DI / plugin framework。
@@ -387,7 +393,7 @@ function parseAiJsonObject_(text) {
 function normalizeAiProviderResult_(config, providerResult, elapsedMs) {
   const source = providerResult || {};
   if (!source.ok) {
-    return buildAiFailureResponse_(
+    const failed = buildAiFailureResponse_(
       config,
       source.errorType || 'ai_unknown_error',
       source.errorMessage || 'AI provider request failed.',
@@ -397,6 +403,8 @@ function normalizeAiProviderResult_(config, providerResult, elapsedMs) {
       source.usage,
       source.finishReason
     );
+    failed.transport = String(source.transport || '');
+    return failed;
   }
 
   return {
@@ -407,6 +415,11 @@ function normalizeAiProviderResult_(config, providerResult, elapsedMs) {
     profile: config.profile,
     provider: config.provider,
     model: config.model,
+    transport: String(source.transport || ''),
+    usedWebSearch: source.usedWebSearch === true,
+    sources: Array.isArray(source.sources) ? source.sources.slice(0, 3).map(function(item) {
+      return { title: String(item && item.title || ''), url: String(item && item.url || '') };
+    }) : [],
     finishReason: normalizeAiFinishReason_(source.finishReason),
     usage: normalizeAiUsage_(source.usage),
     elapsedMs: Number(source.elapsedMs || elapsedMs || 0),
@@ -430,6 +443,9 @@ function buildAiFailureResponse_(config, errorType, errorMessage, httpStatus, re
     profile: safeConfig.profile || '',
     provider: safeConfig.provider || '',
     model: safeConfig.model || '',
+    transport: '',
+    usedWebSearch: false,
+    sources: [],
     finishReason: normalizeAiFinishReason_(finishReason),
     usage: normalizeAiUsage_(usage),
     elapsedMs: Number(elapsedMs || 0),
@@ -601,6 +617,9 @@ function logAiCallMetadata_(result, config) {
     task: safeResult.task || safeConfig.task || '',
     provider: safeResult.provider || safeConfig.provider || '',
     model: safeResult.model || safeConfig.model || '',
+    transport: safeResult.transport || '',
+    usedWebSearch: safeResult.usedWebSearch === true,
+    sourceCount: Array.isArray(safeResult.sources) ? safeResult.sources.length : 0,
     profile: safeResult.profile || safeConfig.profile || '',
     thinking: safeConfig.thinking ? safeConfig.thinking.type : '',
     reasoningEffort: safeConfig.reasoningEffort || '',

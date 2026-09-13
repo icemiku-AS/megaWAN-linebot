@@ -1,7 +1,7 @@
 // ======================================================
 // 07_LineImages.gs
 // LINE 圖片：Get message content、輸入驗證與 image_analysis 功能入口。
-// 小浣 LINE Bot v1.14.0 DeepSeek Flash Multimodal Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 01_Main.gs 決定私訊／群組觸發；本檔只接受 webhook 提供的 message ID。
 // 10_AiService.gs 接收 text + image bytes；15_DeepSeekProvider.gs 才產生 Base64/data URL。
@@ -11,8 +11,8 @@
 const LINE_MESSAGE_CONTENT_ENDPOINT_PREFIX = 'https://api-data.line.me/v2/bot/message/';
 const LINE_IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 10;
 
-/** 私訊直接傳圖，或以 #小浣 看圖 引用圖片。所有錯誤只回固定文案，不附外部原始錯誤。 */
-function analyzeLineImage_(event, conversationId, messageId, question, executionContext) {
+/** 私訊直接傳圖，或以自然文字／舊 #小浣 看圖 引用圖片。所有錯誤只回固定文案。 */
+function analyzeLineImage_(event, conversationId, messageId, question, executionContext, allowNonImageFallback) {
   if (!messageId) return getBotTextImageError_('image_need_quote');
   const safeQuestion = redactAiMediaText_(question).trim().slice(0, 1000);
   const historyText = '[使用者提供圖片]' + (safeQuestion ? ' ' + safeQuestion : ' 請描述圖片重點。');
@@ -26,13 +26,26 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
       return getBotTextImageError_('image_unavailable');
     }
     const downloaded = downloadLineImage_(messageId, executionContext);
-    if (!downloaded.ok) return getBotTextImageError_(downloaded.errorType);
+    // quotedMessageId 不附原訊息型別；自然路由只能安全探測 content endpoint。
+    // 非圖片引用回到一般聊天，明確看圖指令則維持原本的圖片錯誤提示。
+    if (!downloaded.ok) {
+      if (allowNonImageFallback &&
+          (downloaded.errorType === 'image_unavailable' || downloaded.errorType === 'quoted_content_not_image')) {
+        return null;
+      }
+      return getBotTextImageError_(downloaded.errorType);
+    }
 
     const result = runAiMemoryTask('image_analysis', conversationId, historyText, [
       { type: 'text', text: safeQuestion || '請描述這張圖片的重點；如果有文字或錯誤訊息，請說明可辨識的內容。' },
       downloaded.image
     ], requireAiCallOptionsForExecutionContext_(executionContext));
-    return result.ok ? result.text : getBotTextImageError_(result.errorType);
+    if (!result.ok) return getBotTextImageError_(result.errorType);
+
+    // 本流程只有 Vision；明確查證要求必須區分圖片判讀與尚未完成的網路搜尋。
+    return result.text + (isExplicitWebSearchRequest_(safeQuestion)
+      ? '\n\n目前圖片已分析，但即時網路查證未完成。'
+      : '');
   } catch (error) {
     // 不記錄 exception：下載錯誤可能包含 URL/token，序列化錯誤可能包含圖片。
     return getBotTextImageError_(error && error.errorType);
@@ -66,7 +79,10 @@ function downloadLineImage_(messageId, executionContext) {
     const lengthKey = Object.keys(headers).find(function(key) { return key.toLowerCase() === 'content-length'; });
     const mimeType = String(headers[contentTypeKey] || '').split(';')[0].trim().toLowerCase();
     if (mimeType !== 'image/jpeg' && mimeType !== 'image/png') {
-      return { ok: false, errorType: 'image_unsupported_format' };
+      return {
+        ok: false,
+        errorType: mimeType.indexOf('image/') === 0 ? 'image_unsupported_format' : 'quoted_content_not_image'
+      };
     }
     if (lengthKey && (!/^\d+$/.test(String(headers[lengthKey])) || Number(headers[lengthKey]) > AI_IMAGE_MAX_BYTES)) {
       return { ok: false, errorType: 'image_too_large' };

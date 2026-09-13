@@ -2,7 +2,7 @@
 // 03_ResponseTexts.gs
 // Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -22,11 +22,23 @@
 // 15. v1.13.2 起，X status 的週新聞展示標題優先使用既有 Brief，raw NewsInbox Title 保持不變。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.14.1 Codebase Simplification Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-09-11';
+const BOT_CURRENT_VERSION = 'v1.14.2 Natural Search & Vision Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-09-12';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.14.2 Natural Search & Vision Edition',
+    date: '2026-09-12',
+    summary: '一般聊天可自動或依明確要求使用 Web Search；引用圖片自然提問與安全修正同步完成。',
+    changes: [
+      '私訊回覆圖片可直接提問；群組回覆圖片並用 #小浣 觸發即可，不再要求「看圖」關鍵字。',
+      '舊 #小浣 看圖 完整相容；沒有 quotedMessageId 不猜上一張圖，群組普通回覆圖片仍保持靜默。',
+      '拒絕 URL userinfo、IPv6 與非 canonical numeric authority，直接 UrlFetch 不跟隨未驗證 redirect。',
+      'Pending Reply 改為 LINE Reply 成功後才刪除；傳送失敗保留供下次再交付。',
+      '一般聊天改走 Responses Web Search：普通問題由模型 auto 判斷，明確搜尋要求會強制執行並依正式 metadata 顯示最多三個來源。'
+    ]
+  },
   {
     version: 'v1.14.1 Codebase Simplification Edition',
     date: '2026-09-11',
@@ -492,20 +504,20 @@ function getBotTextNewsQuestionNoData_(queryOptions) {
 // 一般系統提示
 // ======================================================
 
-function getBotTextUnsupportedMessage_() { return '目前支援文字與 JPEG/PNG 圖片；貼圖、語音、影片與檔案還不能分析。私訊可以直接傳圖片。'; }
+function getBotTextUnsupportedMessage_() { return '目前支援文字與 JPEG/PNG 圖片；貼圖、語音、影片與檔案還不能分析。私訊可以直接傳圖片，也可以回覆圖片後自然提問。'; }
 
 function getBotTextImageError_(errorType) {
   switch (errorType) {
     case 'image_need_quote':
-      return '請用 LINE「回覆」選取那張圖片，再輸入 #小浣 看圖，也可以在後面加問題。私訊可直接傳圖片。';
+      return '請用 LINE「回覆」選取那張圖片再提問；群組用 #小浣 開頭即可，舊的 #小浣 看圖 也能繼續用。私訊可直接傳圖片。';
     case 'image_album_unknown_index':
-      return 'LINE 沒有提供這組圖片的順序，這次尚未分析。請單張分次傳送，或回覆其中一張圖片並輸入 #小浣 看圖。';
+      return 'LINE 沒有提供這組圖片的順序，這次尚未分析。請單張分次傳送，或回覆其中一張圖片；群組再用 #小浣 提問。';
     case 'image_too_large':
       return '這張圖片超過 4 MiB 的處理上限，請裁切重點或縮小後重新傳送。';
     case 'image_unsupported_format':
       return '這份內容不是可辨識的 JPEG/PNG 圖片，請改傳 JPG 或 PNG 截圖。';
     case 'image_unavailable':
-      return 'LINE 沒有提供這張圖片，可能已過期、被撤回，或引用的不是圖片。請重新傳圖；群組再回覆該圖輸入 #小浣 看圖。';
+      return 'LINE 沒有提供這張圖片，可能已過期、被撤回，或引用的不是圖片。請重新傳圖；群組再回覆該圖並用 #小浣 提問。';
     case 'ai_timeout':
       return '這次看圖沒有在回覆時間內完成。圖片不會排入背景佇列，請稍後重新傳圖，或裁切重點後再試。';
     case 'image_download_failed':
@@ -513,6 +525,15 @@ function getBotTextImageError_(errorType) {
     default:
       return '這次圖片分析沒有完成，可能是服務忙碌或圖片無法解析。請裁切重點、縮小圖片，或稍後重試。';
   }
+}
+function getBotTextWebSearchError_(errorType) {
+  if (errorType === 'ai_timeout') {
+    return '這次網路搜尋沒有在回覆時間內完成。我不會改用舊知識假裝查證成功，請稍後再試。';
+  }
+  if (errorType === 'ai_configuration_error' || errorType === 'ai_auth_error') {
+    return '目前網路搜尋服務尚未正確啟用。我不會改用舊知識假裝查證成功，請通知維護者檢查 DeepSeek Responses 設定。';
+  }
+  return '這次網路搜尋沒有完成，可能是 Search provider 或 Responses API 暫時異常。我不會改用舊知識假裝查證成功，請稍後再試。';
 }
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }

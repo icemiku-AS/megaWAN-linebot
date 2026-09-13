@@ -2,7 +2,7 @@
 // 25_WebTaskQueue.gs
 // Background jobs／Web workflows：WebTaskQueue、#懶人包、PendingReplies 與快讀契約。
 //
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 設計說明：
 // 1. 對外 Trigger 是 processWebTaskQueue()；installWebTaskQueueTrigger() 位於 01_Main.gs，名稱不可變更。
@@ -483,8 +483,39 @@ function createPendingReplyFromTask(taskRowData, replyText, replyMode) {
   return pendingId;
 }
 
-function getAndDeletePendingReply(conversationId) {
-  const sheet = ensurePendingRepliesSheet_();
+/**
+ * Pending Reply 的 at-least-not-lost 交付邊界：在同一把 ScriptLock 內讀取、送 LINE、成功後刪除。
+ * LINE 非 2xx／exception 時 replyToLine() 會拋錯，row 因此保留；若送達後程序在刪除前中斷，
+ * 下次可能重送一次，但不會先刪後遺失。ponytail: 全域鎖涵蓋 Sheet／callback 與 10 秒 transport cap；
+ * 若併發量需要改善，再設計可恢復的同聊天室 claim，不能只把 HTTP 移出鎖造成正常路徑重送。
+ */
+function deliverPendingReply_(conversationId, replyToken, buildDeliveryText) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return null;
+
+  try {
+    const sheet = ensurePendingRepliesSheet_();
+    const pendingReply = findPendingReply_(sheet, conversationId);
+    if (!pendingReply) return null;
+
+    const deliveryText = typeof buildDeliveryText === 'function'
+      ? buildDeliveryText(pendingReply)
+      : getBotTextPendingDelivery_(pendingReply.text, false);
+
+    replyToLine(replyToken, deliveryText, true);
+    // 只有 Reply API 確認 2xx 才 consume；刪除失敗會保留 row，符合 at-least-not-lost。
+    deletePendingReplyById_(sheet, pendingReply.pendingId);
+
+    return {
+      text: String(deliveryText || ''),
+      replyMode: pendingReply.replyMode
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function findPendingReply_(sheet, conversationId) {
   const headerMap = getHeaderMap_(sheet);
   const lastRow = sheet.getLastRow();
 
@@ -499,17 +530,14 @@ function getAndDeletePendingReply(conversationId) {
     const row = values[i];
 
     const rowConversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
+    const pendingId = getRowValueByHeader_(row, headerMap, 'PendingId');
     const replyText = getRowValueByHeader_(row, headerMap, 'ReplyText');
     const status = getRowValueByHeader_(row, headerMap, 'Status');
     const replyMode = getRowValueByHeader_(row, headerMap, 'ReplyMode');
 
     if (rowConversationId === conversationId && status === 'pending' && replyText) {
-      const sheetRowNumber = i + 2;
-
-      // 直接刪除，避免下次重複交付
-      sheet.deleteRow(sheetRowNumber);
-
       return {
+        pendingId: String(pendingId || ''),
         text: String(replyText || ''),
         replyMode: String(replyMode || '')
       };
@@ -517,4 +545,27 @@ function getAndDeletePendingReply(conversationId) {
   }
 
   return null;
+}
+
+function deletePendingReplyById_(sheet, pendingId) {
+  const headerMap = getHeaderMap_(sheet);
+  const lastRow = sheet.getLastRow();
+  if (!pendingId || lastRow <= 1) throw new Error('Pending Reply acknowledge failed.');
+
+  const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(getRowValueByHeader_(values[i], headerMap, 'PendingId') || '') === pendingId) {
+      sheet.deleteRow(i + 2);
+      return;
+    }
+  }
+
+  // LINE 可能已送達；找不到原 row 時不可刪除其他列，保留 at-least-once 的保守邊界。
+  throw new Error('Pending Reply acknowledge failed.');
+}
+
+// v1.14.1 compatibility：舊名稱不再刪除資料，避免外部診斷誤用時重現 delete-before-send。
+// 正式 runtime 一律使用 deliverPendingReply_() 完成交付與 acknowledge。
+function getAndDeletePendingReply(conversationId) {
+  return findPendingReply_(ensurePendingRepliesSheet_(), conversationId);
 }

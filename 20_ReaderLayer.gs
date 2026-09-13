@@ -2,7 +2,7 @@
 // 20_ReaderLayer.gs
 // Reader／Web workflows：統一 FxTwitter、PTT、Jina 與 legacy raw HTML fallback routing。
 //
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
 //
 // 本檔是 Reader Layer 的核心檔案，目標是把「讀網頁」與後續 LLM 整理拆開。
 // 下游 NewsInbox、WebSummary 與 AI task 只需要吃穩定的 webResult：
@@ -152,8 +152,30 @@ function detectWebReaderRoute_(url) {
 }
 
 function getReaderLayerHostname_(url) {
-  const match = String(url || '').match(/^https?:\/\/([^\/?#:]+)(?::\d+)?(?:[\/?#]|$)/i);
-  return match && match[1] ? String(match[1]).toLowerCase() : '';
+  const match = String(url || '').trim().match(/^https?:\/\/([^\/?#]+)(?:[\/?#]|$)/i);
+  if (!match || !match[1]) return '';
+
+  const authority = String(match[1]);
+  // URL userinfo 會出現在最後一個 @ 前；本 bot 不需要帳密網址，整類拒絕最小且不會誤判實際 host。
+  // GAS V8 沒有在此 contract 中保證 WHATWG URL；IPv6 authority 也先拒絕，避免用脆弱 regex 猜冒號語意。
+  if (authority.indexOf('@') >= 0 || authority.indexOf('[') >= 0 || authority.indexOf(']') >= 0) return '';
+
+  const authorityMatch = authority.match(/^([^:]+)(?::(\d+))?$/);
+  if (!authorityMatch) return '';
+  if (authorityMatch[2]) {
+    const port = Number(authorityMatch[2]);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return '';
+  }
+
+  let hostname = String(authorityMatch[1] || '').toLowerCase();
+  if (hostname.endsWith('.')) hostname = hostname.slice(0, -1);
+  if (!hostname || hostname.length > 253 || hostname.indexOf('..') >= 0) return '';
+
+  const labels = hostname.split('.');
+  const validLabels = labels.every(function(label) {
+    return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label);
+  });
+  return validLabels ? hostname : '';
 }
 
 function isPttHostname_(hostname) {
@@ -622,7 +644,8 @@ function fetchPttPageWithOver18Cookie_(url, executionContext) {
   const options = {
     method: 'get',
     muteHttpExceptions: true,
-    followRedirects: true,
+    // 直接 UrlFetch 不跟隨未重新驗證的 Location，避免公開網址轉向內網／metadata host。
+    followRedirects: false,
     headers: {
       // PTT 成人看板會用 over18 cookie 判斷使用者是否已確認年滿 18 歲。
       // 這不是登入 token，只是 PTT over18 gate 的確認狀態。

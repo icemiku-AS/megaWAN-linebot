@@ -1,3 +1,39 @@
+2026-09-12
+v1.14.2 Natural Search & Vision Edition（final corrective pass）
+- 本專案統一稱為 DeepSeek Flash，registry、Responses 與 Chat Completions 的 API model 均維持 `deepseek-flash`；舊文件或 compatibility alias 不作模型世代判定。
+- 修正 `#help` 的 Natural Vision 文案；明確搜尋或 `ai_web_search_failed` 才顯示 Search-specific 錯誤，普通 auto 對話的 HTTP／auth／timeout／generic provider failure 改用一般 AI 服務錯誤。
+- 現行 Responses reference／guide 明確支援 server-side `web_search`、auto／forced tool choice 與 `web_search_call`；本版仍只以實際 call 判定搜尋成功。
+- 本機 60 項 smoke 全過；未新增 runtime file、Script Property、Sheet migration 或 Trigger，也未呼叫真實 GAS／LINE／DeepSeek。
+
+// ==================================================
+
+2026-09-12
+v1.14.2 Natural Search & Vision Edition（Search contract correction）
+- 撤回前一輪「Responses 不執行 Web Search」的主流程判定：general_chat 改走 `/responses`，提供 server-side `web_search`；一般對話 `tool_choice=auto`，明確上網／搜尋要求強制 `{type:"web_search"}`。
+- Search 僅以 response output 的實際 `web_search_call` 判定；forced Search 沒有 call、provider failure、timeout、malformed output 或截斷均誠實失敗，不 fallback 到 Chat Completions 或舊知識。
+- 來源只接受 `web_search_call.action` 或 `output_text` 的 `url_citation` metadata，經 public HTTP(S)／SSRF 驗證、URL 去重後最多 3 個；Search 發生時保留 LINE 第 5 則為獨立來源 bubble，沒有可靠 URL 時不捏造。
+- Responses 完整送入 system、WeeklySummary memory、trimmed user／assistant history 與當次訊息，使用 `reasoning.effort=high` 與原 max output budget；raw Search、annotation、reasoning 與來源頁面不進 memory／Sheet／console。
+- 本專案所有現行 transport 的 API model 均維持 `deepseek-flash`；舊文件或 compatibility alias 不作模型世代判定。除 general_chat 外的 12 個 task 仍走 Chat Completions + HIGH。
+- Vision 仍走既有 Chat Completions `image_analysis`；不硬塞 Responses、不增加第二次 HIGH 同步 call。Natural Vision、舊 #小浣 看圖、群組 quiet、沒有 quote 不猜圖全部保留。
+- URL／SSRF 與 Pending Reply acknowledge-after-send 回歸通過。Pending delivery 保留 global ScriptLock，以避免無 claim／lease 時的並行重送競態；代價是 LINE HTTP 最長約 10 秒期間會競爭全域鎖。
+- 現行 Responses reference／guide 明確支援 server-side Search、auto／forced tool choice 與 `web_search_call`；本版以實際 call fail closed。
+- 仍為 21 個 runtime source；無新 Script Property、Sheet migration、Trigger、外部 Search API、Search Queue、Agent framework 或圖片 persistence。本機 smoke 59 項通過，未呼叫真實 GAS／LINE／DeepSeek。
+
+// ==================================================
+
+2026-09-11
+v1.14.2 Natural Search & Vision Edition
+- 現行 Responses API reference 明確支援 server-side Web Search；一般聊天使用 auto，明確搜尋可強制執行，實際完成仍以 `web_search_call` 判定，版本名稱不變。
+- 搜尋失敗維持誠實文案；圖片查證仍明示「圖片已分析，但即時網路查證未完成」。Pending 真實 transport mock failure／取鎖競爭／acknowledge failure 回歸保留，global lock tradeoff 不變。
+- 私訊引用圖片可直接自然提問；群組／room 只有「引用圖片 + #小浣」才分析，普通貼圖／引用保持靜默，舊 #小浣 看圖 相容，沒有 quote 不猜上一張圖。
+- 本專案現行模型統一稱為 DeepSeek Flash，API model 使用 `deepseek-flash`；Responses Search 只以實際 `web_search_call` 判定，不偽造 usedWebSearch／來源。
+- getReaderLayerHostname_ 拒絕 userinfo、IPv6 authority、非法 port／numeric host；isSafePublicUrl 擴充 loopback／private／link-local／metadata 防線，PTT 與 legacy direct UrlFetch 不跟隨未驗證 redirect。
+- Pending Reply 改為 LINE Reply 2xx 後才刪除；非 2xx／exception 保留供下次重試。以 at-least-not-lost 為目標，既有 schema、ReplyMode、conversation isolation 與 image pending 優先序不變。
+- 13 個 AI routes 全部維持 Chat Completions、deepseek-flash、thinking enabled/high；webhook deadline、圖片隱私、Reader／Queue、NewsInbox、Weekly Editorial、Sheet／Trigger／Properties contract 保留。
+- 仍為 21 個 runtime source；無新 Script Property、Sheet migration、Trigger、Web App URL、外部 credential 或圖片 persistence。手動同步本版九個 .gs；本機 smoke 54 項通過，未呼叫真實 GAS／LINE／DeepSeek。
+
+// ==================================================
+
 2026-09-11
 v1.14.1 Codebase Simplification Edition
 - 合併 NewsInbox / WeeklySummary 表頭對位寫入；同步與背景新聞重用已驗證 analysis，保留所有來源、狀態與分類稽核欄位。
