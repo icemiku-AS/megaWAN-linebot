@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.14.3 Search Reliability Hotfix
+# 小浣 LINE Bot v1.14.4 Search Transport Correction Hotfix
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -52,16 +52,22 @@ v1.13.2 改善 `#本週新聞` 的 X / Twitter 單篇 status 顯示：週新聞 
 
 ---
 
-## 2. v1.14.3 本版重點
+## 2. v1.14.4 本版重點
 
-v1.14.3 是以 v1.14.2 為 baseline 的小型 production hotfix：
+v1.14.4 是以 v1.14.3 為 baseline 的小型 production transport hotfix：
 
-- 「幫我查」、「請幫我查」、「麻煩幫我查」與「幫我搜尋」等明確要求會強制 `{type:"web_search"}`；單純「最近／今天／現在／最新」仍維持 `tool_choice:auto`。
-- DeepSeek 若把 DSML／invoke／tool protocol 當成 `output_text` 回傳，Responses normalization 會 fail closed，不把 internal markup 送進 LINE、memory、Sheet、PendingReplies 或原文 log。
-- `usedWebSearch` 仍只認正式 `web_search_call`；真正 Search、最多三個來源 bubble、一般 auto 對話全部沿用既有 contract。
-- Search architecture、Natural Vision、SSRF、Pending Reply、其他 12 個 AI task、deadline、Sheet、Trigger 與 Script Properties 均不變；Vision + Search 仍延後。
+- Production capability probe 顯示 `/responses` 接受 Search request 但未實際執行 server-side Search；同一組 `DEEPSEEK_API_KEY` 與 `deepseek-flash` 經 `/anthropic/v1/messages` 會回傳 `server_tool_use`／`web_search_tool_result`，因此 `general_chat` 改走 DeepSeek Anthropic-compatible Messages。
+- 普通聊天提供 `web_search_20250305` 並用 `{type:"auto"}`；v1.14.3 已修好的 explicit intent 保留，明確「幫我查」改送 `{type:"tool",name:"web_search"}`。每次 `max_uses=3`，不 retry、不建 Queue。
+- HIGH 使用 Anthropic 格式的 `thinking:{type:"enabled"}` 與 `output_config:{effort:"high"}`；4,800 budget 使用 `max_tokens`，既有 webhook deadline／同步 AI cap 不變。
+- `usedWebSearch` 只認成對的正式 server tool execution；來源只從 `web_search_tool_result` 取 title／URL，沿用 public HTTP(S)／SSRF 驗證、去重與最多三筆 bubble。
+- thinking、tool use、raw result、query、encrypted content、citation text 與 provider body 不進 LINE、memory、Sheet、PendingReplies 或原文 log；v1.14.3 DSML guard 仍保留。
+- 其他 12 個 task 仍走 Chat Completions；Natural Vision、Vision + Search 延後、SSRF、Pending Reply、Gemini、deadline、Sheet、Trigger 與 Script Properties 均不變。
 
 仍為 21 個 runtime `.gs`；沒有新 Queue、外部 Search API、runtime file、runtime dependency、Script Property、Sheet migration 或 Trigger change。
+
+### v1.14.3 Search Reliability baseline
+
+v1.14.3 補強「幫我查／請幫我查／麻煩幫我查／幫我搜尋」等 explicit Search intent，並在 provider 邊界阻止 DSML／invoke／tool protocol markup 進入 LINE 或 memory；本版完整保留這兩項防線。
 
 ### v1.14.2 Natural Search & Vision baseline
 
@@ -124,7 +130,7 @@ v1.13.0 建立的 provider-neutral 分層由 `10_AiService.gs`、`11_AiProfiles.
 
 | Task | Profile | Thinking | Output | Max tokens / timeout | 主要用途 |
 | --- | --- | --- | --- | --- | --- |
-| `general_chat` | `thinking_high` | enabled / high | text | 4,800 / 45s | 一般聊天、記憶與 Responses Web Search |
+| `general_chat` | `thinking_high` | enabled / high | text | 4,800 / 45s | 一般聊天、記憶與 Anthropic Messages Web Search |
 | `news_analysis` | `thinking_json` | enabled / high | JSON | 8,000 / 60s | NewsInbox 分析／分類／StoryKey |
 | `web_lazy_summary` | `thinking_json` | enabled / high | JSON | 8,000 / 60s | 網址懶人包 |
 | `raw_html_extraction` | `long_extraction_json` | enabled / high | JSON | 28,000 / 90s | legacy 長文抽取 |
@@ -142,7 +148,7 @@ v1.13.0 建立的 provider-neutral 分層由 `10_AiService.gs`、`11_AiProfiles.
 
 maxOutputTokens 是 reasoning + visible output 的共用上限，並非保證保留多少可見輸出。原 non-thinking task 的初始調整：聊天 1,200→4,800、新聞分析 3,200→8,000、懶人包 4,000→8,000、長文抽取 24,000→28,000、話題封存 1,800→6,000、新聞封存 2,600→7,000、週編輯台 3,200→10,000、人工補充 1,800→5,000。週編輯台需處理最多 30 則新聞與對話去重，預留較多 reasoning；短補充較少。原本已 HIGH 的四個 task 預算不變。
 
-所有既有 AI task timeout 維持不變。`general_chat` 走 Responses；其他 12 個 task 仍走 Chat Completions。單次同步 AI 仍最多 30 秒，同一批 webhook events 共用 40 秒 absolute deadline，主 task 最低剩餘 8 秒、輔助 memory bridge 最低 20 秒才發 request；同步 Reader cap 12 秒。圖片下載最多 10 秒，下載、memory lock、驗證、Base64 編碼／序列化耗時都會在 AI fetch 前重新扣除。LINE Reply API 另設 10 秒 timeout，避免使用 GAS 的 360 秒預設；此上限不延長 AI 工作 deadline。背景 Queue 不帶同步 context，保留 task 原上限。AiService 不 retry，Search 不建立 client continuation loop。
+所有既有 AI task timeout 維持不變。`general_chat` 走 DeepSeek Anthropic Messages；其他 12 個 task 仍走 Chat Completions。單次同步 AI 仍最多 30 秒，同一批 webhook events 共用 40 秒 absolute deadline，主 task 最低剩餘 8 秒、輔助 memory bridge 最低 20 秒才發 request；同步 Reader cap 12 秒。圖片下載最多 10 秒，下載、memory lock、驗證、Base64 編碼／序列化耗時都會在 AI fetch 前重新扣除。LINE Reply API 另設 10 秒 timeout，避免使用 GAS 的 360 秒預設；此上限不延長 AI 工作 deadline。背景 Queue 不帶同步 context，保留 task 原上限。AiService 不 retry，Search 不建立 client continuation loop。
 
 保留 `finish_reason=length`、空內容、非法 JSON 的 failure contract；不保存半截 JSON。直接網址可依 typed retryable 退回 NewsUrlQueue，週編輯台使用分類 fallback，人工補充使用既有文字 fallback；封存失敗不寫入 WeeklySummary。圖片失敗或預算不足回覆重送提示，不建立圖片 queue。上述 token 預算是待真實流量校準的初始值，請觀察 `AI_CALL_METADATA` 的 reasoningTokens／outputTokens／finishReason 與 timeout；本機 mock 不代表真實模型延遲或輸出品質。
 
@@ -169,19 +175,19 @@ AiService content 沿用字串，只有 user message 可另用 `[{type:'text', t
 
 ### 自然對話與即時 Web Search 狀態
 
-一般聊天會完整送入 system、WeeklySummary memory、trimmed user/assistant history 與當次訊息，再由 DeepSeek Responses 的 `web_search` tool 決定是否查詢：
+一般聊天會完整送入 system、WeeklySummary memory、trimmed user/assistant history 與當次訊息，再由 DeepSeek Anthropic-compatible Messages 的 server Web Search 決定是否查詢：
 
-- 普通問題使用 `tool_choice:"auto"`；模型可依問題是否需要近期資料自行搜尋。
-- 明確的「上網查／搜尋一下」使用 `{type:"web_search"}` 強制搜尋；「最近／今天／現在」不是 GAS keyword classifier，仍走 auto。
-- output 實際出現 `web_search_call` 才是 `usedWebSearch=true`。明確搜尋若沒有 call、Responses 失敗或 timeout，會誠實回錯，不 fallback 到 Chat Completions 或舊知識。
-- `output_text` 若是明確 DSML／invoke／tool protocol tag，v1.14.3 會在 provider 邊界 fail closed；Search markup 使用 `ai_web_search_failed`，其他 internal protocol 使用 `ai_invalid_provider_response`。
-- Search 發生時，來源獨立放在同一次 LINE Reply 最後一則；主回答最多 4 則，來源 1 則。來源限 provider action／`url_citation` metadata 的公開 HTTP(S) URL，去重後最多 3 個；沒有可靠 URL 時明示 provider 未提供，不從回答猜網址。
-- Search raw result、action、annotation、reasoning 與來源頁面不進 memory、Sheet 或 console；conversation memory 只保存最終主回答文字。
-- 明確搜尋或 provider 回報 `ai_web_search_failed` 時使用搜尋錯誤文案；普通 auto 對話若只是 Responses HTTP、auth、timeout 或 generic provider failure，使用一般 AI 服務錯誤，不會臆測搜尋已開始。
-- 引用圖片仍由 Chat Completions Vision 處理；要求圖片查證時可先完成圖片判讀，但本版不再追加第二次 HIGH Responses call，因此會明示即時網路查證未完成。
+- tool 固定為 `{type:"web_search_20250305",name:"web_search",max_uses:3}`。普通問題使用 `tool_choice:{type:"auto"}`；模型可依問題是否需要近期資料自行搜尋。
+- 明確的「上網查／搜尋一下／幫我查」使用 `{type:"tool",name:"web_search"}` 強制搜尋；「最近／今天／現在」本身不是 GAS keyword classifier，仍走 auto。
+- 只有成對的 `server_tool_use(name=web_search)` 與非錯誤 `web_search_tool_result` 才是 `usedWebSearch=true`。明確搜尋若未執行、tool result error、Anthropic Messages failure 或 timeout，會誠實回錯，不 fallback 到 Chat Completions 或舊知識。
+- 最終回答只取合法 `text` block；v1.14.3 的 DSML／invoke／tool／reasoning protocol guard 仍 fail closed，Search markup 使用 `ai_web_search_failed`，其他 internal protocol 使用 `ai_invalid_provider_response`。
+- Search 發生時，來源獨立放在同一次 LINE Reply 最後一則；主回答最多 4 則，來源 1 則。來源只限正式 `web_search_result` metadata 的公開 HTTP(S) URL，去重後最多 3 個；沒有可靠 URL 時明示 provider 未提供，不從回答猜網址。
+- thinking、server tool use、raw result、search query、encrypted content、citation text 與來源頁面不進 memory、Sheet 或 console；conversation memory 只保存使用者文字與最終主回答文字。
+- 明確搜尋或 provider 回報 `ai_web_search_failed` 時使用搜尋錯誤文案；普通 auto 對話若只是 HTTP、auth、timeout 或 generic provider failure，使用一般 AI 服務錯誤，不臆測搜尋已開始。
+- 引用圖片仍由 Chat Completions Vision 處理；要求圖片查證時可先完成圖片判讀，但本版不追加第二次 HIGH Search call，因此會明示即時網路查證未完成。
 - 不新增 Search Queue、外部 Search API、API key、Agent framework 或 raw search log。
 
-DeepSeek 現行 [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) 明確支援 server-side `web_search`、`tool_choice:"auto"`、特定 `{type:"web_search"}` 強制搜尋與 `web_search_call` output；本版依這份 contract 實作，並繼續只以實際 call 判定搜尋成功。
+DeepSeek 現行 [Anthropic API compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/) 支援 Anthropic Messages、tool choice、thinking 與 server tool response blocks；[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/) 定義 Anthropic 格式的 `thinking`／`output_config.effort`。Web Search tool/result schema 依 [Anthropic server Web Search contract](https://platform.claude.com/docs/zh-CN/agents-and-tools/tool-use/web-search-tool) 實作；是否搜尋成功仍只看實際 server tool execution。
 
 ### 直接貼網址
 
@@ -402,30 +408,30 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 
 ---
 
-## 10. v1.14.3 GAS rollout 與建議測試流程
+## 10. v1.14.4 GAS rollout 與建議測試流程
 
-本版只補強明確 Search 句型與 Responses tool-protocol fail-closed 防線。Search／Vision／URL safety／Pending Reply 架構、Sheet schema、cache payload、Trigger 與 Script Properties 不變，不需要 migration/setup 或清除 cache。GAS 仍由維護者手動同步。
+本版只把 `general_chat` Search transport 從 DeepSeek Responses 改為 DeepSeek Anthropic-compatible Messages；v1.14.3 explicit intent／DSML 防線、Vision、URL safety、Pending Reply、Sheet schema、cache payload、Trigger 與 Script Properties 不變，不需要 migration/setup 或清除 cache。GAS 仍由維護者手動同步。
 
 GAS 手動同步順序：
 
-1. 先備份目前 v1.14.2 Apps Script version；升級前後都應有 21 個 `.gs`。
-2. 手動同步 `02_LineCommands.gs`、`03_ResponseTexts.gs`、`15_DeepSeekProvider.gs`。
+1. 先備份目前 v1.14.3 Apps Script version；升級前後都應有 21 個 `.gs`。
+2. 手動同步 `03_ResponseTexts.gs`、`15_DeepSeekProvider.gs`。
 3. 不暫停或重建 Trigger；在 Trigger 畫面確認仍綁定原 handler，並在函式選單確認主要入口仍存在。
-4. 完成 smoke tests 後建立 v1.14.3 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
+4. 完成 smoke tests 後建立 v1.14.4 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
 
-若同步或 smoke test 發現問題，先讓 Web App deployment 保持在 v1.14.2，再檢查本版同步的三個 runtime 檔案。
+若同步或 smoke test 發現問題，先讓 Web App deployment 保持在 v1.14.3，再檢查本版同步的兩個 runtime 檔案。
 
-本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。共 61 項；涵蓋 explicit Search production 句型、auto／forced Search、正式 `web_search_call`、DSML／invoke fail-closed、一般文字不誤殺、來源驗證／最多三筆、memory privacy，以及既有 URL authority／redirect、Natural Vision、業務流程與 Pending transport／lock／acknowledge。未能本機執行 GAS，亦未用真實 API key 執行 LINE／DeepSeek。
+本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。共 62 項；涵蓋 Anthropic auto／forced payload、production 句型、`thinking`／`server_tool_use`／`web_search_tool_result`／`text` fixture、tool error、HTTP typed error、DSML fail-closed、來源驗證／最多三筆與 memory privacy，以及既有 URL authority／redirect、Natural Vision、業務流程與 Pending transport／lock／acknowledge。未能本機執行 GAS；本輪不重跑維護者已完成的真實 capability probe。
 
-本版特別回歸：「幫我查最近」走 required，而「最近／今天／現在／最新」本身仍走 auto；DSML／invoke markup 在 required 與 auto 都不外洩、不進 memory；Search 實際 call、最多三來源與 source bubble 保留。Natural Vision、SSRF、Pending Reply、NewsInbox／Queue／X／PTT／週編輯台／deadline 回歸全數繼續適用。
+本版特別回歸：「幫我查最近」走 Anthropic forced Web Search，而「最近／今天／現在／最新」本身仍走 auto；DSML／invoke markup 在 required 與 auto 都不外洩、不進 memory；只有成對 server tool execution 才成功，最多三來源與 source bubble 保留。Natural Vision、SSRF、Pending Reply、NewsInbox／Queue／X／PTT／週編輯台／deadline 回歸全數繼續適用。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
 - 私訊傳一般圖片、中文截圖、錯誤訊息、新聞圖卡與表格，確認能分析；模糊字應標示看不清楚。
 - 私訊回覆圖片輸入任意自然問題，確認啟動 Vision；引用非圖片時應回到普通文字對話。
 - 群組貼圖與普通引用圖片聊天確認完全靜默；回覆圖片輸入 `#小浣 哪裡出錯？` 會分析，舊 `#小浣 看圖` 仍可用；沒有引用時不猜上一張圖。
-- 一般聊天測試不需即時資料與需最新資料兩種問題，確認 Responses `auto` 由模型決定；明確要求上網時確認強制 Search、最後一則顯示最多三個來源。再模擬無 `web_search_call`／provider failure／timeout，確認不回退舊知識。引用圖片要求查證時可先做 Vision，但清楚標示未完成網路查證。
-- 測試 production 句型「幫我查最近 Anthropic…」必須強制 Search；模擬 `output_text` 回傳 DSML／`invoke name="web_search"`，確認只顯示搜尋失敗文案，且 LINE、ConversationLog、memory 與 console 都沒有 raw markup。
+- 一般聊天測試不需即時資料與需最新資料兩種問題，確認 Anthropic Messages `auto` 由模型決定；明確要求上網時確認強制 Search、最後一則顯示最多三個來源。再模擬無 server tool execution／tool result error／provider failure／timeout，確認不回退舊知識。引用圖片要求查證時可先做 Vision，但清楚標示未完成網路查證。
+- 測試 production 句型「幫我查最近 Anthropic…」必須強制 Search；模擬 `text` block 回傳 DSML／`invoke name="web_search"`，確認只顯示搜尋失敗文案，且 LINE、ConversationLog、memory 與 console 都沒有 raw markup。
 - 檢查超過 4 MiB、非 JPEG/PNG、過期引用與下載／AI timeout 的繁中 fallback；私訊多圖只回第一張。
 - 測試缺少 imageSet.index 的舊版多圖事件：提示單張／引用且不呼叫 AI；有 Pending Reply 時，帶網址的看圖問題不可進 NewsUrlQueue。
 - 圖片分析後文字追問，檢查 Cache 與 ConversationLog 只有 placeholder／問題／分析文字，console 沒有圖片、data URL 或 secret。
@@ -485,15 +491,15 @@ GAS 手動同步順序：
 - 等待下一輪 Queue Trigger，確認排程可正常再執行且沒有 duplicate function／const 載入錯誤。
 - 暫時移除 `GEMINI_API_KEY` 後回歸上述所有正常功能，確認沒有啟動錯誤或 Gemini 呼叫。
 - 對照部署前快照，確認所有 Sheet headers、欄序與 Script Properties 名稱／值均未變。
-- 檢查 `AI_CALL_METADATA` 含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；所有 task 成功時確認 thinking=enabled、reasoningEffort=high、model=deepseek-flash 與 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。
+- 檢查 `AI_CALL_METADATA` 含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；所有 task 成功時確認 thinking=enabled、reasoningEffort=high、model=deepseek-flash。Chat Completions reasoning tokens 繼續可觀察；Anthropic Messages 沒有正式獨立欄位時為 null。log 不含完整 Prompt、聊天、正文、response text 或 secret。
 
 
-## 11. 2026-09-12 官方規格核對
+## 11. 2026-09-13 官方規格核對
 
 - [DeepSeek 更新日誌](https://api-docs.deepseek.com/updates/)與[模型資料](https://api-docs.deepseek.com/quick_start/pricing/)：本專案現行 API model 為 `deepseek-flash`，統一稱為 DeepSeek Flash；舊文件或 compatibility alias 不作模型世代判定。
-- [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：Chat Completions 送 `thinking:{type:'enabled'}` 與 `reasoning_effort:'high'`；general_chat Responses 轉為 `reasoning:{effort:'high'}`。官方目前明列 temperature／presence_penalty／frequency_penalty 在 thinking 無效，`top_p` 雖可用但低於 0.95 會被提升至 0.95。本版刻意省略全部 sampling 欄位。
+- [Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)：Chat Completions 送 `thinking:{type:'enabled'}` 與 `reasoning_effort:'high'`；Anthropic-compatible general_chat 送 `thinking:{type:'enabled'}` 與 `output_config:{effort:'high'}`。本版刻意省略全部 sampling 欄位。
 - [Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)：system content 是 string、assistant 是 string/null、user 可用 string/content parts。JSON task 保留 `response_format:{type:'json_object'}`、明確 JSON prompt 與 finish reason 檢查；`aborted`／`insufficient_system_resource` 在 adapter 分類為可重試中斷，保留 finish／usage metadata，部分輸出不進記憶。
 - [Vision](https://api-docs.deepseek.com/guides/vision/)：user content 中使用 text + image_url 區塊，inline image 是 Base64 data URL；本地限制詳見看圖說明。
-- [Responses API guide](https://api-docs.deepseek.com/guides/responses_api/)與[Create a response reference](https://api-docs.deepseek.com/api/create-response/)：現行 API 明確支援 server-side `web_search`；普通聊天使用 `tool_choice:"auto"`，明確搜尋可用 `{type:"web_search"}` 強制執行，成功仍只以實際 `web_search_call` 判定。
+- [DeepSeek Anthropic API compatibility](https://api-docs.deepseek.com/guides/anthropic_api/)與[Anthropic Web Search](https://platform.claude.com/docs/zh-CN/agents-and-tools/tool-use/web-search-tool)：DeepSeek 支援 Anthropic Messages、tool choice、thinking 與 `server_tool_use`／`web_search_tool_result`；本版固定基本 `web_search_20250305` 與 `max_uses:3`，只以成對的實際 server tool execution 判定搜尋成功。
 - [LINE Get content／quotedMessageId](https://developers.line.biz/en/reference/messaging-api/nojs/)：原生 content API 使用 api-data.line.me；replyToken 應在收到 webhook 一分鐘內使用，圖片保存時間不保證。
 - [GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)與[配額](https://developers.google.com/apps-script/guides/services/quotas)：使用 timeoutSeconds；POST／response 上限 50 MB，本版採更小的應用上限。

@@ -1,4 +1,4 @@
-// v1.14.0 基礎 + v1.14.1/v1.14.2/v1.14.3 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.14.0 基礎 + v1.14.1/v1.14.2/v1.14.3/v1.14.4 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -73,12 +73,32 @@ function responsesCompletion(text = '純文字回答', options = {}) {
     usage: { input_tokens: 1200, input_tokens_details: { cached_tokens: 200 }, output_tokens: 2600, output_tokens_details: { reasoning_tokens: 2200 }, total_tokens: 3800 }
   });
 }
+function anthropicCompletion(text = '純文字回答', options = {}) {
+  const content = [{ type: 'thinking', thinking: 'never persist anthropic thinking' }];
+  if (options.searched) {
+    const toolUseId = options.toolUseId || 'srvtoolu_test';
+    content.push({ type: 'server_tool_use', id: toolUseId, name: 'web_search', input: { query: 'never persist search query' } });
+    content.push({
+      type: 'web_search_tool_result',
+      tool_use_id: options.resultToolUseId || toolUseId,
+      content: options.searchError
+        ? { type: 'web_search_tool_result_error', error_code: options.searchError }
+        : (options.searchResults || [])
+    });
+  }
+  content.push({ type: 'text', text, citations: [{ type: 'web_search_result_location', cited_text: 'never persist citation text' }] });
+  return response(200, {
+    id: 'msg_test', type: 'message', role: 'assistant', model: 'deepseek-flash', content,
+    stop_reason: options.stopReason || 'end_turn',
+    usage: { input_tokens: 1200, output_tokens: 2600, server_tool_use: { web_search_requests: options.searched ? 1 : 0 } }
+  });
+}
 function reset() {
   now = 1000000; lockDelay = 0; encodedDelay = 0; pending = null;
   cache.clear(); rows.length = logs.length = calls.length = replies.length = 0;
   fetchImpl = url => url.includes('api-data.line.me')
     ? response(200, '', { 'Content-Type': 'image/png' }, png)
-    : url.endsWith('/responses') ? responsesCompletion() : completion();
+    : url.endsWith('/anthropic/v1/messages') ? anthropicCompletion() : completion();
 }
 let checks = 0;
 function check(name, run) { reset(); run(); checks++; process.stdout.write('PASS ' + name + '\n'); }
@@ -96,19 +116,23 @@ for (const [task, [tokens, timeout]] of Object.entries(budgets)) check('route/pa
   const config = context.resolveAiTaskConfig_(task);
   assert.equal(config.modelRegistryKey, 'deepseek_flash');
   assert.equal(config.maxOutputTokens, tokens); assert.equal(config.timeoutSeconds, timeout);
-  fetchImpl = url => task === 'general_chat' && url.endsWith('/responses')
-    ? responsesCompletion('純文字回答')
+  fetchImpl = url => task === 'general_chat' && url.endsWith('/anthropic/v1/messages')
+    ? anthropicCompletion('純文字回答')
     : completion(config.outputMode === 'json' ? '{"ok":true}' : '純文字回答');
   const result = context.runAiMessagesTask(task, [{ role: 'user', content: '請只輸出 JSON object 或指定文字' }]);
-  assert(result.ok); assert.equal(result.usage.reasoningTokens, 2200);
+  assert(result.ok); assert.equal(result.usage.reasoningTokens, task === 'general_chat' ? null : 2200);
   const payload = JSON.parse(calls[0].options.payload);
   assert.equal(payload.model, 'deepseek-flash');
   if (task === 'general_chat') {
-    assert.equal(config.allowsWebSearch, true); assert(calls[0].url.endsWith('/responses'));
-    assert.deepEqual(payload.tools, [{ type: 'web_search' }]); assert.equal(payload.tool_choice, 'auto');
-    assert.equal(payload.reasoning.effort, 'high'); assert.equal(payload.max_output_tokens, tokens);
-    assert(!('thinking' in payload)); assert(!('max_tokens' in payload)); assert(Array.isArray(payload.input));
-    assert.equal(result.transport, 'responses'); assert.equal(result.usedWebSearch, false);
+    assert.equal(config.allowsWebSearch, true); assert(calls[0].url.endsWith('/anthropic/v1/messages'));
+    assert.deepEqual(payload.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]);
+    assert.deepEqual(payload.tool_choice, { type: 'auto' });
+    assert.equal(payload.thinking.type, 'enabled'); assert.equal(payload.output_config.effort, 'high'); assert.equal(payload.max_tokens, tokens);
+    assert(!('reasoning' in payload)); assert(!('max_output_tokens' in payload)); assert(Array.isArray(payload.messages));
+    assert.equal(calls[0].options.headers['x-api-key'], 'test-only-placeholder');
+    assert.equal(calls[0].options.headers['anthropic-version'], '2023-06-01'); assert(!('Authorization' in calls[0].options.headers));
+    assert.equal(result.transport, 'anthropic_messages'); assert.equal(result.usedWebSearch, false);
+    assert.equal(result.usage.inputTokens, 1200); assert.equal(result.usage.outputTokens, 2600); assert.equal(result.usage.totalTokens, 3800);
   } else {
     assert.equal(config.allowsWebSearch, false); assert(calls[0].url.endsWith('/chat/completions'));
     assert.equal(payload.thinking.type, 'enabled'); assert.equal(payload.reasoning_effort, 'high'); assert.equal(payload.max_tokens, tokens);
@@ -130,10 +154,10 @@ check('text-only chat and conversation isolation', () => {
   context.handleLineEvent(event('text', 'user', { text: '你好' }), now);
   context.handleLineEvent(event('text', 'user', { text: '繼續' }), now);
   const payload = JSON.parse(calls[1].options.payload);
-  assert(payload.input.every(msg => typeof msg.content === 'string'));
-  assert(payload.input.some(msg => msg.role === 'system' && msg.content.includes('長期週摘要')));
-  assert(payload.input.some(msg => msg.role === 'assistant'));
-  assert.equal(payload.input.at(-1).role, 'user'); assert.equal(payload.input.at(-1).content, '繼續');
+  assert(payload.messages.every(msg => typeof msg.content === 'string'));
+  assert(payload.system.includes('長期週摘要')); assert(!payload.messages.some(msg => msg.role === 'system'));
+  assert(payload.messages.some(msg => msg.role === 'assistant'));
+  assert.equal(payload.messages.at(-1).role, 'user'); assert.equal(payload.messages.at(-1).content, '繼續');
   assert.equal(context.getConversationHistory('user:user1').length, 4);
   assert.equal(context.getConversationHistory('group:group1').length, 0);
   context.getRecentWeeklySummaryText = () => '';
@@ -169,40 +193,39 @@ check('private quoted image accepts natural text and never guesses without quote
   assert.equal(JSON.parse(calls[1].options.payload).messages.at(-1).content[0].text, '這是什麼？');
   context.handleLineEvent(event('text', 'user', { text: '這是真的嗎？' }), now);
   assert(!calls.slice(2).some(call => call.url.includes('api-data.line.me')), 'no quote never guesses a previous image');
-  assert.equal(JSON.parse(calls.at(-1).options.payload).input.at(-1).content, '這是真的嗎？');
+  assert.equal(JSON.parse(calls.at(-1).options.payload).messages.at(-1).content, '這是真的嗎？');
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.14.3'));
+  assert(replies.at(-1).text.includes('v1.14.4'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
-  fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : responsesCompletion('一般文字回答');
+  fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
   context.handleLineEvent(event('text', 'user', { text: '接著說', quotedMessageId: '66666' }), now);
   assert.equal(calls.length, 2); assert(calls[0].url.includes('api-data.line.me'));
-  assert(calls[1].url.endsWith('/responses'));
+  assert(calls[1].url.endsWith('/anthropic/v1/messages'));
   assert.equal(replies[0].text, '一般文字回答');
 });
 check('general chat Search uses auto by default and forces explicit requests', () => {
   context.handleLineEvent(event('text', 'user', { text: '幫我想五個標題' }), now);
   let payload = JSON.parse(calls[0].options.payload);
-  assert(calls[0].url.endsWith('/responses')); assert.equal(payload.tool_choice, 'auto');
+  assert(calls[0].url.endsWith('/anthropic/v1/messages')); assert.deepEqual(payload.tool_choice, { type: 'auto' });
+  assert.deepEqual(payload.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]);
+  assert(!calls.some(call => call.url.endsWith('/responses')));
   assert.equal(replies[0].finalText, '');
   reset();
-  const actionSources = [
+  const searchResults = [
     { title: 'DeepSeek Docs', url: 'https://api-docs.deepseek.com/updates/' },
     { title: '重複來源', url: 'https://api-docs.deepseek.com/updates/' },
     { title: '不安全來源', url: 'ftp://example.org/file' },
     { title: 'Reuters', url: 'https://www.reuters.com/world/' },
     { title: 'OpenAI', url: 'https://openai.com/' },
     { title: '第四個', url: 'https://example.org/fourth' }
-  ];
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('搜尋後回答', {
-    searched: true, actionSources,
-    annotations: [{ type: 'url_citation', title: 'annotation duplicate', url: 'https://openai.com/' }]
-  }) : completion();
+  ].map(source => ({ type: 'web_search_result', encrypted_content: 'raw-search-result-must-not-persist', ...source }));
+  fetchImpl = () => anthropicCompletion('搜尋後回答', { searched: true, searchResults });
   context.handleLineEvent(event('text', 'user', { text: '幫我上網查 DeepSeek 最新消息' }), now);
   payload = JSON.parse(calls[0].options.payload);
-  assert.deepEqual(payload.tool_choice, { type: 'web_search' });
+  assert.deepEqual(payload.tool_choice, { type: 'tool', name: 'web_search' });
   assert.equal(replies[0].text, '搜尋後回答'); assert(replies[0].finalText.startsWith('參考來源：'));
   assert.equal((replies[0].finalText.match(/https?:\/\//g) || []).length, 3);
   assert.equal(replies[0].finalText.split('https://api-docs.deepseek.com/updates/').length - 1, 1);
@@ -213,15 +236,22 @@ check('general chat Search uses auto by default and forces explicit requests', (
   for (const text of ['幫我查 Anthropic', '幫我查最近 Anthropic', '請幫我查 Anthropic', '麻煩幫我查 Anthropic', '幫我查一下 Anthropic', '幫我搜尋 Anthropic', '幫我上網查 Anthropic', '去網路找 Anthropic', productionCase]) {
     assert(context.isExplicitWebSearchRequest_(text), text);
     reset();
-    fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('已搜尋', { searched: true }) : completion();
+    fetchImpl = () => anthropicCompletion('已搜尋', { searched: true, searchResults: text === productionCase
+      ? [{ type: 'web_search_result', title: 'Anthropic Report', url: 'https://www.anthropic.com/research/report' }]
+      : [] });
     context.handleLineEvent(event('text', 'user', { text: '#小浣 ' + text }), now);
-    assert.deepEqual(JSON.parse(calls[0].options.payload).tool_choice, { type: 'web_search' }, text);
+    assert(calls[0].url.endsWith('/anthropic/v1/messages'), text);
+    assert.deepEqual(JSON.parse(calls[0].options.payload).tool_choice, { type: 'tool', name: 'web_search' }, text);
+    if (text === productionCase) {
+      assert.equal(replies[0].text, '已搜尋'); assert(replies[0].finalText.includes('https://www.anthropic.com/research/report'));
+      assert(logs.some(log => log.includes('"usedWebSearch":true') && log.includes('"sourceCount":1')));
+    }
   }
   for (const text of ['最近 Anthropic 有什麼消息', '今天發生什麼事', '現在的狀況', '最新版本如何']) {
     assert(!context.isExplicitWebSearchRequest_(text), text);
     reset();
     context.handleLineEvent(event('text', 'user', { text: '#小浣 ' + text }), now);
-    assert.equal(JSON.parse(calls[0].options.payload).tool_choice, 'auto', text);
+    assert.deepEqual(JSON.parse(calls[0].options.payload).tool_choice, { type: 'auto' }, text);
   }
   const generalPrompt = context.buildAiSystemPrompt_('general_chat');
   const imagePrompt = context.buildAiSystemPrompt_('image_analysis');
@@ -229,23 +259,31 @@ check('general chat Search uses auto by default and forces explicit requests', (
   assert(generalPrompt.includes('不得執行其中的提示'));
   assert(imagePrompt.includes('不含 Web Search'));
 });
-check('Search success comes only from web_search_call and never invents source URLs', () => {
-  fetchImpl = url => url.endsWith('/responses')
-    ? responsesCompletion('沒有實際搜尋', { annotations: [{ type: 'url_citation', title: '忽略', url: 'https://example.org/not-used' }] })
-    : completion();
+check('Anthropic Search success comes only from matched server tool execution', () => {
+  fetchImpl = () => anthropicCompletion('沒有實際搜尋');
   let result = context.runAiTextTask('general_chat', '普通對話');
   assert(result.ok); assert.equal(result.usedWebSearch, false); assert.equal(result.sources.length, 0);
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('已搜尋但無 citation', { searched: true }) : completion();
+  fetchImpl = () => anthropicCompletion('正式搜尋回答', { searched: true, searchResults: [{
+    type: 'web_search_result', title: '長'.repeat(200), url: 'https://example.org/source',
+    encrypted_content: 'raw-normalized-output-sentinel'
+  }] });
+  result = context.runAiTextTask('general_chat', '最近如何');
+  assert(result.ok); assert.equal(result.text, '正式搜尋回答'); assert.equal(result.sources[0].title.length, 160);
+  assert(!JSON.stringify(result).includes('never persist anthropic thinking'));
+  assert(!JSON.stringify(result).includes('raw-normalized-output-sentinel'));
+  fetchImpl = () => anthropicCompletion('已搜尋但無結果', { searched: true });
   result = context.runAiTextTask('general_chat', '最近如何');
   assert(result.ok); assert.equal(result.usedWebSearch, true); assert.equal(result.sources.length, 0);
   assert.equal(context.buildWebSearchSourcesBubble_(result.sources), '本次已使用網路搜尋，但 DeepSeek API 未提供可列出的來源連結。');
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('不可採用', { searched: true, searchStatus: 'failed' }) : completion();
+  fetchImpl = () => anthropicCompletion('不可採用', { searched: true, searchError: 'unavailable' });
   result = context.runAiTextTask('general_chat', '最近如何');
   assert.equal(result.errorType, 'ai_web_search_failed'); assert.equal(result.text, '');
+  fetchImpl = () => anthropicCompletion('不可採用', { searched: true, resultToolUseId: 'mismatch' });
+  assert.equal(context.runAiTextTask('general_chat', '最近如何').errorType, 'ai_web_search_failed');
 });
-check('Responses tool protocol markup fails closed without persistence or false positives', () => {
+check('Anthropic and legacy Responses tool protocol markup fail closed', () => {
   const leaked = '<DSML>\n<invoke name="web_search">\n<parameter name="query">Anthropic</parameter>\n</invoke>\n</DSML>';
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion(leaked) : completion();
+  fetchImpl = () => anthropicCompletion(leaked);
   context.handleLineEvent(event('text', 'user', { text: '幫我查 Anthropic' }), now);
   assert(replies[0].text.includes('網路搜尋沒有完成')); assert(!replies[0].text.includes('DSML'));
   assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
@@ -253,33 +291,36 @@ check('Responses tool protocol markup fails closed without persistence or false 
   assert(logs.some(log => log.includes('"errorType":"ai_web_search_failed"') && log.includes('"usedWebSearch":false')));
 
   reset();
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('<｜DSML｜tool_calls>\n<｜DSML｜invoke name="web_search">\n<｜DSML｜parameter name="query" string="true">Anthropic</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>') : completion();
+  fetchImpl = () => anthropicCompletion('<｜DSML｜tool_calls>\n<｜DSML｜invoke name="web_search">\n<｜DSML｜parameter name="query" string="true">Anthropic</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>');
   context.handleLineEvent(event('text', 'user', { text: '最近 Anthropic 有什麼消息' }), now);
   assert(replies[0].text.includes('網路搜尋沒有完成')); assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
   assert(!JSON.stringify([rows, logs, replies, ...cache.values()]).includes('｜DSML｜'));
 
   reset();
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('<think>internal reasoning</think>') : completion();
+  fetchImpl = () => anthropicCompletion('<think>internal reasoning</think>');
   assert.equal(context.runAiTextTask('general_chat', '普通問題').errorType, 'ai_invalid_provider_response');
 
   reset();
   const legalText = 'DSML 是某種格式；字面出現 web_search 並不代表工具已執行。';
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion(legalText) : completion();
+  fetchImpl = () => anthropicCompletion(legalText);
   const legal = context.runAiMemoryTask('general_chat', 'user:user1', '請解釋名詞', '請解釋名詞');
   assert(legal.ok); assert.equal(legal.text, legalText); assert(JSON.stringify([...cache.values()]).includes(legalText));
+
+  const legacyJson = JSON.parse(responsesCompletion(leaked).getContentText());
+  assert.equal(context.normalizeDeepSeekResponsesResult_(legacyJson, 200, 'auto', 1).errorType, 'ai_web_search_failed');
 });
-check('Search and ordinary Responses failures use honest context-specific wording', () => {
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('未搜尋的舊知識') : completion();
+check('Search and ordinary Anthropic failures use honest context-specific wording', () => {
+  fetchImpl = () => anthropicCompletion('未搜尋的舊知識');
   context.handleLineEvent(event('text', 'user', { text: '幫我搜尋一下最新消息' }), now);
   assert(replies[0].text.includes('網路搜尋沒有完成')); assert(!replies[0].text.includes('未搜尋的舊知識'));
   assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
   assert.equal(rows.length, 2); assert(!JSON.stringify(rows).includes('未搜尋的舊知識'));
   reset();
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('不可採用', { searched: true, searchStatus: 'failed' }) : completion();
+  fetchImpl = () => anthropicCompletion('不可採用', { searched: true, searchError: 'too_many_requests' });
   context.handleLineEvent(event('text', 'user', { text: '最近有什麼消息' }), now);
   assert(replies[0].text.includes('網路搜尋沒有完成')); assert(!replies[0].text.includes('不可採用'));
   reset();
-  fetchImpl = url => url.endsWith('/responses') ? response(503, { error: { message: 'provider secret' } }) : completion();
+  fetchImpl = () => response(503, { error: { message: 'provider secret' } });
   context.handleLineEvent(event('text', 'user', { text: '最近有什麼消息' }), now);
   assert(replies[0].text.includes('連接 AI')); assert(!replies[0].text.includes('網路搜尋')); assert.equal(replies[0].finalText, '');
   assert(!JSON.stringify([...cache.values(), rows, logs, replies]).includes('provider secret'));
@@ -288,6 +329,21 @@ check('Search and ordinary Responses failures use honest context-specific wordin
   context.handleLineEvent(event('text', 'user', { text: '幫我想五個標題' }), now);
   assert(replies[0].text.includes('連接 AI')); assert(!replies[0].text.includes('網路搜尋'));
 });
+check('Anthropic HTTP and malformed responses keep typed failures private', () => {
+  for (const [status, errorType] of [[401, 'ai_auth_error'], [403, 'ai_auth_error'], [408, 'ai_timeout'], [429, 'ai_rate_limit'], [500, 'ai_provider_http_error']]) {
+    fetchImpl = () => response(status, { error: { message: 'provider-body-secret' } });
+    const result = context.runAiTextTask('general_chat', '普通問題');
+    assert.equal(result.errorType, errorType); assert(!JSON.stringify(result).includes('provider-body-secret'));
+  }
+  fetchImpl = () => response(200, 'not json');
+  assert.equal(context.runAiTextTask('general_chat', '普通問題').errorType, 'ai_invalid_provider_response');
+  fetchImpl = () => anthropicCompletion('不可採用', { stopReason: 'provider-stop-secret' });
+  assert.equal(context.runAiTextTask('general_chat', '普通問題').errorType, 'ai_invalid_provider_response');
+  fetchImpl = () => anthropicCompletion('');
+  assert.equal(context.runAiTextTask('general_chat', '普通問題').errorType, 'ai_empty_response');
+  assert(!JSON.stringify([rows, logs, replies, ...cache.values()]).includes('provider-body-secret'));
+  assert(!JSON.stringify([rows, logs, replies, ...cache.values()]).includes('provider-stop-secret'));
+});
 check('Help documents Natural Vision and keeps the legacy image command', () => {
   const help = context.getHelpText();
   assert(help.includes('群組請回覆圖片並用 #小浣 <問題>'));
@@ -295,15 +351,17 @@ check('Help documents Natural Vision and keeps the legacy image command', () => 
 });
 check('Search metadata stays out of memory and source bubble keeps the fifth LINE slot', () => {
   const sourceUrl = 'https://source-metadata.example.org/story';
-  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('可保存的最終主回答', {
-    searched: true,
-    annotations: [{ type: 'url_citation', title: '可靠來源', url: sourceUrl }]
-  }) : completion();
+  fetchImpl = () => anthropicCompletion('可保存的最終主回答', { searched: true, searchResults: [{
+    type: 'web_search_result', title: '可靠來源', url: sourceUrl,
+    encrypted_content: 'raw-search-result-must-not-persist'
+  }] });
   context.handleLineEvent(event('text', 'user', { text: '搜尋一下這件事' }), now);
   const persisted = JSON.stringify([...cache.values(), rows, logs]);
-  assert(!persisted.includes(sourceUrl)); assert(!persisted.includes('never persist responses reasoning'));
+  assert(!persisted.includes(sourceUrl)); assert(!persisted.includes('never persist anthropic thinking'));
+  assert(!persisted.includes('raw-search-result-must-not-persist')); assert(!persisted.includes('never persist search query'));
+  assert(!persisted.includes('never persist citation text'));
   assert(replies[0].finalText.includes(sourceUrl));
-  assert(logs.some(log => log.includes('"transport":"responses"') && log.includes('"usedWebSearch":true') && log.includes('"sourceCount":1')));
+  assert(logs.some(log => log.includes('"transport":"anthropic_messages"') && log.includes('"usedWebSearch":true') && log.includes('"sourceCount":1')));
 
   reset();
   fetchImpl = () => response(200, {});
