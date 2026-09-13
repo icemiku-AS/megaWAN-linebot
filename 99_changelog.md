@@ -1,4 +1,14 @@
 2026-09-13
+v1.14.4 Search Transport Correction Hotfix
+- Production capability probe 證實 DeepSeek `/responses` 接受 Web Search request 卻未產生 server-side execution；`general_chat` 改走實際回傳 `server_tool_use`／`web_search_tool_result` 的 DeepSeek Anthropic-compatible `/messages`。
+- 沿用同一 `DEEPSEEK_API_KEY`、`deepseek-flash`、HIGH 與 4,800 token budget；Anthropic payload 使用 `thinking:{type:"enabled"}`、`output_config:{effort:"high"}`、auto／forced `tool_choice`，Search 固定 `max_uses:3`。
+- `usedWebSearch` 只認成對且非錯誤的正式 server tool execution；來源只取 `web_search_result` title／URL，沿用 public HTTP(S)／SSRF 驗證、去重、最多三筆與既有 LINE source bubble。
+- 最終回答只取 text block；thinking、tool use、raw result、query、encrypted content、citation text 與 provider body 不進 LINE、memory、Sheet、PendingReplies 或原文 log。v1.14.3 DSML fail-closed 與舊 Responses compatibility parser 保留。
+- 其他 12 個 task 與 `image_analysis` 仍走 Chat Completions；Natural Vision、Vision + Search 延後、SSRF、Pending Reply、deadline、Gemini、Sheet、Trigger、Properties 不變。無新 Queue、Search provider、runtime file 或 dependency；本機 62 項 smoke 通過。
+
+// ==================================================
+
+2026-09-13
 v1.14.3 Search Reliability Hotfix
 - 補強 explicit Search intent：「幫我查／請幫我查／麻煩幫我查／幫我搜尋」會強制 `{type:"web_search"}`；單純「最近／今天／現在／最新」仍由 `tool_choice:auto` 判斷。
 - DeepSeek Responses `output_text` 若出現明確 DSML／invoke／tool protocol tag，會在 provider normalization 邊界 fail closed；Search markup 使用 `ai_web_search_failed`，其他 internal protocol 使用 `ai_invalid_provider_response`。

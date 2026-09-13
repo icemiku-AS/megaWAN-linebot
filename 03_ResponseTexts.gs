@@ -2,7 +2,7 @@
 // 03_ResponseTexts.gs
 // Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.14.3 Search Reliability Hotfix
+// 小浣 LINE Bot v1.14.4 Search Transport Correction Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -22,11 +22,22 @@
 // 15. v1.13.2 起，X status 的週新聞展示標題優先使用既有 Brief，raw NewsInbox Title 保持不變。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.14.3 Search Reliability Hotfix';
+const BOT_CURRENT_VERSION = 'v1.14.4 Search Transport Correction Hotfix';
 const BOT_CURRENT_VERSION_DATE = '2026-09-13';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.14.4 Search Transport Correction Hotfix',
+    date: '2026-09-13',
+    summary: '依 production capability probe，將一般聊天 Search 改走可實際執行 server-side Search 的 DeepSeek Anthropic Messages。',
+    changes: [
+      'general_chat 使用 DeepSeek Anthropic-compatible Messages；普通問題維持 auto，明確「幫我查」仍強制 web_search。',
+      '沿用 DEEPSEEK_API_KEY、deepseek-flash、HIGH 與 4,800 token budget；每次最多三次 server Web Search。',
+      '只有成對的 server_tool_use／web_search_tool_result 才算搜尋成功；來源仍驗證、去重並最多顯示三筆。',
+      '其他 12 個 AI task、Natural Vision、SSRF、Pending Reply、Sheet、Trigger 與 dependency contract 不變。'
+    ]
+  },
   {
     version: 'v1.14.3 Search Reliability Hotfix',
     date: '2026-09-13',
@@ -542,9 +553,9 @@ function getBotTextWebSearchError_(errorType) {
     return '這次網路搜尋沒有在回覆時間內完成。我不會改用舊知識假裝查證成功，請稍後再試。';
   }
   if (errorType === 'ai_configuration_error' || errorType === 'ai_auth_error') {
-    return '目前網路搜尋服務尚未正確啟用。我不會改用舊知識假裝查證成功，請通知維護者檢查 DeepSeek Responses 設定。';
+    return '目前網路搜尋服務尚未正確啟用。我不會改用舊知識假裝查證成功，請通知維護者檢查 DeepSeek Anthropic Messages 設定。';
   }
-  return '這次網路搜尋沒有完成，可能是 Search provider 或 Responses API 暫時異常。我不會改用舊知識假裝查證成功，請稍後再試。';
+  return '這次網路搜尋沒有完成，可能是 Search provider 或 Anthropic Messages API 暫時異常。我不會改用舊知識假裝查證成功，請稍後再試。';
 }
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }

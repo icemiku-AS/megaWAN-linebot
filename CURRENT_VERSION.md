@@ -24,8 +24,8 @@
 ## Version Represented by This Git Ref
 
 Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.14.3 Search Reliability Hotfix`
-Previous stable baseline described in this file: `v1.14.2 Natural Search & Vision Edition`
+Version represented by this Git ref: `v1.14.4 Search Transport Correction Hotfix`
+Previous stable baseline described in this file: `v1.14.3 Search Reliability Hotfix`
 
 本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
 
@@ -68,7 +68,7 @@ Previous stable baseline described in this file: `v1.14.2 Natural Search & Visio
 
 ## Active Runtime Source Files
 
-以下 21 個檔案代表 v1.14.3 Search Reliability Hotfix 的 active GAS runtime source：
+以下 21 個檔案代表 v1.14.4 Search Transport Correction Hotfix 的 active GAS runtime source：
 
 * `00_Config.gs`
 * `01_Main.gs`
@@ -120,6 +120,24 @@ Previous stable baseline described in this file: `v1.14.2 Natural Search & Visio
 * `99_changelog.md`：歷史版本紀錄。
 
 修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
+
+---
+
+## v1.14.4 Version Boundary
+
+v1.14.4 是以 main `4300f9c` 的 v1.14.3 為唯一 baseline 的 production patch release，只修正一般文字 Search transport，不是 v1.15.0 agent/tool 功能開發。
+
+Production capability probe 顯示 DeepSeek `/responses` 雖接受 `web_search` request，卻未產生實際 `web_search_call`；相同 `DEEPSEEK_API_KEY` 與 `deepseek-flash` 經 Anthropic-compatible `/anthropic/v1/messages` 實測會回傳 `server_tool_use` 與 `web_search_tool_result`，因此 active `general_chat` Search transport 改用後者。舊 Responses parser 與 v1.14.3 DSML fail-closed 防線暫留 compatibility，但不再是 active Search route。
+
+1. 普通 `general_chat` 提供 `{type:"web_search_20250305",name:"web_search",max_uses:3}`，使用 `tool_choice:{type:"auto"}`；v1.14.3 已確認的明確搜尋句型使用 `{type:"tool",name:"web_search"}` 強制搜尋，explicit regex 不變。
+2. HIGH 映射為 DeepSeek Anthropic 正式支援的 `thinking:{type:"enabled"}` 與 `output_config:{effort:"high"}`；原 4,800 budget 轉為 `max_tokens:4800`，不放大 timeout、不 retry、不建立 Search Queue。
+3. `usedWebSearch=true` 只接受成對的 `server_tool_use(name=web_search)` 與非錯誤 `web_search_tool_result`。tool result error、未成對執行或 forced Search 未執行皆回 `ai_web_search_failed`；正常 auto 回答未搜尋仍可成功。
+4. 最終回答只取 `text` block；thinking、server tool、raw result、query、encrypted content、citation text 與完整 provider response 不進 LINE、ConversationLog、memory、Sheet、PendingReplies 或原文 log。來源只從正式 `web_search_result` 取得 title／URL，經既有 public HTTP(S)／SSRF 驗證、去重後最多三筆。
+5. Anthropic usage 的 `input_tokens`／`output_tokens` 映射為 provider-neutral 欄位，兩者都存在時相加為 `totalTokens`；沒有正式獨立 reasoning token 欄位，因此 `reasoningTokens=null`，不猜值。
+
+其他 12 個 task 仍走 DeepSeek Chat Completions；`image_analysis` 仍是 Chat Completions Vision，Vision + Search 繼續延後。Natural Vision、source bubble、SSRF、Pending Reply、Reader、NewsInbox、Weekly Editorial、Topic、cleanup、deadline、Gemini dormant、Sheet schema、Trigger 與 memory contract 不變。沒有新 runtime file、Script Property、Sheet migration、setup、Queue、外部 Search provider、runtime dependency 或 credential；仍只使用既有 `DEEPSEEK_API_KEY`。
+
+本機 `node tests/v1140_smoke.cjs` 共 62 項通過，涵蓋 Anthropic auto／forced payload、production fixture、thinking/tool/result/text response、來源驗證與三筆上限、tool error、HTTP 分類、malformed／empty response、DSML fail-closed、memory privacy，以及既有 Vision、SSRF、Pending Reply 與其他 12 task 回歸。未能本機執行 GAS；維護者需手動同步 `03_ResponseTexts.gs`、`15_DeepSeekProvider.gs`，建立 v1.14.4 Apps Script version 並更新既有 deployment，文件與 test 不部署。
 
 ---
 
@@ -776,7 +794,7 @@ v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時�
 
 ## Last Confirmed
 
-Last Confirmed Version at this Git ref: `v1.14.3 Search Reliability Hotfix`
-Previous stable baseline described in this file: `v1.14.2 Natural Search & Vision Edition`
+Last Confirmed Version at this Git ref: `v1.14.4 Search Transport Correction Hotfix`
+Previous stable baseline described in this file: `v1.14.3 Search Reliability Hotfix`
 Last Confirmed Date: `2026-09-13`
-Last Documentation Note: explicit Search natural phrasing and provider tool-protocol fail-closed checks are implemented with 61 local mock checks; manual GAS deployment and live Search smoke tests remain required.
+Last Documentation Note: production probe-backed Anthropic Messages Search transport and 62 local mock checks are implemented; manual GAS deployment and live post-deploy Search smoke tests remain required.
