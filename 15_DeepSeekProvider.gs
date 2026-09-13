@@ -1,7 +1,7 @@
 // ======================================================
 // 15_DeepSeekProvider.gs
 // AI provider adapter：DeepSeek transport 與 provider protocol translation。
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 小浣 LINE Bot v1.14.3 Search Reliability Hotfix
 //
 // 主要責任：
 // 1. 作為 DeepSeek provider adapter，lazy-load DEEPSEEK_API_KEY 並選擇 Chat Completions／Responses transport。
@@ -272,6 +272,15 @@ function normalizeDeepSeekResponsesResult_(json, statusCode, searchMode, elapsed
     ? 'stop'
     : (incompleteReason === 'max_output_tokens' ? 'length' : incompleteReason || 'incomplete');
 
+  // Responses 正常工具執行必須是結構化 output item；output_text 仍可能夾帶模型內部 DSML。
+  // 這種文字不能當作回答或寫入 memory，因此在 provider 邊界整份 fail closed，不嘗試自行執行工具。
+  if (containsDeepSeekToolProtocolMarkup_(text)) {
+    const errorType = searchMode === 'required' || /\bweb_search\b/i.test(text)
+      ? 'ai_web_search_failed'
+      : 'ai_invalid_provider_response';
+    return buildDeepSeekProviderFailure_(errorType, 'DeepSeek returned internal tool protocol markup.', statusCode, true, elapsedMs, usage, finishReason, 'responses');
+  }
+
   // 強制搜尋若沒有 server-side call，不能把普通模型知識當成搜尋結果。
   if (searchMode === 'required' && !usedWebSearch) {
     return buildDeepSeekProviderFailure_('ai_web_search_failed', 'DeepSeek did not execute the required Web Search.', statusCode, true, elapsedMs, usage, finishReason, 'responses');
@@ -288,6 +297,18 @@ function normalizeDeepSeekResponsesResult_(json, statusCode, searchMode, elapsed
     usedWebSearch: usedWebSearch,
     sources: sources
   };
+}
+
+/**
+ * 只攔明確的 tag/protocol 形態；一般文字提到 DSML 或 web_search 不會命中。
+ * DeepSeek 的正式 DSML 會帶全形分隔符，但 production 也曾出現省略分隔符的 invoke 形態。
+ */
+function containsDeepSeekToolProtocolMarkup_(text) {
+  const value = String(text || '');
+  return /<\s*(?:[|｜]\s*)?DSML(?:\s*[|｜])?\s*(?:tool_calls?|function_calls?|invoke|parameter)?\b[^>]*>/i.test(value) ||
+    /<\s*(?:tool_calls?|function_calls?)\b[^>]*>/i.test(value) ||
+    /<\s*invoke\b[^>]*\bname\s*=\s*["'][^"']+["'][^>]*>/i.test(value) ||
+    /<\s*(?:think|reasoning)\s*>[\s\S]*<\s*\/\s*(?:think|reasoning)\s*>/i.test(value);
 }
 
 /** 只接受正式 Search metadata；不從回答文字猜 URL，也不保存 raw action／annotation。 */

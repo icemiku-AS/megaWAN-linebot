@@ -1,4 +1,4 @@
-// v1.14.0 基礎 + v1.14.1/v1.14.2 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.14.0 基礎 + v1.14.1/v1.14.2/v1.14.3 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -173,7 +173,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.14.2'));
+  assert(replies.at(-1).text.includes('v1.14.3'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : responsesCompletion('一般文字回答');
@@ -209,7 +209,20 @@ check('general chat Search uses auto by default and forces explicit requests', (
   assert(!replies[0].finalText.includes('ftp://')); assert(!replies[0].finalText.includes('/fourth'));
   assert(context.isExplicitWebSearchRequest_('搜尋一下')); assert(context.isExplicitWebSearchRequest_('去網路找資料'));
   assert(context.isExplicitWebSearchRequest_('查一下最新消息'));
-  for (const text of ['最近有什麼消息', '今天怎麼了', '現在的狀況']) assert(!context.isExplicitWebSearchRequest_(text));
+  const productionCase = '幫我查最近 Anthropic 出的 Detecting and countering misuse of AI: September 2026，大綱是在說明什麼？有什麼值得注意的地方？';
+  for (const text of ['幫我查 Anthropic', '幫我查最近 Anthropic', '請幫我查 Anthropic', '麻煩幫我查 Anthropic', '幫我查一下 Anthropic', '幫我搜尋 Anthropic', '幫我上網查 Anthropic', '去網路找 Anthropic', productionCase]) {
+    assert(context.isExplicitWebSearchRequest_(text), text);
+    reset();
+    fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('已搜尋', { searched: true }) : completion();
+    context.handleLineEvent(event('text', 'user', { text: '#小浣 ' + text }), now);
+    assert.deepEqual(JSON.parse(calls[0].options.payload).tool_choice, { type: 'web_search' }, text);
+  }
+  for (const text of ['最近 Anthropic 有什麼消息', '今天發生什麼事', '現在的狀況', '最新版本如何']) {
+    assert(!context.isExplicitWebSearchRequest_(text), text);
+    reset();
+    context.handleLineEvent(event('text', 'user', { text: '#小浣 ' + text }), now);
+    assert.equal(JSON.parse(calls[0].options.payload).tool_choice, 'auto', text);
+  }
   const generalPrompt = context.buildAiSystemPrompt_('general_chat');
   const imagePrompt = context.buildAiSystemPrompt_('image_analysis');
   assert(generalPrompt.includes('你可以使用 Web Search'));
@@ -229,6 +242,31 @@ check('Search success comes only from web_search_call and never invents source U
   fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('不可採用', { searched: true, searchStatus: 'failed' }) : completion();
   result = context.runAiTextTask('general_chat', '最近如何');
   assert.equal(result.errorType, 'ai_web_search_failed'); assert.equal(result.text, '');
+});
+check('Responses tool protocol markup fails closed without persistence or false positives', () => {
+  const leaked = '<DSML>\n<invoke name="web_search">\n<parameter name="query">Anthropic</parameter>\n</invoke>\n</DSML>';
+  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion(leaked) : completion();
+  context.handleLineEvent(event('text', 'user', { text: '幫我查 Anthropic' }), now);
+  assert(replies[0].text.includes('網路搜尋沒有完成')); assert(!replies[0].text.includes('DSML'));
+  assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
+  assert(!/<(?:DSML|invoke|parameter)/.test(JSON.stringify([rows, logs, replies, ...cache.values()])));
+  assert(logs.some(log => log.includes('"errorType":"ai_web_search_failed"') && log.includes('"usedWebSearch":false')));
+
+  reset();
+  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('<｜DSML｜tool_calls>\n<｜DSML｜invoke name="web_search">\n<｜DSML｜parameter name="query" string="true">Anthropic</｜DSML｜parameter>\n</｜DSML｜invoke>\n</｜DSML｜tool_calls>') : completion();
+  context.handleLineEvent(event('text', 'user', { text: '最近 Anthropic 有什麼消息' }), now);
+  assert(replies[0].text.includes('網路搜尋沒有完成')); assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
+  assert(!JSON.stringify([rows, logs, replies, ...cache.values()]).includes('｜DSML｜'));
+
+  reset();
+  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('<think>internal reasoning</think>') : completion();
+  assert.equal(context.runAiTextTask('general_chat', '普通問題').errorType, 'ai_invalid_provider_response');
+
+  reset();
+  const legalText = 'DSML 是某種格式；字面出現 web_search 並不代表工具已執行。';
+  fetchImpl = url => url.endsWith('/responses') ? responsesCompletion(legalText) : completion();
+  const legal = context.runAiMemoryTask('general_chat', 'user:user1', '請解釋名詞', '請解釋名詞');
+  assert(legal.ok); assert.equal(legal.text, legalText); assert(JSON.stringify([...cache.values()]).includes(legalText));
 });
 check('Search and ordinary Responses failures use honest context-specific wording', () => {
   fetchImpl = url => url.endsWith('/responses') ? responsesCompletion('未搜尋的舊知識') : completion();

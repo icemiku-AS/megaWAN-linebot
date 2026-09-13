@@ -1,4 +1,4 @@
-# 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+# 小浣 LINE Bot v1.14.3 Search Reliability Hotfix
 
 這是 MEGA浣 / 小浣 的 LINE Bot 專案。
 
@@ -52,7 +52,18 @@ v1.13.2 改善 `#本週新聞` 的 X / Twitter 單篇 status 顯示：週新聞 
 
 ---
 
-## 2. v1.14.2 本版重點
+## 2. v1.14.3 本版重點
+
+v1.14.3 是以 v1.14.2 為 baseline 的小型 production hotfix：
+
+- 「幫我查」、「請幫我查」、「麻煩幫我查」與「幫我搜尋」等明確要求會強制 `{type:"web_search"}`；單純「最近／今天／現在／最新」仍維持 `tool_choice:auto`。
+- DeepSeek 若把 DSML／invoke／tool protocol 當成 `output_text` 回傳，Responses normalization 會 fail closed，不把 internal markup 送進 LINE、memory、Sheet、PendingReplies 或原文 log。
+- `usedWebSearch` 仍只認正式 `web_search_call`；真正 Search、最多三個來源 bubble、一般 auto 對話全部沿用既有 contract。
+- Search architecture、Natural Vision、SSRF、Pending Reply、其他 12 個 AI task、deadline、Sheet、Trigger 與 Script Properties 均不變；Vision + Search 仍延後。
+
+仍為 21 個 runtime `.gs`；沒有新 Queue、外部 Search API、runtime file、runtime dependency、Script Property、Sheet migration 或 Trigger change。
+
+### v1.14.2 Natural Search & Vision baseline
 
 v1.14.2 是 Natural Search & Vision Edition，以 v1.14.1 為基線：
 
@@ -163,6 +174,7 @@ AiService content 沿用字串，只有 user message 可另用 `[{type:'text', t
 - 普通問題使用 `tool_choice:"auto"`；模型可依問題是否需要近期資料自行搜尋。
 - 明確的「上網查／搜尋一下」使用 `{type:"web_search"}` 強制搜尋；「最近／今天／現在」不是 GAS keyword classifier，仍走 auto。
 - output 實際出現 `web_search_call` 才是 `usedWebSearch=true`。明確搜尋若沒有 call、Responses 失敗或 timeout，會誠實回錯，不 fallback 到 Chat Completions 或舊知識。
+- `output_text` 若是明確 DSML／invoke／tool protocol tag，v1.14.3 會在 provider 邊界 fail closed；Search markup 使用 `ai_web_search_failed`，其他 internal protocol 使用 `ai_invalid_provider_response`。
 - Search 發生時，來源獨立放在同一次 LINE Reply 最後一則；主回答最多 4 則，來源 1 則。來源限 provider action／`url_citation` metadata 的公開 HTTP(S) URL，去重後最多 3 個；沒有可靠 URL 時明示 provider 未提供，不從回答猜網址。
 - Search raw result、action、annotation、reasoning 與來源頁面不進 memory、Sheet 或 console；conversation memory 只保存最終主回答文字。
 - 明確搜尋或 provider 回報 `ai_web_search_failed` 時使用搜尋錯誤文案；普通 auto 對話若只是 Responses HTTP、auth、timeout 或 generic provider failure，使用一般 AI 服務錯誤，不會臆測搜尋已開始。
@@ -390,22 +402,22 @@ Reader Layer 的目標是把「讀網頁」與「後續 AI task 整理」拆開�
 
 ---
 
-## 10. v1.14.2 GAS rollout 與建議測試流程
+## 10. v1.14.3 GAS rollout 與建議測試流程
 
-本版修改一般聊天的 Responses Search transport、LINE 來源 bubble、自然圖片 routing、URL safety 與 Pending Reply 交付。Sheet schema、cache payload、Trigger 與 Script Properties 不變，不需要 migration/setup 或清除 cache。GAS 仍由維護者手動同步。
+本版只補強明確 Search 句型與 Responses tool-protocol fail-closed 防線。Search／Vision／URL safety／Pending Reply 架構、Sheet schema、cache payload、Trigger 與 Script Properties 不變，不需要 migration/setup 或清除 cache。GAS 仍由維護者手動同步。
 
 GAS 手動同步順序：
 
-1. 先備份目前 Apps Script version；由 v1.14.1 升級前後都應有 21 個 `.gs`。
-2. 手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`；routing、transport、Pending Reply acknowledge 與 caller 註解應在同一次 source 同步中完成。
+1. 先備份目前 v1.14.2 Apps Script version；升級前後都應有 21 個 `.gs`。
+2. 手動同步 `02_LineCommands.gs`、`03_ResponseTexts.gs`、`15_DeepSeekProvider.gs`。
 3. 不暫停或重建 Trigger；在 Trigger 畫面確認仍綁定原 handler，並在函式選單確認主要入口仍存在。
-4. 完成 smoke tests 後建立 v1.14.2 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
+4. 完成 smoke tests 後建立 v1.14.3 Apps Script version，將既有 Web App deployment 指向新 version；deployment URL 應保持不變。
 
-若同步或 smoke test 發現問題，先讓 Web App deployment 保持在上一個穩定 Apps Script version，再檢查本版同步的十二個 runtime 檔案。
+若同步或 smoke test 發現問題，先讓 Web App deployment 保持在 v1.14.2，再檢查本版同步的三個 runtime 檔案。
 
-本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。共 60 項；涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、`web_search_call`、來源驗證／獨立 bubble／第 5 則 slot、情境化錯誤文案、honest failure、memory privacy，以及既有 URL authority／redirect、Natural Vision、業務流程與 Pending transport／lock／acknowledge。未能本機執行 GAS，亦未用真實 API key 執行 LINE／DeepSeek。
+本機可先執行 `node tests/v1140_smoke.cjs`（只有內建模組；這是開發驗證工具，不是新增 Node runtime，也不部署到 GAS）。共 61 項；涵蓋 explicit Search production 句型、auto／forced Search、正式 `web_search_call`、DSML／invoke fail-closed、一般文字不誤殺、來源驗證／最多三筆、memory privacy，以及既有 URL authority／redirect、Natural Vision、業務流程與 Pending transport／lock／acknowledge。未能本機執行 GAS，亦未用真實 API key 執行 LINE／DeepSeek。
 
-本版特別回歸：Search auto／forced、實際 call 判定、最多三來源、長回答保留來源 bubble、失敗不 fallback；Natural quoted image、群組 quiet、沒有 quote 不猜圖；userinfo/IPv4/IPv6/port/redirect 防線；以及 Pending Reply LINE failure 保留、retry 成功才 consume。原有 NewsInbox／Queue／X／PTT／週編輯台／memory／deadline 回歸全數繼續適用。
+本版特別回歸：「幫我查最近」走 required，而「最近／今天／現在／最新」本身仍走 auto；DSML／invoke markup 在 required 與 auto 都不外洩、不進 memory；Search 實際 call、最多三來源與 source bubble 保留。Natural Vision、SSRF、Pending Reply、NewsInbox／Queue／X／PTT／週編輯台／deadline 回歸全數繼續適用。
 
 將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
 
@@ -413,6 +425,7 @@ GAS 手動同步順序：
 - 私訊回覆圖片輸入任意自然問題，確認啟動 Vision；引用非圖片時應回到普通文字對話。
 - 群組貼圖與普通引用圖片聊天確認完全靜默；回覆圖片輸入 `#小浣 哪裡出錯？` 會分析，舊 `#小浣 看圖` 仍可用；沒有引用時不猜上一張圖。
 - 一般聊天測試不需即時資料與需最新資料兩種問題，確認 Responses `auto` 由模型決定；明確要求上網時確認強制 Search、最後一則顯示最多三個來源。再模擬無 `web_search_call`／provider failure／timeout，確認不回退舊知識。引用圖片要求查證時可先做 Vision，但清楚標示未完成網路查證。
+- 測試 production 句型「幫我查最近 Anthropic…」必須強制 Search；模擬 `output_text` 回傳 DSML／`invoke name="web_search"`，確認只顯示搜尋失敗文案，且 LINE、ConversationLog、memory 與 console 都沒有 raw markup。
 - 檢查超過 4 MiB、非 JPEG/PNG、過期引用與下載／AI timeout 的繁中 fallback；私訊多圖只回第一張。
 - 測試缺少 imageSet.index 的舊版多圖事件：提示單張／引用且不呼叫 AI；有 Pending Reply 時，帶網址的看圖問題不可進 NewsUrlQueue。
 - 圖片分析後文字追問，檢查 Cache 與 ConversationLog 只有 placeholder／問題／分析文字，console 沒有圖片、data URL 或 secret。

@@ -2,7 +2,7 @@
 // 03_ResponseTexts.gs
 // Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
 //
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 小浣 LINE Bot v1.14.3 Search Reliability Hotfix
 //
 // 設計說明：
 // 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
@@ -22,11 +22,22 @@
 // 15. v1.13.2 起，X status 的週新聞展示標題優先使用既有 Brief，raw NewsInbox Title 保持不變。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.14.2 Natural Search & Vision Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-09-12';
+const BOT_CURRENT_VERSION = 'v1.14.3 Search Reliability Hotfix';
+const BOT_CURRENT_VERSION_DATE = '2026-09-13';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.14.3 Search Reliability Hotfix',
+    date: '2026-09-13',
+    summary: '補強明確搜尋自然句型，並阻止未執行的 provider tool protocol 洩漏到 LINE 或 memory。',
+    changes: [
+      '「幫我查」、「請幫我查」、「麻煩幫我查」等明確要求會可靠強制 Web Search；單純最近、今天、現在仍由 auto 判斷。',
+      '只有正式 web_search_call 才算搜尋成功；output_text 若夾帶 DSML／tool invocation markup 會 fail closed。',
+      'provider internal protocol 不會進 LINE、ConversationLog、短期 memory、PendingReplies 或 console 原文。',
+      'Search architecture、Natural Vision、SSRF、Pending Reply、其他 12 個 AI task、Sheet 與 Trigger contract 均不變。'
+    ]
+  },
   {
     version: 'v1.14.2 Natural Search & Vision Edition',
     date: '2026-09-12',

@@ -1,3 +1,13 @@
+2026-09-13
+v1.14.3 Search Reliability Hotfix
+- 補強 explicit Search intent：「幫我查／請幫我查／麻煩幫我查／幫我搜尋」會強制 `{type:"web_search"}`；單純「最近／今天／現在／最新」仍由 `tool_choice:auto` 判斷。
+- DeepSeek Responses `output_text` 若出現明確 DSML／invoke／tool protocol tag，會在 provider normalization 邊界 fail closed；Search markup 使用 `ai_web_search_failed`，其他 internal protocol 使用 `ai_invalid_provider_response`。
+- `usedWebSearch` 仍只認正式 `web_search_call`；正常回答、最多三個來源 bubble、其他 12 個 Chat Completions task 與 Natural Vision contract 不變。
+- raw provider markup 不進 LINE、ConversationLog、memory、PendingReplies、Sheet 或原文 log；本機 61 項 smoke 涵蓋 production fixture、auto／required leakage 與一般文字不誤殺。
+- 不改 Search architecture、Vision + Search、SSRF、Pending Reply、deadline、Sheet、Trigger 或 Script Properties；無新 Queue、外部 Search API、runtime file 或 dependency。
+
+// ==================================================
+
 2026-09-12
 v1.14.2 Natural Search & Vision Edition（final corrective pass）
 - 本專案統一稱為 DeepSeek Flash，registry、Responses 與 Chat Completions 的 API model 均維持 `deepseek-flash`；舊文件或 compatibility alias 不作模型世代判定。
