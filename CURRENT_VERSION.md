@@ -10,7 +10,7 @@ MEGA浣 / 小浣：**v1.15.1 Mixed Tool Continuation Hotfix**（2026-09-16）。
 
 ## 版本邊界
 
-本版修正 v1.15.0 的 Anthropic mixed server Search／client tool continuation regression，以及圖片研究的過度工具暴露、首輪預扣續接時間與錯誤文案誤分類。沿用 capability-driven AI architecture、JSON Schema structured output、四個只讀 internal tools、單輪 tool continuation 與圖片＋Search＋internal data 研究；沒有新增功能或 runtime 重構。
+本版修正 v1.15.0 的 Anthropic mixed server Search／client tool continuation regression，以及圖片研究的過度工具暴露、首輪預扣續接時間與錯誤文案誤分類；補足 Required Internal Evidence 與 ConversationLog Research。明確要求的內部資料由 code 確保實際讀取，不再只提供 optional tools。沿用 capability-driven AI architecture、JSON Schema structured output、單輪 tool continuation，沒有大型 runtime 重構。
 
 DeepSeek Flash 仍是唯一 active provider。沒有 Gemini production route、provider auto fallback、write-capable agent、圖片保存、新 backend、外部 Search provider、第三套 Queue、npm runtime dependency 或新 credentials。
 
@@ -41,18 +41,19 @@ model registry 公告 adapter 已實作的能力，task route 宣告附加需求
 
 未知能力、model 不支持的能力或 adapter 未實作的能力組合在 HTTP 前回 `ai_configuration_error`。沒有把不支持的欄位送出後期待 vendor 忽略。直接呼叫 runAiTextTask / runAiMessagesTask 且未提供 trusted conversation scope 時不提供 internal tools；正常聊天與圖片入口由 runAiMemoryTask 注入 scope。
 
-圖片路由只依當次已遮蔽的問題選擇 `clientToolNames`，不由圖片內容、聊天 history 或模型自行擴權。AiService 只接受目前 route／trusted scope 所允許工具的子集合；空清單會移除 request 的 clientTools capability 與工具提示。文字 general_chat 保留原四工具可用性，完整語意／history gating 留待 v1.15.2。
+圖片路由只依當次已遮蔽的問題選擇 `clientToolNames`，不由圖片內容、聊天 history 或模型自行擴權。AiService 只接受目前 route／trusted scope 所允許工具的子集合；空清單會移除 request 的 clientTools capability 與工具提示。文字 general_chat 可用五個只讀工具。文字與圖片共用明確 research intent；available 限制模型可選工具，required 則由 AiService 確保讀取，兩者獨立。
 
 | 圖片問題線索 | 可用 client tools |
 | --- | --- |
 | 只查最新進度／查證 | 無；Vision + server Web Search |
 | 收過／收集／舊新聞等 | search_news_inbox |
+| 聊過／討論過／對話紀錄 | search_conversation_log |
 | 週記憶／封存／上週聊過等 | get_weekly_memory |
 | 畫過的重點／人工重點等 | get_topic_highlights |
 | 網址／連結／HTTP(S) URL | read_url；執行時仍驗證 SSRF |
 | 只有「之前／過去／重複」等模糊舊資料線索 | 保留三種內部資料工具；不自動開 read_url |
 
-多種明確資料線索取聯集。這是有界字面選擇，不是完整自然語言意圖模型；可能漏掉未涵蓋的說法，也不解析完整否定語意。工具可用不代表強制執行。既有短期 history 與 WeeklySummary 前置讀取仍保留，因此無 client tools 不代表完全不讀 Sheet。
+多種明確資料線索取聯集。這是有界字面選擇，不是完整自然語言意圖模型；可能漏掉未涵蓋的說法，也不解析完整否定語意。明確來源會先取得 bounded evidence；只有模糊線索仍是 optional。既有短期 history 與 WeeklySummary 前置讀取保留，後者使用 read-only 路徑，因此無 client tools 不代表完全不讀 Sheet。
 
 ### Request / result contract
 
@@ -60,7 +61,7 @@ model registry 公告 adapter 已實作的能力，task route 宣告附加需求
 
 內部 request 帶 task、messages、capabilities、thinking / reasoningEffort / profile、outputMode / outputSchema、可用工具、token budget、timeout / absolute deadline。Feature 不組 Anthropic／Responses payload。
 
-Feature result 保留 `ok`、`text`、`json`、`usage`、`finishReason`、`errorType`、`retryable`、`httpStatus`、task/profile/provider/model 等既有欄位，附 `usedWebSearch`、最多三筆安全 sources。transport 名稱只作既有診斷 metadata，feature 不依它分支。
+Feature result 保留 `ok`、`text`、`json`、`usage`、`finishReason`、`errorType`、`retryable`、`httpStatus`、task/profile/provider/model 等既有欄位，附 `usedWebSearch`、最多三筆安全 sources、無原始資料的 `researchEvidence` 執行摘要。transport 名稱只作既有診斷 metadata，feature 不依它分支。
 
 provider 只在需要工具時交回 generic `{id,name,arguments}` 和不可序列化的 continuation function。AiService 驗證、執行工具後呼叫 closure；raw assistant turn、thinking、tool IDs 的 vendor 結構由 provider closure 保存，從未放進 feature result、Sheet、Cache、PendingReplies、LINE 或 log。
 
@@ -125,6 +126,7 @@ provider 只在需要工具時交回 generic `{id,name,arguments}` 和不可序�
 | Tool | 可接受 args | Scope / 讀取視窗 | Compact result |
 | --- | --- | --- | --- |
 | search_news_inbox | query ≤200 字元、days 1～30（預設7）、limit 1～10（預設5） | 目前 conversation；NewsInbox 尾端最多500列；Status=ok、日期符合 | title、brief、bounded outline、category、raw storyKey、安全 source URL、timestamp |
+| search_conversation_log | query、days、limit 同上 | 目前 conversation；ConversationLog 尾端最多500列；只取過去 Role=user，排除當次 MessageId／當次或未來 timestamp | role=user、ISO timestamp、最多800字元且靠近 matching query 的 text snippet；無 userId／MessageId |
 | get_topic_highlights | query、days、limit 同上 | 目前 conversation；尾端300列；active 或 legacy 空 status | 人工 highlight text、tags、timestamp |
 | get_weekly_memory | limit 1～10（預設5）、archiveType 可省略或 topic / news | 目前 conversation；沿用 WeeklySummary 尾端100列與 legacy topic default | 既有封存文字格式，截限後回傳 |
 | read_url | 一個公開 HTTP(S) URL，≤2048 字元 | 同一 orchestration deadline，最多一次 URL | title、URL、最多3000字元正文、truncated flag |
@@ -133,13 +135,34 @@ provider 只在需要工具時交回 generic `{id,name,arguments}` 和不可序�
 
 conversationId 由 runAiMemoryTask 的可信參數覆蓋注入，模型永遠不能選 scope。整批 calls 先驗證 allowlist、JSON、ID 唯一性、型別、數值、enum、URL、call count，再開始讀取。最大4 calls、1 URL、1 continuation、每份完整序列化 tool data ≤6000 UTF-16 字元；上限保護同步成本與最終回答預算。
 
-Read-only path 不用 ensureSheet、不建表、不補欄。缺表為空資料；服務例外以 `{ok:false,errorCode:'tool_read_failed'}` 返回，無 raw exception / HTTP body。argument / allowlist 等致命錯誤直接終止 orchestration。工具資料帶 `evidenceOnly`；查詢資料帶 `limitedWindow`，表示只查近期有限視窗，不保證全歷史檢索。
+Read-only path 不用 ensureSheet、不建表、不補欄。缺表為空資料；非空表缺必要欄位或服務例外以 `{ok:false,errorCode:'tool_read_failed'}` 返回，無 raw exception / HTTP body。argument / allowlist 等致命錯誤直接終止 orchestration。工具資料帶 `evidenceOnly`、由 reader 產生的 `executionStatus`；查詢資料帶 `limitedWindow`，表示只查近期有限視窗，不保證全歷史檢索。
 
 NewsInbox / TopicHighlights 重用 header reader 並明確投影 allowlist；WeeklySummary 保留既有 read/format path，第四個 readOnly 參數禁止 ensure，舊 caller 三個參數仍相容。模型不會修改任何永久資料。
 
+### Required Internal Evidence / ConversationLog Research
+
+AiService 只解析當次 user text（最多2000字元；圖片問題沿用1000字元上限），不從 history 或 evidence 推定必查來源。明確「收過／聊過／封存／畫重點／網址內容」形成 provider-neutral required research；Web 仍由既有 forceWebSearch 表示 required，只有完成正式 provider Search metadata 才成立。
+
+- 明確內部來源在首輪前 deterministic read-only prefetch，共用現有工具 validator／reader；每種來源至多預讀一次，最多五種。新聞、對話、重點預讀最近30天、最多5筆；仍受全表尾端500／500／300列及每份序列化6000字元上限限制。最多五份有界資料，不傳整張表。
+- 「聊過 X／收過 Y」可取各自 clause 的 ≤200字元 literal query；圖中主題、這件事、相關資料等無可靠文字主題時，讀取近期候選資料，標示 `searchMode:recent_candidates`。FOUND 表示已取得候選，並不證明與圖片有關；模型必須再比對，可在一次 continuation 內以精確 query 補查。
+- ConversationLog 重用 header／scope reader。只取 `Role=user`，不以 assistant 回答作「聊過」證據；可信入口注入當次 MessageId 與 timestamp，排除本次提問、相同／較晚時間及未來訊息。直接 service caller 未提供時間時，以開始時間作上界。查詢沒有任意日期或跨 scope 介面。
+- 明確 URL 在首輪前讀取後，移除可選 read_url，避免第二次 URL fetch；圖片內尚未辨識的 URL 例外，先由 Vision 辨識，再由一次 client continuation 讀取，最終仍驗證完成。沒有明確網址的文字請求、多網址或不安全網址回 typed failure，不猜網址。純貼網址保留既有收件；自然提問讀內容／比對資料走只讀研究。
+- Required source 失敗回 `ai_required_evidence_failed`，不保存半回答；文字／圖片均提示「指定資料查詢未完成，不代表沒找到」。空資料是合法成功。Web 成功不能取代內部來源完成，內部資料也不能取代 forced Web Search。
+- 只在單次 request 暫放 evidence；以 user data 傳入，另有可信 system boundary 要求忽略資料中的指令、分開回答各來源及避免原文輸出。最終回答可保存；原始資料、query、tool args、scope、thinking 不進 feature result 或 logs。AI_CALL_METADATA 只新增 source／required／status。
+
+| researchEvidence.status | 正式語意 |
+| --- | --- |
+| NOT_SEARCHED | 尚未完成任何讀取；不能說沒找到 |
+| SEARCHED_EMPTY | reader 確實執行，有限查詢範圍無回傳資料 |
+| SEARCHED_FOUND | reader 確實執行且回傳有界候選；語意相關性仍需比對 |
+| FAILED | 讀取／驗證未成功，不是空結果 |
+| COMPLETED | 僅 Web：正式 server use/result 完成；不以 URL 數推定命中數 |
+
+每個來源另外有 `required` 與 `available`。內部 status 來自實際 reader，Web completion 來自 provider metadata，從不分析模型「我查過了」的文字來標成功。短期 memory／一般封存前置上下文不冒充本輪 ConversationLog／required archive execution。
+
 ## Tool continuation、deadline 與 privacy
 
-流程只有：模型首輪 → 一批0～4個工具 → 最後模型回答。首輪沒有 tool call 就直接回覆；第二輪又要求工具時 `ai_tool_round_limit`，不再執行、不保存半成品。
+流程為必要 evidence 預讀 → 模型首輪 → 可選一批0～4個工具 → 最後模型回答。所需資料已預讀、首輪沒有 tool call 時可直接回覆；第二輪又要求工具時 `ai_tool_round_limit`，不再執行、不保存半成品。預讀不新增 model round；圖片未知 URL 未真正讀取時不得直接成功。
 
 首輪 `stop_reason=tool_use` 且 client calls 通過既有整批驗證時，允許正式 `web_search` 暫時只有 server use、尚無 result。Provider closure 保存每個 server use/result ID 的配對計數與原始 assistant content；第二輪 result 可引用首輪 ID，無須重複 server use。第二輪結束仍有 pending、跨回合重複／錯配 ID、Search error 或 malformed block 均失敗；這不是新的 client round 或 pause_turn loop。
 
@@ -147,6 +170,7 @@ Continuation 保留相同 tools array 與完整 assistant thinking/tool blocks�
 
 - 同一 webhook 所有 events 使用原 40 秒 absolute deadline，原同步 AI cap 約30秒不增加。
 - general_chat / research 的 lock、memory、首輪、工具、續接共用同一最多30秒 window，還要受 webhook deadline 限制。
+- Required prefetch 也消耗上述同一 window：每個讀取前至少9秒、讀取後／模型前至少8秒，不重新啟動計時。Sheet 同步讀取無法強制中斷，late guard 只能拒絕後續工作／結果；不保證外部服務必在40秒內返回。
 - 首輪不為尚未發生的 continuation 預扣10秒，可使用同一 orchestration 的剩餘窗口；這也適用於 tools 有定義但模型直接回答的文字／圖片 request。
 - 真正收到 client calls 後，每個工具前檢查至少9秒，final call 前至少8秒；不足回 ai_timeout，不開始讀取或硬開下一輪。晚到的 client call 可能無法續接，不能保證兩個 HIGH request 都能在同步窗口完成。
 - read_url timeout cap 5秒，reader deadline 提前8秒保留回答空間。編碼、序列化與真正 HTTP 前重算；返回後若總期限已過則拒絕晚到的答案。
@@ -191,13 +215,28 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ### 圖片 research production evidence 與決策
 
-維護者回報：文字 explicit Search 與普通 quoted Vision 成功；quoted image + Search，以及再加舊新聞比對皆失敗。直接 DeepSeek probe（小圖、短 prompt、無完整 history、90秒 timeout）則在 image + HIGH + forced Search 回 HTTP 200／end_turn／一組成功 Search；加入 client definitions 後也成功，兩組 Search、零 client call。這支持 image + Search 可用、工具定義並非必然不相容，但沒有提供 production 失敗時的 errorType／耗時，不能據此確認唯一根因是 latency。
+維護者最新 production 回報：文字 explicit Search、普通 quoted Vision、quoted image + Search 均成功，先前 deadline corrective pass 有效；加上「聊過／收過」時，Web 成功但模型明言沒有內部資料。TEST_CHAT_7319／TEST_NEWS_9517 同樣未取得實際 evidence。先前90秒小圖 probe 已證實 image + HIGH + Search 可用，但不能作正常 history／圖片下的 latency 保證。
 
 程式可確認的缺陷：multimodal_research 原本固定帶四工具，AiService 因工具存在便將30秒首輪窗口縮至最多20秒，即使最後根本無 client call；圖片 UX 又把多種錯誤包成 Search failure。文字 Search 也受相同預扣影響；圖片另有 LINE 下載、Base64／body 編碼、更大輸入與8,000-token上限（文字4,800），history／lock／WeeklySummary 同樣會耗時。Provider payload 使用相同 Anthropic contract，未發現需改 transport／parser 的新證據。
 
 採用圖片工具子集＋首輪完整剩餘窗口＋依 errorType 顯示錯誤。保留30秒 orchestration 與40秒 webhook absolute deadline，真正續接才檢查剩餘時間。Mock 以4秒下載、2秒lock、1秒編碼驗證首輪餘27秒，24秒 Search 可成功；也驗證 tools 有定義但無 calls 的25秒回答、20.5秒才回 client call 後仍能在30秒內完成，以及餘裕不足／超時時拒絕保存。
 
-Rejected alternatives：只移除無關工具仍無法解決「需要工具定義、實際未呼叫」的預扣；任意把10秒 reserve 改成另一常數缺乏 latency 依據；固定 Vision→Search／額外 planner 會增加 HIGH round、費用與 privacy state；放大同步 deadline、降 thinking、換 provider 或新增 Queue 都不是本 hotfix 的解法。模糊圖片意圖保留三種內部工具以減少漏查；不在本輪對已成功的文字流程引入全新語意 gating。
+目前缺口可由 code 確認：availability 沒有 execution requirement，模型可直接 end_turn；ConversationLog 根本沒有研究入口，短期 Cache／WeeklySummary 不能替代它。Main 又先記錄當次 user message，故新增 reader 必須排除本次請求。這是 evidence orchestration 缺口，不是新的 image／Search transport 不相容。
+
+### Architecture decisions / Rejected alternatives
+
+採用 hybrid：明確來源 deterministic prefetch，模糊問題與候選資料精查保留 optional tools；新增 search_conversation_log 重用同一只讀 reader／validator，不新建 composite reader、planner 或 storage。一般情況只需一次 HIGH call；metadata 與成功條件由 AiService 掌握，Feature 不接觸 vendor protocol。代價是必要來源的 Sheet I/O 和最多每份6000字元 input；圖片未知主題可能仍需一次精查，late tool call 依原 deadline 失敗。
+
+| 比較方案 | 決定／原因 |
+| --- | --- |
+| 只要求模型必選 required tools | 拒絕作主要方案：仍依賴模型選齊、通常多一輪 HIGH；作圖片未知 URL 的必要例外，最終檢查完成 |
+| 每次預讀所有來源 | 拒絕：無關資料增加 token、latency、privacy 暴露；只預讀明確來源 |
+| composite search_chat_context | 拒絕：仍可能不呼叫；重複既有 reader／validation，無需新增模型 schema |
+| 純 prefetch 並移除所有工具 | 拒絕：圖片主題／網址需先辨識，可能必須精查；保留一次受限 refinement |
+| Vision→planner→Search／資料查詢 | 拒絕：增加 HIGH round、deadline 與維護成本 |
+| 擴大40秒／新Queue／換provider／Responses Search | 拒絕：超出本版產品與安全邊界 |
+
+既有 deadline 決策也保留：不為尚未發生的 continuation 任意預扣10秒，不降低 HIGH。無完整自然語言／否定解析、語意索引、全歷史搜尋或新的資料保存；相關性、重複讀取和 token 最佳化留待 v1.15.2。
 
 ## v1.15.0 官方 contract 參考（2026-09-15）
 
@@ -214,7 +253,9 @@ Rejected alternatives：只移除無關工具仍無法解決「需要工具定�
 
 ## 測試與 regression review
 
-執行 `node tests/v1140_smoke.cjs`。v1.15.0 baseline 為23 sources / 417 unique functions / 97 checks；本版23 sources / 418 unique functions / **115 checks PASS**。保留既有106 checks 並擴充；舊圖片 fixture 的 client call 配合問題選擇，編碼耗盡 fixture 改為耗盡完整30秒窗口，沒有第二套測試框架。
+執行 `node tests/v1140_smoke.cjs`。v1.15.0 baseline 為23 sources / 417 unique functions / 97 checks；本版23 sources / 420 unique functions / **138 checks PASS**。保留既有115 checks，fixture 依 required prefetch 的實際讀取順序／五工具 allowlist 調整；沒有第二套測試框架。
+
+新增23項 checks：未執行不得成功、FOUND／EMPTY、雙 required source、文字／圖片 × 私訊／群組的雙 sentinel、Group／Private／Room 隔離、當次 ID／時間／assistant 排除、500列／30天／10筆／800字元與6000序列化界限、缺 schema／讀取失敗、週封存／重點實際執行、單模型成功、原 deadline、Web 不得由內部資料代替、URL／typed UX、injection 與原始資料不 persist。以真正 reader 的 Sheet mocks、呼叫計數與安全 execution metadata 驗證，不只斷言模型回答文字。
 
 新增 mixed contract fixture：首輪 server use + search_news_inbox、stop_reason=tool_use、無 server result；第二輪只回對應 result + text。涵蓋 auto／forced 成功、未完成不提前標 Search、非法 continuation、Search error／缺失／重複／錯配、第二批 client tools、多 pending、跨 request state 隔離、私訊／群組圖片、完整 tools/thinking payload、privacy 與 late deadline。
 
@@ -250,7 +291,7 @@ Rejected alternatives：只移除無關工具仍無法解決「需要工具定�
 
 完整建立／重建 GAS source 時，上方列出的 **23 個 active `.gs` 應一致採用 v1.15.1 內容**。
 
-從 v1.15.0 升級至本版，**至少同步以下5個 `.gs`**：`03_ResponseTexts.gs`（版本回覆）、`07_LineImages.gs`（圖片工具選擇／錯誤文案分流）、`10_AiService.gs`（工具子集與deadline分配）、`12_Prompts.gs`（實際工具可用性與無 client tools 時的研究資料信任邊界）、`15_DeepSeekProvider.gs`（mixed continuation）。其餘18個 `.gs` 與 v1.15.0 baseline 相同。即使先前已部署 v1.15.1，也應核對並同步這份完整清單，完成後切換 deployment，保留先前 GAS version 供回復。
+從 v1.15.0 升級至本版，**至少同步以下8個 `.gs`**：`01_Main.gs`（trusted 排除條件／只讀URL提問／typed UX）、`03_ResponseTexts.gs`（版本與錯誤文案）、`05_Storage.gs`（read-only 封存 schema guard）、`07_LineImages.gs`（圖片選擇／排除條件／UX）、`10_AiService.gs`（required evidence、metadata、deadline）、`12_Prompts.gs`（研究信任邊界）、`14_AiTools.gs`（明確需求與 ConversationLog reader）、`15_DeepSeekProvider.gs`（mixed continuation）。其餘15個 `.gs` 與 v1.15.0 baseline 相同。已部署前一輪 v1.15.1 時，本輪改動六檔為 01／03／05／07／10／14；仍應核對完整8檔，完成後切換 deployment，保留先前 GAS version 供回復。
 
 若從 v1.14.4 直接升級至 v1.15.1，下列 **13 個 runtime-changing `.gs` 是至少必須同步的累計清單**，全部取 v1.15.1 內容，涵蓋程式邏輯、Prompt、Help 與版本文字變更：
 
@@ -274,6 +315,16 @@ Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**non
 
 ### 部署後 manual smoke checklist
 
+最小 production acceptance：
+
+1. 群組 A 成員先發 `TEST_CHAT_<unique>`，確認 ConversationLog 的 user row；NewsInbox 另有一筆 Status=ok、標題／摘要含 `TEST_NEWS_<unique>` 的近期新聞。
+2. 引用圖片問：`#小浣 這張圖是什麼？幫我查最新資料，另外確認我們以前有沒有聊過 TEST_CHAT_<unique>，以及有沒有收過 TEST_NEWS_<unique>。`
+3. 答案分開說明 Web、Conversation、NewsInbox。GAS 安全 AI_CALL_METADATA 應有 usedWebSearch=true／web_search=COMPLETED，兩內部來源 required=true 且 FOUND／EMPTY；符合視窗且 sentinel 存在時應 FOUND。核對日期與短引用，不能只相信「我查過」。
+4. 群組 B 問相同 sentinel：兩內部來源應 SEARCHED_EMPTY，不能拿到 A 資料；另做 private A／B 同樣隔離驗證。排除提問自己剛新增的 row。
+5. 缺資料合法 empty；實際 reader 失敗需明說未完成，不能說沒找到。確認 cache／Sheet／raw log 沒有新增原始 evidence 或圖片內容。
+
+其他保留回歸：
+
 1. 私訊兩輪普通聊天、群組 #小浣；記憶接續正確。
 2. 「幫我查最近 Anthropic 出的 Detecting and countering misuse of AI: September 2026，大綱是在說明什麼？有什麼值得注意的地方？」仍 forced Search、正常摘要、獨立來源、無 DSML。
 3. 「你好／幫我想五個標題」不需要工具；模型是否真的避免 Search/Sheet 要用實際 tool metadata 確認。
@@ -291,7 +342,7 @@ Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**non
 
 ### Known limitations / production rollout requirements
 
-靜態與 mock 檢查不能取代目標 GAS 環境的 live 驗證。部署後需完成上述 checklist，特別用真實圖片及正常 history 重測純 image Search 與 Search＋internal tools，觀察失敗時安全 metadata；90秒小圖 probe 不是 production latency 保證。Pending Search＋client tools、相同 tools／auto continuation、錯誤文案與真實30秒延遲仍需驗證。首輪可用時間增加，最壞費用／等待時間也可能增加；晚到的工具要求可能沒有續接餘裕。六個 schema 沿用 v1.15.0，本輪沒有改動 Structured Output。
+靜態與 mock 檢查不能取代目標 GAS 環境的 live 驗證。文字 Search、普通 Vision、image Search 的 production 成功是維護者回報；Required Internal Evidence／ConversationLog 的新部署仍需上述 sentinel 驗收。多資料源增加 input 與同步 Sheet 延遲；無法保證兩個 HIGH calls 都能完成。Pending Search、來源呈現、未知圖片 URL／精查與失敗 UX 也需 live regression。六個 schema 沿用 v1.15.0，本輪沒有改動 Structured Output。
 
 工具是有界字面查詢，不是全歷史語意搜尋；資料會因尾端掃描視窗而漏掉較舊紀錄。只允許一個 client 工具批次，不能用第一次讀取結果再動態開第二批工具；pending Search 可以在 final request 完成，但不為 pause_turn 或仍未完成的 Search 增加第三次 request。成功答案可保存其摘要，沒有保留完整工具 evidence 供後續重播。Global ScriptLock 與實際 Google服務延遲仍限制並行性，無exactly-once保證。
 

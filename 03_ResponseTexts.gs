@@ -24,6 +24,7 @@ const BOT_VERSION_HISTORY = [
     changes: [
       '允許搜尋在聊天室工具回覆後完成，圖片交叉研究共用相同修正。',
       '圖片依問題開啟相關工具，首輪不再為未發生的工具續接預扣時間。',
+      '明確要求的聊天室資料會實際只讀查詢，新增過去使用者對話查找。',
       '只有實際完成搜尋才算成功，來源維持獨立顯示。',
       '工具仍最多一次續接；圖片逾時、搜尋未完成與服務異常分開提示。'
     ]
@@ -620,6 +621,7 @@ function getBotTextHighlightSaved_() { return '我幫你畫起來了。這段已
 function getBotTextHighlightEmpty_() { return ['你要我畫哪一段重點？', '#畫重點 這段內容之後節目可以從平台風險和創作者依賴切入'].join('\n'); }
 function getBotTextArchiveError_() { return '我剛剛封存本週話題時卡住了。可能是對話紀錄太長、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
 function getBotTextAiError_() { return '我剛剛連接 AI、讀取網頁或翻紀錄時卡住了。你可以稍後再叫我一次，或把任務拆小一點給我處理。'; }
+function getBotTextRequiredEvidenceError_() { return '這次沒有完成你指定的資料查詢，還不能確認是否聊過、收過或有相關內容。這不代表沒有找到；請稍後再試。'; }
 function getBotTextArchiveNoData_() { return '目前還沒有足夠的使用者對話可以封存。等群組多聊一點，我再幫你收進 WeeklySummary。'; }
 function getBotTextNewsArchiveError_() { return '我剛剛封存本週新聞時卡住了。可能是 NewsInbox 素材太多、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
 function getBotTextNewsArchiveNoData_() { return '最近 7 天 NewsInbox 還沒有可封存的新聞素材。你可以先貼幾個網址，或用 #新聞補充 手動補素材。'; }

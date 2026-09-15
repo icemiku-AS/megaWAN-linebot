@@ -649,6 +649,10 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly
     const lastCol = sheet.getLastColumn();
     const headerMap = getHeaderMap_(sheet);
 
+    if (readOnly && ['ConversationId', 'Summary'].some(function(key) {
+      return !Object.prototype.hasOwnProperty.call(headerMap, key);
+    })) throw createAiToolError_('ai_tool_data_unavailable');
+
     // 最多往回讀最近 100 筆 WeeklySummary
     const readRows = Math.min(lastRow - 1, 100);
     const startRow = lastRow - readRows + 1;

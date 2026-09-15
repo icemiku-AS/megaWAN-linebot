@@ -3,13 +3,16 @@ v1.15.1 Mixed Tool Continuation Hotfix
 - 以 v1.15.0 Unified Research & Capability Edition / 30353cb99d73f4fff9af26e5742b0ee4b75c73d5 為 baseline，修正 Anthropic-compatible server Search 與 client tools 混用時，首輪尚未收到 Search result 就提前 ai_web_search_failed 的 regression。
 - 僅在合法 client tool_use 與 stop_reason=tool_use 時允許 pending web_search；provider closure 私有追蹤跨回合 use/result ID，收到匹配且成功的 result 才標 usedWebSearch。缺結果、重複／錯配 ID、Search error、malformed block 與 protocol markup 仍 fail closed。
 - Continuation 保留相同 tools、完整 assistant content／thinking，user 只回 client tool_result；有 pending Search 時採 auto，不再次強制 Search；沒有 pending 時維持 none。第二輪新 client tool_use 回 ai_tool_round_limit，server Search 完成不新增 client round。
-- 維護者 production evidence：文字 Search／普通 Vision 成功，image Search 失敗；90秒小圖／短 prompt probe 的 image + HIGH + forced Search（含 client definitions）成功，不能視為 production latency 保證。程式確認四工具固定暴露會預扣首輪10秒、圖片 UX 又混淆錯誤原因；沒有失敗當次 metadata，未宣稱 timeout 是唯一已實證根因。
-- 圖片依當次問題縮小 client tools：新聞、週記憶、人工重點、URL 分別選擇，模糊舊資料比對保留三種內部來源；純 Search 不附 client tools。AiService 驗證選擇只能縮小 route／scope allowlist；無工具時移除 clientTools request capability。文字聊天工具可用性保留。
+- 維護者最新 production evidence：文字 Search、普通 Vision、image Search 成功；加上聊過／收過要求時仍未取得內部 evidence。確認 availability 不等於 execution，且缺少 ConversationLog research；既有 deadline corrective pass 保留，沒有因此更換 Search transport。
+- 圖片依當次問題縮小 client tools：新聞、對話、週記憶、人工重點、URL 分別選擇，模糊舊資料比對保留三種內部來源；純 Search 不附 client tools。AiService 驗證選擇只能縮小 route／scope allowlist；無工具時移除 clientTools request capability。文字聊天保留可選工具模式。
 - 首輪不再為尚未發生的工具續接預扣10秒，共用原30秒 orchestration／40秒 webhook deadline；真的要求工具才檢查讀取前9秒、final前8秒餘裕，晚到工具可能無法續接。沒有新增 model round、planner 或 Queue。
 - 圖片只有 ai_web_search_failed 使用 Search-specific 文案；ai_timeout 使用看圖逾時，其餘 AI failure 用一般服務文案。Prompt 依實際 tools 說明可用性，圖片 Search 即使不提供 client tools 仍保留網站／搜尋 evidence 信任與原文隱私邊界。
-- Responses Structured Output、Search transport、只讀工具執行、SSRF、Pending Reply、source bubble 與 Gemini dormant 狀態不變。Raw state／thinking／query／tool result 不進 feature、memory、Sheet、PendingReplies、LINE 或 raw log。
-- 本機 node tests/v1140_smoke.cjs：23 sources、418 unique functions、115 checks PASS；保留 mixed continuation 與 v1.14.4 回歸，新增工具 gating、完整首輪窗口、晚到續接／40秒上限及 UX 分流。未能本機執行 GAS，真實圖片與完整 history 的 latency／mixed flow 仍需部署後 live smoke。
-- 從 v1.15.0 升級至少同步 03_ResponseTexts.gs、07_LineImages.gs、10_AiService.gs、12_Prompts.gs、15_DeepSeekProvider.gs；已部署先前 v1.15.1 也需核對這份完整清單。Markdown／tests 不部署。Sheet migration、Trigger change、新 Script Property 均 none。Git merge 不等於 GAS deployment。
+- Required Internal Evidence：文字／圖片共用明確資料 intent，GAS 在首輪前只讀預查指定來源；模型可選一次精查，但不能跳過 required source 後冒充完整成功。NOT_SEARCHED、SEARCHED_EMPTY、SEARCHED_FOUND、FAILED 分開；Web 僅在正式 Search metadata 完成時標 COMPLETED。執行摘要沒有原始資料。
+- 新增 search_conversation_log，重用 scope／header reader；限目前 trusted conversation、尾端500列／最多30天／10筆、每筆800字元與每份6000序列化字元，排除 assistant、當次 MessageId 與當次或未來時間。NewsInbox／重點預查也有界；封存使用既有 read-only reader，非空表缺必要 schema 不冒充空結果。
+- 明確 URL 在首輪前讀取並避免第二次 URL；圖內未知 URL 先 Vision 再於一次 continuation 讀取，最終缺 evidence 仍失敗。自然提問讀內容走只讀，純貼網址保留收件。required failure 的文字／圖片 UX 明說未完成，不說沒找到；prefetch 仍消耗同一30秒 window。
+- Responses Structured Output、Search transport、SSRF、Pending Reply、source bubble 與 Gemini dormant 狀態不變。Raw state／thinking／query／tool result 不進 feature、memory、Sheet、PendingReplies、LINE 或 raw log；只有最終回答與安全執行 metadata 可輸出。
+- 本機 node tests/v1140_smoke.cjs：23 sources、420 unique functions、138 checks PASS；保留既有115項回歸，新增 required execution／empty／found、雙 sentinel 的文字／圖片與私訊／群組、跨 scope、當次提問排除、bounded reader、privacy／injection／deadline。未能本機執行 GAS，新增 evidence 行為仍需部署後 live smoke。
+- 從 v1.15.0 升級至少同步 01_Main.gs、03_ResponseTexts.gs、05_Storage.gs、07_LineImages.gs、10_AiService.gs、12_Prompts.gs、14_AiTools.gs、15_DeepSeekProvider.gs；已部署先前 v1.15.1 也需核對完整8檔。Markdown／tests 不部署。Sheet migration、Trigger change、新 Script Property 均 none。Git merge 不等於 GAS deployment。
 - Context & Cost Optimization 順延為 v1.15.2。
 
 // ==================================================

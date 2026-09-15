@@ -46,8 +46,10 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
     const result = runAiMemoryTask(research ? 'multimodal_research' : 'image_analysis', conversationId, historyText, [
       { type: 'text', text: safeQuestion || '請描述這張圖片的重點；如果有文字或錯誤訊息，請說明可辨識的內容。' },
       downloaded.image
-    ], requireAiCallOptionsForExecutionContext_(executionContext, { forceWebSearch: needsSearch, clientToolNames: clientToolNames }));
+    ], requireAiCallOptionsForExecutionContext_(executionContext, { forceWebSearch: needsSearch, clientToolNames: clientToolNames,
+      excludeMessageId: event.message.id, beforeTimestampMs: event.timestamp }));
     if (!result.ok) {
+      if (result.errorType === 'ai_required_evidence_failed') return getBotTextRequiredEvidenceError_();
       if (result.errorType === 'ai_web_search_failed') return getBotTextWebSearchError_(result.errorType);
       return result.errorType === 'ai_timeout' ? getBotTextImageError_(result.errorType) : getBotTextAiError_();
     }
@@ -65,14 +67,9 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
 
 function selectImageResearchToolNames_(question) {
   const text = String(question || '');
-  const names = [];
-  if (/收過|收集|收錄|新聞庫|收件匣|(?:之前|以前|過去|我們|聊天室|舊).{0,20}新聞/.test(text)) names.push('search_news_inbox');
-  if (/畫(?:過)?(?:的)?重點|人工重點|(?:之前|以前|過去|我們|聊天室|保存|儲存).{0,20}重點/.test(text)) names.push('get_topic_highlights');
-  if (/週記憶|封存|(?:上週|前週).{0,12}(?:聊|討論|記憶|話題)/.test(text)) names.push('get_weekly_memory');
-  if (!names.length && /上週|前週/.test(text)) names.push('get_weekly_memory');
+  const names = getAiRequiredResearch_(text).map(function(item) { return item.name; });
   // ponytail: 只辨識目前問題的明確資料線索；模糊的舊資料比對保留三種內部來源，完整語意選擇留待成本優化。
   if (!names.length && /之前|以前|過去|重複/.test(text)) names.push('search_news_inbox', 'get_topic_highlights', 'get_weekly_memory');
-  if (/https?:\/\/|網址|連結/i.test(text)) names.push('read_url');
   return names;
 }
 
