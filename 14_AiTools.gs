@@ -3,7 +3,7 @@
 // 用途：AI research tools：工具定義、參數驗證與只讀資料查詢。
 //
 // 職責與協作：
-// 1. 提供新聞、人工重點、週記憶與網址四個工具，供 AiService 在單次研究流程呼叫。
+// 1. 提供新聞、對話、人工重點、週記憶與網址只讀 evidence，供 AiService 查詢。
 // 2. 回傳有界資料與安全來源；provider adapter 負責轉譯工具協議。
 //
 // 維護注意：
@@ -30,6 +30,8 @@ function getAiReadOnlyToolDefinitions_() {
   const days = { type: 'integer', minimum: 1, maximum: AI_TOOL_MAX_DAYS };
   return [
     { name: 'search_news_inbox', description: '查目前聊天室近期已收集的新聞；query 是文字子字串，非任意查詢語法。',
+      parameters: { type: 'object', properties: { query: query, days: days, limit: limit }, additionalProperties: false } },
+    { name: 'search_conversation_log', description: '查目前聊天室近期使用者說過的文字；排除當次提問與 assistant，query 是文字子字串。',
       parameters: { type: 'object', properties: { query: query, days: days, limit: limit }, additionalProperties: false } },
     { name: 'get_topic_highlights', description: '查目前聊天室人工畫過的重點；保留人工觀點，不改寫資料。',
       parameters: { type: 'object', properties: { query: query, days: days, limit: limit }, additionalProperties: false } },
@@ -75,6 +77,33 @@ function createAiToolError_(errorType) {
   return error;
 }
 
+/** 明確資料需求由 code 執行；只讀本次問題，不讓 history、圖片或 evidence 擴大必要來源。 */
+function getAiRequiredResearch_(question) {
+  const text = redactAiMediaText_(String(question || '')).slice(0, 2000);
+  const required = [];
+  const selections = [
+    ['search_news_inbox', /收過|收集|收錄|新聞庫|收件匣|(?:之前|以前|過去|我們|聊天室|舊).{0,20}新聞/, /(?:收過|收集|收錄)\s*([^，。？！\n,!?]*)/],
+    ['search_conversation_log', /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog/i, /(?:聊過|討論過)\s*([^，。？！\n,!?]*)/],
+    ['get_topic_highlights', /畫(?:過)?(?:的)?重點|人工重點|(?:之前|以前|過去|我們|聊天室|保存|儲存).{0,20}重點/, null],
+    ['get_weekly_memory', /週記憶|封存|上週|前週/, null]
+  ];
+  selections.forEach(function(selection) {
+    if (!selection[1].test(text)) return;
+    const args = selection[0] === 'get_weekly_memory' ? { limit: 5 } : { days: 30, limit: 5 };
+    const match = selection[2] && text.match(selection[2]);
+    // ponytail: 只取明確的字面主題；指圖／相關資料改讀 bounded candidates，語意索引留待 v1.15.2。
+    const query = match ? match[1].split(/或|以及|另外|順便|也看看|並且/)[0]
+      .replace(/^[「『"`\s]+|[」』"`\s]+$/g, '').replace(/(?:的)?新聞$/, '').trim() : '';
+    if (query && !/這|那|相關|什麼|哪些|有沒有|嗎|呢/.test(query) && query.length <= 200) args.query = query;
+    required.push({ name: selection[0], arguments: args });
+  });
+  const urls = extractUrls(text);
+  if (urls.length || /https?:\/\/|網址|連結/i.test(text)) {
+    required.push({ name: 'read_url', arguments: { url: urls.length === 1 ? urls[0] : '' } });
+  }
+  return required;
+}
+
 // ======================================================
 // 只讀工具執行與資料投影
 // ======================================================
@@ -93,19 +122,28 @@ function runAiReadOnlyTool_(call, trustedContext) {
     let data;
     switch (call.name) {
       case 'search_news_inbox':
+      case 'search_conversation_log':
       case 'get_topic_highlights': {
         const news = call.name === 'search_news_inbox';
+        const conversation = call.name === 'search_conversation_log';
         // ponytail: 掃描尾端最多 500/300 列；大量多聊天室資料需要獨立索引時再優化，結果標明有限視窗。
-        const rows = readAiScopedSheetRows_(news ? NEWS_INBOX_SHEET_NAME : TOPIC_HIGHLIGHTS_SHEET_NAME, scope, news ? 500 : 300);
+        const rows = readAiScopedSheetRows_(conversation ? SHEET_NAME : news ? NEWS_INBOX_SHEET_NAME : TOPIC_HIGHLIGHTS_SHEET_NAME, scope, news || conversation ? 500 : 300);
         const records = [];
         for (let i = rows.length - 1; i >= 0 && records.length < limit; i--) {
           const row = rows[i];
-          const time = new Date(row.CreatedAt).getTime();
+          const time = new Date(conversation ? row.Timestamp : row.CreatedAt).getTime();
           if (!isFinite(time) || time < cutoff || time > Date.now()) continue;
-          if (news ? row.Status !== 'ok' : (row.Status && row.Status !== 'active')) continue;
-          const text = news ? [row.Title, row.Brief, row.Outline, row.StoryKey].join(' ') : String(row.HighlightText || '');
+          if (conversation) {
+            // 當次問題已先寫入 Sheet；不能把提問本身或 assistant 回答當成「以前聊過」。
+            if (row.Role !== 'user' || (trustedContext.excludeMessageId && row.MessageId === trustedContext.excludeMessageId) ||
+              (trustedContext.beforeTimestampMs && time >= trustedContext.beforeTimestampMs)) continue;
+          } else if (news ? row.Status !== 'ok' : (row.Status && row.Status !== 'active')) continue;
+          const text = conversation ? String(row.Text || '') : news ? [row.Title, row.Brief, row.Outline, row.StoryKey].join(' ') : String(row.HighlightText || '');
           if (!text.trim() || (query && text.toLowerCase().indexOf(query) < 0)) continue;
-          const record = news ? {
+          const record = conversation ? {
+            role: 'user', timestamp: new Date(time).toISOString(),
+            text: aiToolText_(text.slice(Math.max(0, query ? text.toLowerCase().indexOf(query) - 160 : 0)), 800)
+          } : news ? {
             title: aiToolText_(row.Title, 200), brief: aiToolText_(row.Brief, 400), outline: aiToolText_(row.Outline, 800),
             category: aiToolText_(row.Category, 60), storyKey: aiToolText_(row.StoryKey, 120),
             url: typeof row.Url === 'string' && row.Url.length <= 2048 && isSafePublicUrl(row.Url) ? row.Url : '',
@@ -116,7 +154,8 @@ function runAiReadOnlyTool_(call, trustedContext) {
           records.push(record);
           if (record.url) sources.push({ title: record.title, url: record.url });
         }
-        data = { records: records, limitedWindow: true };
+        data = { records: records, limitedWindow: true, searchMode: query ? 'literal' : 'recent_candidates',
+          maxDays: args.days || 7, maxScanRows: news || conversation ? 500 : 300, maxRecords: limit };
         break;
       }
       case 'get_weekly_memory':
@@ -134,7 +173,8 @@ function runAiReadOnlyTool_(call, trustedContext) {
       }
       default: throw createAiToolError_('ai_tool_not_allowed');
     }
-    const result = { ok: true, evidenceOnly: true, data: data };
+    const result = { ok: true, evidenceOnly: true, data: data,
+      executionStatus: (Array.isArray(data.records) ? data.records.length : String(data.text || '').trim().length) ? 'SEARCHED_FOUND' : 'SEARCHED_EMPTY' };
     // escaping 可能放大 JSON；超限回固定失敗，不切斷 JSON 或傳出 raw exception。
     if (JSON.stringify(result).length > AI_TOOL_MAX_RESULT_CHARS) return { id: call.id, data: { ok: false, errorCode: 'tool_result_too_large' }, sources: [] };
     return { id: call.id, data: result, sources: sources };
@@ -153,12 +193,18 @@ function readAiScopedSheetRows_(sheetName, conversationId, maxRows) {
   if (!sheet || sheet.getLastRow() <= 1) return [];
   const headers = getHeaderMap_(sheet);
   if (!Object.prototype.hasOwnProperty.call(headers, 'ConversationId')) throw createAiToolError_('ai_tool_data_unavailable');
+  const requiredHeaders = sheetName === SHEET_NAME ? ['Timestamp', 'Role', 'MessageId', 'Text']
+    : sheetName === NEWS_INBOX_SHEET_NAME ? ['CreatedAt', 'Status', 'Title'] : ['CreatedAt', 'HighlightText'];
+  if (requiredHeaders.some(function(key) {
+    return !Object.prototype.hasOwnProperty.call(headers, key);
+  })) throw createAiToolError_('ai_tool_data_unavailable');
   const count = Math.min(sheet.getLastRow() - 1, maxRows);
   const rows = sheet.getRange(sheet.getLastRow() - count + 1, 1, count, sheet.getLastColumn()).getValues();
   return rows.filter(function(row) { return getRowValueByHeader_(row, headers, 'ConversationId') === conversationId; }).map(function(row) {
     const record = {};
     // 僅使用既有欄名，沒有模型可指定的 Sheet、range 或 column。
-    ['CreatedAt', 'Status', 'Title', 'Brief', 'Outline', 'StoryKey', 'Category', 'Url', 'HighlightText', 'Tags'].forEach(function(key) {
+    ['CreatedAt', 'Status', 'Title', 'Brief', 'Outline', 'StoryKey', 'Category', 'Url', 'HighlightText', 'Tags',
+      'Timestamp', 'Role', 'MessageId', 'Text'].forEach(function(key) {
       record[key] = getRowValueByHeader_(row, headers, key);
     });
     return record;

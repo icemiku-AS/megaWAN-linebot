@@ -41,13 +41,18 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
     }
 
     const needsSearch = isExplicitWebSearchRequest_(safeQuestion) || /最新|查證|來源|即時/.test(safeQuestion);
-    const research = needsSearch || /收過|之前|上週|畫(?:過|的)?重點|重複/.test(safeQuestion);
+    const clientToolNames = selectImageResearchToolNames_(safeQuestion);
+    const research = needsSearch || clientToolNames.length > 0;
     const result = runAiMemoryTask(research ? 'multimodal_research' : 'image_analysis', conversationId, historyText, [
       { type: 'text', text: safeQuestion || '請描述這張圖片的重點；如果有文字或錯誤訊息，請說明可辨識的內容。' },
       downloaded.image
-    ], requireAiCallOptionsForExecutionContext_(executionContext, { forceWebSearch: needsSearch }));
-    if (!result.ok) return needsSearch || result.errorType === 'ai_web_search_failed'
-      ? getBotTextWebSearchError_(result.errorType) : getBotTextImageError_(result.errorType);
+    ], requireAiCallOptionsForExecutionContext_(executionContext, { forceWebSearch: needsSearch, clientToolNames: clientToolNames,
+      excludeMessageId: event.message.id, beforeTimestampMs: event.timestamp }));
+    if (!result.ok) {
+      if (result.errorType === 'ai_required_evidence_failed') return getBotTextRequiredEvidenceError_();
+      if (result.errorType === 'ai_web_search_failed') return getBotTextWebSearchError_(result.errorType);
+      return result.errorType === 'ai_timeout' ? getBotTextImageError_(result.errorType) : getBotTextAiError_();
+    }
 
     // 可選的純展示 metadata 保持舊 string caller 相容；來源 bubble 不進 ConversationLog。
     if (replyMetadata && (result.usedWebSearch || result.sources.length)) {
@@ -58,6 +63,14 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
     // 不記錄 exception：下載錯誤可能包含 URL/token，序列化錯誤可能包含圖片。
     return getBotTextImageError_(error && error.errorType);
   }
+}
+
+function selectImageResearchToolNames_(question) {
+  const text = String(question || '');
+  const names = getAiRequiredResearch_(text).map(function(item) { return item.name; });
+  // ponytail: 只辨識目前問題的明確資料線索；模糊的舊資料比對保留三種內部來源，完整語意選擇留待成本優化。
+  if (!names.length && /之前|以前|過去|重複/.test(text)) names.push('search_news_inbox', 'get_topic_highlights', 'get_weekly_memory');
+  return names;
 }
 
 /**

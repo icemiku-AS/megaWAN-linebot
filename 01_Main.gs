@@ -165,7 +165,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
   const isQuotedImageRequest = commandInfo.mode === 'image_analysis' || isNaturalQuotedImageRequest;
   // 只有可觸發回答的自然研究問題才跳過收件；群組非 trigger 網址仍保持原靜默收件。
   const isResearchUrlRequest = commandInfo.mode === 'chat' && (sourceType === 'user' || hasTriggerPrefix(userText)) &&
-    shouldUseWebReading(commandInfo.userPrompt) && /重複|收過|之前|比對|查證/.test(commandInfo.userPrompt);
+    shouldUseWebReading(commandInfo.userPrompt) && /重複|收過|之前|比對|查證|聊過|討論過|封存|重點|內容|讀取|閱讀/.test(commandInfo.userPrompt);
   // 看圖問題也屬圖片輸入；先遮蔽編碼，再交給 Sheet 或 Pending Reply 流程。
   if (isQuotedImageRequest) userText = redactAiMediaText_(userText);
 
@@ -391,11 +391,13 @@ function handleLineEvent(event, webhookStartedAtMs) {
           conversationId,
           commandInfo.userPrompt,
           commandInfo.userPrompt,
-          requireAiCallOptionsForExecutionContext_(aiExecutionContext, { forceWebSearch: explicitWebSearch })
+          requireAiCallOptionsForExecutionContext_(aiExecutionContext, { forceWebSearch: explicitWebSearch,
+            excludeMessageId: event.message.id, beforeTimestampMs: event.timestamp })
         );
         if (!generalChatResult.ok) {
-          const isSearchFailure = explicitWebSearch || generalChatResult.errorType === 'ai_web_search_failed';
-          aiReply = isSearchFailure ? getBotTextWebSearchError_(generalChatResult.errorType) : getBotTextAiError_();
+          const isSearchFailure = generalChatResult.errorType === 'ai_web_search_failed';
+          aiReply = generalChatResult.errorType === 'ai_required_evidence_failed' ? getBotTextRequiredEvidenceError_()
+            : isSearchFailure ? getBotTextWebSearchError_(generalChatResult.errorType) : getBotTextAiError_();
           aiReplyMode = isSearchFailure ? 'web_search_error' : 'general_chat_error';
         } else {
           aiReply = generalChatResult.text;

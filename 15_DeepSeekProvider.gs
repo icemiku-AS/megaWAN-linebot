@@ -70,9 +70,11 @@ function callDeepSeekProvider_(request, privateContinuation) {
     if (privateContinuation) {
       // 原始 thinking / tool blocks 只存在這個 closure，從不交給 feature 或永久儲存。
       payload.messages = payload.messages.concat(privateContinuation.messages);
-      payload.tool_choice = { type: 'none' };
-      // tools 定義保留以滿足 thinking continuation；final turn 不再開 server Search。
-      payload.tools = payload.tools.filter(function(tool) { return tool.name !== 'web_search'; });
+      const hasPendingSearch = Object.keys(privateContinuation.searchState.useIds).some(function(id) {
+        return !privateContinuation.searchState.resultIds[id];
+      });
+      // Pending Search 需原 tools 與完整 turn；auto 續接，不重新強制呼叫 web_search。
+      payload.tool_choice = { type: hasPendingSearch ? 'auto' : 'none' };
     }
     const serializedPayload = JSON.stringify(payload);
     if (Utilities.newBlob(serializedPayload).getBytes().length > DEEPSEEK_REQUEST_MAX_BYTES) {
@@ -121,14 +123,17 @@ function callDeepSeekProvider_(request, privateContinuation) {
     }
 
     if (transport === 'anthropic_messages') {
+      const searchState = privateContinuation ? privateContinuation.searchState : {
+        useIds: Object.create(null), resultIds: Object.create(null), tools: safeRequest.tools || []
+      };
       const result = normalizeDeepSeekAnthropicMessagesResult_(json, statusCode,
-        privateContinuation ? 'auto' : safeRequest.webSearchMode, Date.now() - startedAt);
+        safeRequest.webSearchMode, Date.now() - startedAt, searchState, !!privateContinuation);
       if (result.ok && result.toolCalls && result.toolCalls.length) {
         // 可呼叫但不可序列化的 continuation，service 不需要也不能讀 vendor state。
         result.continueWithToolResults = function(toolResults, deadlineAtMs) {
           return callDeepSeekProvider_(Object.assign({}, safeRequest, {
             executionDeadlineAtMs: deadlineAtMs, minimumRequestSeconds: AI_TOOL_FINAL_RESERVE_SECONDS
-          }), { messages: [
+          }), { searchState: searchState, messages: [
             { role: 'assistant', content: json.content },
             { role: 'user', content: toolResults.map(function(item) {
               return { type: 'tool_result', tool_use_id: item.id, content: JSON.stringify(item.data) };
@@ -330,7 +335,7 @@ function buildDeepSeekResponsesPayload_(request) {
   };
 }
 
-function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode, elapsedMs) {
+function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode, elapsedMs, privateSearchState, isContinuation) {
   const usage = normalizeDeepSeekAnthropicUsage_(json && json.usage);
   const content = json && json.content;
   const stopReason = String(json && json.stop_reason || '');
@@ -343,13 +348,19 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
   if (content.some(function(block) {
     return !block || ['text', 'thinking', 'tool_use', 'server_tool_use', 'web_search_tool_result'].indexOf(block.type) < 0 ||
       (block.type === 'text' && typeof block.text !== 'string') ||
-      (block.type === 'server_tool_use' && (block.name !== 'web_search' || typeof block.id !== 'string')) ||
+      (block.type === 'server_tool_use' && (block.name !== 'web_search' || typeof block.id !== 'string' ||
+        !block.input || typeof block.input.query !== 'string' || !block.input.query.trim())) ||
+      (block.type === 'tool_use' && (!block.input || typeof block.input !== 'object' || Array.isArray(block.input))) ||
       (block.type === 'web_search_tool_result' && typeof block.tool_use_id !== 'string');
   })) return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'Invalid message content blocks.', statusCode, false, elapsedMs, usage, '', 'anthropic_messages');
   const clientBlocks = content.filter(function(block) { return block && block.type === 'tool_use'; });
   if ((stopReason === 'tool_use') !== (clientBlocks.length > 0)) {
     return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'Inconsistent client tool stop reason.', statusCode, false, elapsedMs, usage, '', 'anthropic_messages');
   }
+  if (isContinuation && clientBlocks.length) {
+    return buildDeepSeekProviderFailure_('ai_tool_round_limit', 'Only one client tool continuation is allowed.', statusCode, false, elapsedMs, usage, stopReason, 'anthropic_messages');
+  }
+  const toolCalls = clientBlocks.map(function(block) { return { id: block.id, name: block.name, arguments: block.input }; });
 
   const searchUses = content.filter(function(block) {
     return block && block.type === 'server_tool_use' && block.name === 'web_search' && typeof block.id === 'string';
@@ -357,20 +368,26 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
   const searchResults = content.filter(function(block) {
     return block && block.type === 'web_search_tool_result' && typeof block.tool_use_id === 'string';
   });
-  const searchUseIds = Object.create(null);
-  const searchResultIds = Object.create(null);
+  const searchState = privateSearchState || { useIds: Object.create(null), resultIds: Object.create(null), tools: [] };
+  const searchUseIds = searchState.useIds;
+  const searchResultIds = searchState.resultIds;
   searchUses.forEach(function(block) { searchUseIds[block.id] = (searchUseIds[block.id] || 0) + 1; });
   searchResults.forEach(function(block) { searchResultIds[block.tool_use_id] = (searchResultIds[block.tool_use_id] || 0) + 1; });
+  const pendingIds = Object.keys(searchUseIds).filter(function(id) { return !searchResultIds[id]; });
+  // Mixed tool_use 可先回 client 結果，再完成 server Search；其他缺結果情況仍失敗。
+  const canDeferSearch = !isContinuation && stopReason === 'tool_use' && clientBlocks.length > 0;
   const searchFailed = searchResults.some(function(block) {
     // 官方成功形態一定是 result array；單一 object 是 tool error，其他非陣列也不可當成功。
     return !Array.isArray(block.content) || block.content.some(function(item) { return !item || item.type !== 'web_search_result'; });
-  }) || searchUses.some(function(block) { return !block.id || searchResultIds[block.id] !== 1 || searchUseIds[block.id] !== 1; }) ||
-    searchResults.some(function(block) { return !block.tool_use_id || searchUseIds[block.tool_use_id] !== 1; });
+  }) || Object.keys(searchUseIds).some(function(id) { return !id || searchUseIds[id] !== 1; }) ||
+    Object.keys(searchResultIds).some(function(id) { return !id || searchUseIds[id] !== 1 || searchResultIds[id] !== 1; }) ||
+    (pendingIds.length > 0 && !canDeferSearch);
   if (searchFailed) {
     return buildDeepSeekProviderFailure_('ai_web_search_failed', 'DeepSeek Web Search did not complete.', statusCode, true, elapsedMs, usage, stopReason, 'anthropic_messages');
   }
 
-  const usedWebSearch = searchUses.length > 0 && searchResults.length > 0;
+  if (pendingIds.length) validateAiToolCalls_(toolCalls, searchState.tools);
+  const usedWebSearch = Object.keys(searchResultIds).length > 0;
   const sources = usedWebSearch ? collectDeepSeekAnthropicWebSearchSources_(searchResults) : [];
   const text = content.reduce(function(parts, block) {
     if (block && block.type === 'text' && typeof block.text === 'string') parts.push(block.text);
@@ -387,7 +404,7 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
       : 'ai_invalid_provider_response';
     return buildDeepSeekProviderFailure_(errorType, 'DeepSeek returned internal tool protocol markup.', statusCode, true, elapsedMs, usage, finishReason, 'anthropic_messages');
   }
-  if (searchMode === 'required' && !usedWebSearch) {
+  if (searchMode === 'required' && !usedWebSearch && !pendingIds.length) {
     return buildDeepSeekProviderFailure_('ai_web_search_failed', 'DeepSeek did not execute the required Web Search.', statusCode, true, elapsedMs, usage, finishReason, 'anthropic_messages');
   }
   if (stopReason === 'pause_turn') {
@@ -404,9 +421,7 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
     transport: 'anthropic_messages',
     usedWebSearch: usedWebSearch,
     sources: sources,
-    toolCalls: content.filter(function(block) { return block && block.type === 'tool_use'; }).map(function(block) {
-      return { id: block.id, name: block.name, arguments: block.input };
-    })
+    toolCalls: toolCalls
   };
 }
 
