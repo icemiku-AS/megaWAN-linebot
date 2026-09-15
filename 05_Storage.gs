@@ -1,15 +1,15 @@
 // ======================================================
 // 05_Storage.gs
-// Storage／Shared foundation：負責共用 Sheet 入口、表頭建立與跨領域基礎讀寫。
+// 用途：Storage／Shared foundation：Spreadsheet 入口、表頭建立與共用資料讀寫。
 //
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 職責與協作：
+// 1. 供 setup、對話、新聞、話題與背景任務存取既有 Sheets，並提供共用 header helpers。
+// 2. 管理資料存取與格式化；功能流程、AI Prompt 與 LINE 排版留在各功能檔。
 //
-// 責任與 contract：
-// 1. 01_Main.gs 的 setupLogSheet() 與 Memory、Reader、News、Topic、Queue 功能都會呼叫本檔。
-// 2. 本檔集中多個資料領域的共用存取，但不擁有各 feature 的流程、AI Prompt 或 LINE 排版。
-// 3. Sheet 名稱、headers、欄位順序與 Script Property 名稱都是部署相容性邊界；變更需獨立 schema/migration 版本。
-// 4. 所有讀寫仍須維持 conversationId 隔離；不得以維護整理名義做跨聊天室刪除或全表重建。
-// 5. 函式名稱後綴底線代表內部 helper，但仍位於 GAS 全域命名空間，不可和其他檔案重複。
+// 維護注意：
+// 1. Sheet 名稱、headers、欄位順序與 Script Property 名稱皆為部署相容性邊界。
+// 2. 查詢與資料寫入須維持 conversationId 隔離；不得以整理名義跨聊天室刪除或重建資料。
+// 3. ensure helpers 可能建表或補欄；internal tools 必須使用不帶此副作用的只讀路徑。
 // ======================================================
 
 // ======================================================
@@ -200,7 +200,7 @@ function appendWeeklySummaryRow_(item) {
     SourceItemCount: sourceItemCount
   };
 
-  // v1.12.0 起 WeeklySummary 同時保存話題封存與新聞封存。
+  // WeeklySummary 同時保存話題封存與新聞封存。
   // 這裡依實際表頭寫入，讓既有 Sheet 只追加新欄位，不需要重排或 migration。
   appendRowByHeaders_(sheet, valuesByHeader);
 }
@@ -450,7 +450,7 @@ function getRecentConversationItems(conversationId, limit, includeAssistant) {
   return matched;
 }
 
-// v1.12.5 週編輯台專用 reader。
+// 週編輯台專用 reader。
 // 舊的 getRecentConversationItems() 維持「最近 N 筆、最多掃 500 列」語意；
 // 本函式改用表頭與真正七天 cutoff，並從 Sheet 尾端分批有限向前掃描。
 function isWeeklyEditorialConversationModeAllowed_(mode) {
@@ -635,9 +635,11 @@ function getRecentWebSummariesText(conversationId, limit) {
   }
 }
 
-function getRecentWeeklySummaryText(conversationId, limit, archiveType) {
+function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly) {
   try {
-    const sheet = ensureWeeklySummarySheet_();
+    // internal tools 不可用 ensure：缺表時不建表，既有一般 caller 保持相容。
+    const sheet = readOnly ? getSpreadsheet_().getSheetByName(WEEKLY_SUMMARY_SHEET_NAME) : ensureWeeklySummarySheet_();
+    if (!sheet) return '';
     const lastRow = sheet.getLastRow();
 
     if (lastRow <= 1) {
@@ -718,6 +720,7 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType) {
     }).join('\n\n');
 
   } catch (error) {
+    if (readOnly) throw createAiToolError_('ai_tool_data_unavailable');
     console.error('getRecentWeeklySummaryText error:', error);
     return '';
   }

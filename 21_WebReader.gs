@@ -1,15 +1,15 @@
 // ======================================================
 // 21_WebReader.gs
-// Reader／Web workflows：legacy raw HTML fetch、清理、AI extraction contract 與網頁分析 Prompt。
+// 用途：Reader／Web workflows：URL 安全、legacy HTML extraction 與網頁分析 Prompt。
 //
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 職責與協作：
+// 1. 提供 URL helpers、raw HTML 抓取與清理，以及 raw_html_extraction 的 Prompt、normalizer 和正文驗證。
+// 2. 由 Reader Layer 控制 fallback 時機，透過 AiService 呼叫任務；不在此選 provider/model。
 //
-// 設計說明：
-// 1. 20_ReaderLayer.gs 在 Jina 失敗時呼叫本檔；直接 URL helper 也由 Queue／News 流程使用。
-// 2. 本檔擁有 raw HTML extraction 的 Prompt、JSON contract、normalizer 與 mainText validator。
-// 3. 本檔不決定 provider/model/thinking，只以 raw_html_extraction task 呼叫 10_AiService.gs。
-// 4. FxTwitter / PTT / Jina / legacy fallback 優先順序由 20_ReaderLayer.gs 控制，本檔不改 routing。
-// 5. URL 安全檢查、抓取上限、HTML 清理與 webResult 欄位是相容性 contract；改動需獨立 Reader 版本。
+// 維護注意：
+// 1. 維持 SSRF 防線、抓取上限、redirect 策略及 webResult 欄位相容性。
+// 2. legacy JSON 保留大型 mainText 輸出；正文驗證不能被 JSON 形狀檢查取代。
+// 3. internal read_url 的 noAi 路徑不得進入本檔的 AI extraction。
 // ======================================================
 
 // ======================================================

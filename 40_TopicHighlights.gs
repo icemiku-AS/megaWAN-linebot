@@ -1,15 +1,15 @@
 // ======================================================
 // 40_TopicHighlights.gs
-// Topic／material workflows：人工重點資料層與 TopicHighlights Sheet contract。
+// 用途：Topic／material workflows：人工重點寫入、讀取與格式化。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 職責與協作：
+// 1. #畫重點 將使用者明確標記的內容保存至 TopicHighlights。
+// 2. 45_TopicFeatures.gs 的統整話題與無網址節目分析讀取人工重點；話題封存只讀使用者對話。
 //
-// 維護原則：
-// 1. #畫重點 會將使用者手動標記的內容寫入 TopicHighlights。
-// 2. TopicHighlights 是「人工釘選素材」，不是一般聊天紀錄。
-// 3. 45_TopicFeatures.gs 的 #統整話題、無網址版 #節目話題分析、#封存本週話題會優先讀取此資料。
-// 4. 本檔只管理重點寫入與讀取，不執行跨 Sheet 清理；清理規則由 50_DataCleanup.gs 負責。
-// 5. Sheet headers、conversationId 隔離與人工標記語意都是相容性 contract。
+// 維護注意：
+// 1. 人工重點是釘選素材，不是一般聊天紀錄；headers、conversationId 與人工標記語意須保持相容。
+// 2. 跨 Sheet 清理由 50_DataCleanup.gs 管理；本檔不執行清理。
+// 3. 既有讀取 helper 可能 ensure 表格，internal tools 使用 14_AiTools.gs 的無建表讀取路徑。
 // ======================================================
 
 function ensureTopicHighlightsSheet_() {

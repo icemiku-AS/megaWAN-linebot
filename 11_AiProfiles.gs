@@ -1,28 +1,16 @@
 // ======================================================
 // 11_AiProfiles.gs
-// AI configuration：provider/model registry、execution profiles、task routes 與 retry metadata。
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 用途：AI configuration：provider／model 能力、execution profiles 與 task routes。
 //
-// 主要責任：
-// 1. 集中登記 AI provider、model、execution profile 與 task route。
-// 2. 將 task 的 provider / model / profile 選擇，和 profile 的 thinking、輸出模式、
-//    token、timeout、sampling、finish reason 與 retry policy 分開管理。
-// 3. 解析 route override，輸出 provider-neutral 的執行設定給 10_AiService.gs。
+// 職責與協作：
+// 1. 集中 provider、model、capabilities、thinking、輸出模式、token／timeout 與 route override。
+// 2. resolver 驗證 provider/model 歸屬、能力需求與預期 thinking，交給 AiService 執行。
 //
-// 明確不負責：
-// 1. 不呼叫任何 provider API，也不讀取 API key。
-// 2. 不保存功能 Prompt、JSON schema、normalizer、Sheet 寫入或 LINE 排版。
-// 3. 不實作跨 provider fallback；切換 provider 必須由維護者明確調整 task route。
-//
-// 檔案關係與設計原則：
-// 1. 10_AiService.gs 是唯一正式調度入口；15 / 16 只轉譯各 provider 協議。
-// 2. 功能檔只傳 task 與 Prompt/messages，不應自行組 DeepSeek 或 Gemini options。
-// 3. 每個 task route 都重複標示 expectedThinking，並由 resolver 驗證它和 profile
-//    一致。這項刻意的少量重複是安全稽核，避免未來換 profile 後意外改變成本與延遲。
-// 4. v1.14.0 全部正式 task 固定 HIGH；移除未使用的 thinking_max 與誤導的 fast 命名。
-// 5. model registry key 不綁世代；DeepSeek Flash 在 2026-09-10 對應 V4.1 Flash。
-// 6. profile/route timeout 是任務最大預算；LINE webhook 會在 AiService 再套較短同步 cap。
-// 7. retryPolicy 目前只是 caller-owned 描述資料，AiService 不會據此 sleep 或自動重試。
+// 維護注意：
+// 1. 此處不讀 key、不呼叫 API；business schema 在 13_AiSchemas.gs，payload 在 provider adapter。
+// 2. active routes 明確指定 HIGH；相容旗標由 capability list 推導，不能另成一套能力來源。
+// 3. profile timeout 是上限，同步 caller 另受 webhook cap 約束；retryPolicy 僅描述 caller-owned 策略。
+// 4. Gemini 保持 dormant；切換 provider 須先驗證 adapter 能力，不提供自動 fallback。
 // ======================================================
 
 const AI_PROVIDER_REGISTRY = {
@@ -42,12 +30,13 @@ const AI_MODEL_REGISTRY = {
   deepseek_flash: {
     provider: 'deepseek',
     model: 'deepseek-flash',
-    supportsImages: true
+    capabilities: ['text', 'thinking', 'vision', 'structuredOutput', 'webSearch', 'clientTools']
   },
   gemini_flash_lite_dormant: {
     provider: 'gemini',
     model: 'gemini-3.1-flash-lite',
-    dormant: true
+    dormant: true,
+    capabilities: ['text']
   }
 };
 
@@ -106,7 +95,7 @@ const AI_TASK_ROUTES = {
   // 短回覆原有 1200 加 3600 reasoning 空間；不放大同步 timeout。
   general_chat: {
     provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 4800, timeoutSeconds: 45, allowsWebSearch: true
+    maxOutputTokens: 4800, timeoutSeconds: 45, capabilities: ['webSearch', 'clientTools']
   },
 
   // 3200 → 8000，為分類稽核與 StoryKey 推理留空間；schema/normalizer 不變。
@@ -123,10 +112,10 @@ const AI_TASK_ROUTES = {
 
   // legacy raw HTML 需要保留大量 mainText，使用獨立長輸出 profile。
   raw_html_extraction: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'long_extraction_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high'
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'long_extraction_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high', legacyJson: true
   },
 
-  // 新聞問答需跨多筆 NewsInbox 素材推理；本版不另建複雜度分類器，因此固定 high。
+  // 新聞問答需跨多筆 NewsInbox 素材推理，固定使用 high。
   // 原本已包含 reasoning 的 token/timeout 維持不變。
   news_question: {
     provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
@@ -173,10 +162,15 @@ const AI_TASK_ROUTES = {
     maxOutputTokens: 5000, timeoutSeconds: 90
   },
 
-  // 單張圖片辨識／OCR／問題分析：8000 包含 reasoning；同步仍受 30 秒 cap 與下載耗時扣除。
+  // 圖片研究與普通分析都保留 8000-token 空間；僅 research route 提供 Search／tools。
+  // 同步仍受 30 秒 cap 與下載耗時扣除。
+  multimodal_research: {
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    maxOutputTokens: 8000, timeoutSeconds: 60, capabilities: ['vision', 'webSearch', 'clientTools']
+  },
   image_analysis: {
     provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 8000, timeoutSeconds: 60
+    maxOutputTokens: 8000, timeoutSeconds: 60, capabilities: ['vision']
   }
 };
 
@@ -236,14 +230,28 @@ function resolveAiTaskConfig_(task) {
     throw createAiConfigurationError_('AI task timeout must be positive: ' + taskName);
   }
 
+  const capabilities = ['text'];
+  if (thinkingType === 'enabled') capabilities.push('thinking');
+  (route.capabilities || []).forEach(function(capability) {
+    if (capabilities.indexOf(capability) < 0) capabilities.push(capability);
+  });
+  if (profile.outputMode === 'json' && !route.legacyJson) capabilities.push('structuredOutput');
+  if (capabilities.some(function(capability) { return (modelEntry.capabilities || []).indexOf(capability) < 0; })) {
+    throw createAiConfigurationError_('Model/adapter does not support the required capabilities.');
+  }
+
   return {
     task: taskName,
     provider: route.provider,
     providerAdapter: provider.adapter,
     model: modelEntry.model,
     modelRegistryKey: route.model,
-    supportsImages: modelEntry.supportsImages === true,
-    allowsWebSearch: route.allowsWebSearch === true,
+    // 舊 callers 可繼續讀相容旗標，source of truth 是 capability list。
+    supportsImages: (modelEntry.capabilities || []).indexOf('vision') >= 0,
+    allowsWebSearch: capabilities.indexOf('webSearch') >= 0,
+    allowsClientTools: capabilities.indexOf('clientTools') >= 0,
+    capabilities: capabilities,
+    modelCapabilities: modelEntry.capabilities || [],
     profile: route.profile,
     thinking: { type: thinkingType },
     reasoningEffort: profile.reasoningEffort || '',

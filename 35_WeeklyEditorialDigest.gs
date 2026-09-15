@@ -1,16 +1,15 @@
 // ======================================================
 // 35_WeeklyEditorialDigest.gs
-// News／Editorial：本週編輯台的模型輸入、partition validator、render coverage、cache 與 fallback。
-// 小浣 LINE Bot v1.14.1 Codebase Simplification Edition
+// 用途：News／Editorial：編輯台輸入、聚類驗證、展示完整性與快取。
 //
-// 責任邊界：
-// 1. GAS 建立固定 itemId、裁切模型輸入、保存原始 NewsInbox item 與網址。
-// 2. AI weekly_editorial_digest task 只回傳新聞聚類、未分組 ID 與群組對話話題 JSON。
-// 3. 本檔保守正規化模型結果，分開驗證資料 partition 與 LINE rendered coverage。
-// 4. 模型結果只用於當次顯示與 10 分鐘快取，不回寫 NewsInbox。
-// 5. 本檔不組 provider payload；thinking_json profile 失敗、JSON/partition 違規都使用既有分類 fallback。
-// 6. webhook execution context 只負責同步時間上限；預算不足或逾時仍走相同程式端 fallback。
-// 7. 主要 caller 是 30_NewsInbox.gs；WEEKLY_EDITORIAL_CACHE_VERSION 只跟資料 contract 變更，不跟 source layout 版本連動。
+// 職責與協作：
+// 1. 由 30_NewsInbox.gs 呼叫，建立固定 itemId 並裁切模型輸入，保留原始新聞及網址。
+// 2. weekly_editorial_digest 回傳聚類、未分組 ID 與對話話題；本檔驗證 partition、修復衝突並檢查 rendered coverage。
+//
+// 維護注意：
+// 1. 模型結果僅供當次展示與短期 cache，不回寫 NewsInbox。
+// 2. JSON、partition 或預算失敗仍走既有分類 fallback；schema 不能取代 coverage 驗證。
+// 3. WEEKLY_EDITORIAL_CACHE_VERSION 隨資料契約變更，不隨檔案整理或發版任意調整。
 // ======================================================
 
 function shouldUseWeeklyEditorialDigest_(queryOptions) {

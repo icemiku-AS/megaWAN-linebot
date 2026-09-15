@@ -1,20 +1,16 @@
 // ======================================================
 // 01_Main.gs
-// Core／LINE transport：主要入口、首次設定、Trigger 安裝與 Webhook 事件主流程。
+// 用途：Core／LINE transport：公開入口、首次設定、Trigger 安裝與 webhook 事件分流。
 //
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 職責與協作：
+// 1. doPost() 接收 LINE events；setupLogSheet() 與 Trigger 安裝函式供維護者手動執行。
+// 2. 指令解析與 Reply API 交給 02_LineCommands.gs，固定文案交給 03_ResponseTexts.gs。
+// 3. 新聞、圖片、話題與清理交由各功能檔處理；模型工作透過 AiService，不在此組 provider payload。
 //
-// 維護原則：
-// 1. 對外入口是 doPost()、setupLogSheet() 與 Trigger 安裝函式；公開 handler 名稱不得因分檔調整而改變。
-// 2. 本檔負責 LINE webhook 主流程與事件分流；指令與 Reply API 交給 02_LineCommands.gs。
-// 3. 不經過 LLM 的固定回覆與版本資訊集中於 03_ResponseTexts.gs。
-// 4. 群組「直接貼網址」走靜默 NewsUrlQueue；個人聊天室與明確指令保留同步回覆，方便維護測試。
-// 5. 只有 #懶人包 才走快讀摘要；只有 #節目話題分析 + 網址 才走深度網址分析。
-// 6. 資料清理統一交給 50_DataCleanup.gs，所有清理都需二段確認。
-// 7. v1.10.9 起，X / Twitter 非單篇 status 網址不入隊；Facebook / Threads 會先交給 Jina Reader。
-// 8. v1.12.0 起，群組非 trigger 網址不再回覆 Brief；失敗或不支援網址改由 PendingReplies 回報。
-// 9. #新聞問答與 NewsUrlQueue 交給 30_NewsInbox.gs；本檔不擁有新聞資料契約。
-// 10. 所有模型工作都交給 provider-neutral AiService；本檔不選 provider、model 或組 payload。
+// 維護注意：
+// 1. Pending Reply 優先交付；群組無 trigger 的一般訊息保持安靜，普通網址走靜默收件。
+// 2. 私訊與明確指令保留各自回覆路徑；圖片／網址研究須維持已定義的收件例外。
+// 3. 公開入口名稱、二段清理確認及同一 webhook 共用 deadline 都是維護邊界。
 // ======================================================
 
 /**
@@ -167,6 +163,9 @@ function handleLineEvent(event, webhookStartedAtMs) {
       : (isGroupLike && userText.startsWith('#小浣'))
   );
   const isQuotedImageRequest = commandInfo.mode === 'image_analysis' || isNaturalQuotedImageRequest;
+  // 只有可觸發回答的自然研究問題才跳過收件；群組非 trigger 網址仍保持原靜默收件。
+  const isResearchUrlRequest = commandInfo.mode === 'chat' && (sourceType === 'user' || hasTriggerPrefix(userText)) &&
+    shouldUseWebReading(commandInfo.userPrompt) && /重複|收過|之前|比對|查證/.test(commandInfo.userPrompt);
   // 看圖問題也屬圖片輸入；先遮蔽編碼，再交給 Sheet 或 Pending Reply 流程。
   if (isQuotedImageRequest) userText = redactAiMediaText_(userText);
 
@@ -183,11 +182,12 @@ function handleLineEvent(event, webhookStartedAtMs) {
   // ======================================================
 
   const pendingDelivery = deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
-    // 看圖問題中的網址不是新聞收件；交付舊結果後請使用者重送圖片問題。
-    const enqueueResult = isQuotedImageRequest ? null
+    // 圖片／網址研究不趁交付舊結果時轉成新聞收件；保留 Pending Reply 優先交付。
+    const enqueueResult = isQuotedImageRequest || isResearchUrlRequest ? null
       : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
     return getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
-      (isQuotedImageRequest ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' : '');
+      (isQuotedImageRequest ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' :
+        isResearchUrlRequest ? '\n\n這個網址問題尚未研究，請再問一次。' : '');
   });
 
   if (pendingDelivery) {
@@ -313,6 +313,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
   }
 
   if (isNaturalQuotedImageRequest) {
+    const imageReplyMetadata = {};
     const naturalImageQuestion = userText.startsWith('#小浣')
       ? userText.replace(/^#小浣\s*/, '').trim()
       : userText;
@@ -322,10 +323,11 @@ function handleLineEvent(event, webhookStartedAtMs) {
       quotedMessageId,
       naturalImageQuestion,
       aiExecutionContext,
-      true
+      true,
+      imageReplyMetadata
     );
     if (naturalImageReply !== null) {
-      replyToLine(event.replyToken, naturalImageReply);
+      replyToLine(event.replyToken, naturalImageReply, false, imageReplyMetadata.finalMessage || '');
       logAssistantReplyToSheet(event, conversationId, naturalImageReply, 'image_analysis');
       return;
     }
@@ -338,7 +340,9 @@ function handleLineEvent(event, webhookStartedAtMs) {
   try {
     if (commandInfo.mode === 'image_analysis') {
       // ID 只取 LINE 原生 quotedMessageId，不接受使用者輸入任意 message ID 或圖片網址。
-      aiReply = analyzeLineImage_(event, conversationId, event.message.quotedMessageId, commandInfo.userPrompt, aiExecutionContext);
+      const imageReplyMetadata = {};
+      aiReply = analyzeLineImage_(event, conversationId, event.message.quotedMessageId, commandInfo.userPrompt, aiExecutionContext, false, imageReplyMetadata);
+      aiFinalMessage = imageReplyMetadata.finalMessage || '';
 
     } else if (commandInfo.mode === 'integrate_topics') {
       aiReply = integrateRecentTopics(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
@@ -376,7 +380,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
         : enqueueResult.error || getBotTextNoReadableUrl_();
 
     } else {
-      if (shouldUseWebReading(commandInfo.userPrompt)) {
+      if (shouldUseWebReading(commandInfo.userPrompt) && !isResearchUrlRequest) {
         const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
         aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
         aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
@@ -395,7 +399,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
           aiReplyMode = isSearchFailure ? 'web_search_error' : 'general_chat_error';
         } else {
           aiReply = generalChatResult.text;
-          if (generalChatResult.usedWebSearch) {
+          if (generalChatResult.usedWebSearch || generalChatResult.sources.length) {
             aiFinalMessage = buildWebSearchSourcesBubble_(generalChatResult.sources);
             aiReplyMode = 'general_chat_search';
           }

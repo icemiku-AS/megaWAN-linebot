@@ -1,3 +1,21 @@
+2026-09-15
+v1.15.0 Unified Research & Capability Edition
+- 以 v1.14.4 / 4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58 為 baseline，整合 Structured Output / Tools 與 Multimodal Research；本地完成／Git merge 不等於 GAS deployment。
+- Capability-driven route/model registry 公告 text、thinking、vision、structuredOutput、webSearch、clientTools；adapter 決定 transport，未知／不支援組合在 HTTP 前 ai_configuration_error。舊 runAi* 入口與 compatibility wrappers 保留。
+- 新增 13_AiSchemas.gs，news_analysis、web_lazy_summary、archive_topics、archive_news、weekly_editorial_digest、manual_news_supplement 使用 Responses text.format json_schema。重用既有 schema builder，保留分類、StoryKey、partition、coverage、cache、非空摘要與業務 validators；新聞／快讀 schema failure 保留 retryable。raw_html_extraction 明確保留 28k legacy JSON，待長文 live corpus 驗證。
+- 新增 14_AiTools.gs，提供 search_news_inbox、get_topic_highlights、get_weekly_memory、read_url。模型 args 不含 conversationId，trusted service 注入 scope；整批先驗證名稱、JSON、ID、型別、enum、days、limit、URL。最多4 calls、1 URL、1 continuation，每份 serialized tool data 最多6000字元，回傳有限視窗標示。
+- 只讀 Sheet 路徑禁止 ensureSheet／建表／補欄；WeeklySummary 重用既有 formatter 並增加相容的 readOnly 參數。NewsInbox／Highlights 讀取既有欄位並投影 compact records，不新增任何永久資料。
+- read_url 沿用 Reader／SSRF trust boundary，noAi 模式下 Jina 失敗不進 legacy AI extraction；工具模式關閉 Jina／FxTwitter HTTP 自動 redirect。其他 Reader、Queue、httpStatus=0 與 retry 契約保留。
+- general_chat 提供 auto Web Search 與只讀 tools；明確搜尋強制 server Search。multimodal_research 原生結合 image、Search、client tools；普通圖片仍走 Chat Completions，不因「圖片重點／這是真的嗎」就強制研究。自然引用、群組 quiet、舊看圖指令、多圖與 Pending 優先序保留；網址比對問題不轉收件，已有 Pending 時提示重問，普通網址仍收件。
+- Opaque continuation 使用 provider-private closure，暫存完整 assistant thinking／tool turn；service 只處理 generic calls/results。最多一次續接，最後 request 停用工具並移除 server Search definition；同一最多30秒 orchestration 受40秒 webhook deadline約束，首輪預留final與資料時間，late response不保存。
+- usedWebSearch 只認正式一對一且非錯誤 server metadata；sources 合併已執行 Search／NewsInbox／Reader 的安全URL，去重最多3筆，維持LINE 4+1 bubble，不從final text猜來源。raw tool args/results、query、thinking、圖片編碼、raw provider body與closure不進Sheet／Cache／PendingReplies／log。
+- 移除 dead Responses Web Search payload／web_search_call成功判定／舊source collector；Responses保留並成為active structured transport。所有文字出口保留media redaction，provider protocol guard與不可信停止原因防洩漏補強。
+- Gemini保持dormant；新能力明確fail-fast並遮蔽錯誤原文，不啟用production、無新credential或自動fallback。未來需重新review當時Interactions API。
+- README改為現況／用法／架構／setup優先，後段按v1.x摘要；changelog沒有v1.8紀錄，明示而不補造。CURRENT_VERSION記錄完整契約、限制與live checklist；AGENTS補導航與只讀工具規則；#版本更新、#版本紀錄仍限6筆、help補研究用法。
+- 本機 node tests/v1140_smoke.cjs：23 sources、417 unique functions、97 checks PASS。保留v1.14.4 production句型fixture與所有既有回歸；新增schema、capability、tools、scope、deadline、privacy、multimodal與source checks。未能本機執行GAS，沒有真實LINE／DeepSeek／Sheet呼叫；新API組合與latency需部署後live smoke。
+- Sheet schema/migration、Trigger change、新Script Property、setup requirement均none。沒有新Queue、外部Search provider、backend、runtime dependency。手動同步檔案與回復流程見CURRENT_VERSION.md。
+
+// ==================================================
 2026-09-13
 v1.14.4 Search Transport Correction Hotfix
 - Production capability probe 證實 DeepSeek `/responses` 接受 Web Search request 卻未產生 server-side execution；`general_chat` 改走實際回傳 `server_tool_use`／`web_search_tool_result` 的 DeepSeek Anthropic-compatible `/messages`。

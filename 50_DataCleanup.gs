@@ -1,15 +1,15 @@
 // ======================================================
 // 50_DataCleanup.gs
-// Data operations／maintenance：依目前 conversationId 執行受控的多 Sheet 資料清理。
+// 用途：Data operations／maintenance：目前聊天室的受控多表清理。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 職責與協作：
+// 1. 解析清理指令與確認狀態，依指定範圍刪除目前 conversationId 的資料列。
+// 2. 01_Main.gs 負責顯示警告與回覆；本檔只管理清理規則及執行，不呼叫 AI。
 //
-// 維護原則：
-// 1. 所有清理都只處理目前 conversationId，不跨私訊 / 群組 / room。
-// 2. 清理時只刪符合 ConversationId 的資料列，不刪整張 Sheet，也不刪表頭。
-// 3. 主要 caller 是 01_Main.gs；真正執行前必須二段式確認，例如：#清空重點 → #清空重點 確認。
-// 4. 本檔只放資料清理規則與執行，不處理 LINE reply、不呼叫 LLM，也不變更 Sheet schema。
-// 5. cleanup command、目標 Sheet 集合與 delete 範圍是高風險 contract，不可隨 source layout 整理修改。
+// 維護注意：
+// 1. 執行前須二段確認，例如 #清空重點 → #清空重點 確認。
+// 2. 保留其他聊天室、Sheet 與表頭；不得把資料列清理擴大為全表刪除。
+// 3. 指令、目標 Sheet 集合與刪除範圍皆屬高風險契約，修改時須追蹤主流程 caller。
 // ======================================================
 
 function normalizeCleanupCommandText_(text) {

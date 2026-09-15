@@ -1,21 +1,16 @@
 // ======================================================
 // 45_TopicFeatures.gs
-// Topic／material workflows：#節目話題分析、#統整話題、#封存本週話題 等企劃功能。
+// 用途：Topic／material workflows：節目分析、素材統整與兩種週封存。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 職責與協作：
+// 1. 管理功能 Prompt、素材選取、封存業務驗證與 WeeklySummary 寫入；模型工作透過 AiService。
+// 2. 節目分析與統整可參考人工重點、快讀及封存；統整另讀新聞大綱，缺 Outline 時退回 Brief。
 //
-// 設計說明：
-// 1. 本檔專注在節目企劃邏輯，不直接處理 LINE reply 或 Sheet 初始化細節。
-// 2. v1.10.3 起，節目整理相關功能從 ConversationLog 只讀 role=user，避免小浣回覆污染素材。
-// 3. v1.10.3 起，TopicHighlights 是人工畫重點資料，統整、分析、封存時都要優先參考。
-// 4. v1.12.0 起，#封存本週話題 只讀 user-only ConversationLog；#封存本週新聞 另讀 NewsInbox。
-// 5. v1.11.1 起，#統整話題會額外讀取 NewsInbox 的完整 Outline；舊資料沒有 Outline 時退回 Brief。
-// 6. v1.12.1 起，#封存本週新聞 的 prompt 改為週報索引取向，優先保留可回查的事件與名稱。
-// 7. v1.12.2 起，新聞封存會讀取 SpecialTopic / MatchedEntities，協助保留可回查的主角與事件名稱。
-// 8. v1.12.4 起，新聞封存素材文字會包含 StoryKey，協助長期記憶保留事件線。
-// 9. 本檔只選 AI task 並擁有功能 Prompt/schema；provider/profile/payload 由 10_AiService.gs / 11_AiProfiles.gs 管理。
-// 10. LINE webhook 會傳入可選 execution context；它只縮短同步 timeout，背景或手動 caller 不傳時仍用完整 profile。
-// 11. 本檔不擁有 LINE router、TopicHighlights Sheet schema 或 NewsInbox 入庫流程。
+// 維護注意：
+// 1. ConversationLog 素材只取 user；#封存本週話題 只讀使用者對話，#封存本週新聞 只讀 NewsInbox。
+// 2. 新聞封存保留事件名稱、特殊主題、辨識實體與 StoryKey，供後續回查。
+// 3. 封存須先通過 schema 與業務 validator；LINE router、Sheet 初始化及 provider payload 各由所屬層處理。
+// 4. 同步 execution context 只能縮短 timeout，背景或手動 caller 維持既有預算。
 // ======================================================
 
 // ======================================================

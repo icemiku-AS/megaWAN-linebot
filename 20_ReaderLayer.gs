@@ -1,30 +1,16 @@
 // ======================================================
 // 20_ReaderLayer.gs
-// Reader／Web workflows：統一 FxTwitter、PTT、Jina 與 legacy raw HTML fallback routing。
+// 用途：Reader／Web workflows：統一網址讀取策略與 webResult。
 //
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 職責與協作：
+// 1. 供 NewsInbox 與 WebTaskQueue 取得正文；X status 用 FxTwitter，PTT 用 over18 cookie，一般網站先用 Jina。
+// 2. 一般讀取在 Jina 失敗後可走 21_WebReader.gs 的 legacy extraction；快讀契約由 25_WebTaskQueue.gs 管理。
 //
-// 本檔是 Reader Layer 的核心檔案，目標是把「讀網頁」與後續 LLM 整理拆開。
-// 下游 NewsInbox、WebSummary 與 AI task 只需要吃穩定的 webResult：
-// mainText、title、siteName、author、publishedAt、warnings、readerRoute。
-//
-// v1.10.9 分流：
-// 1. X / Twitter 單篇 status：使用 FxTwitter API 讀取，再轉成 Reader Layer 文字格式。
-// 2. Facebook / fb.watch / Threads.com / Threads.net：不再提前攔截，回到一般網址流程，先走 Jina Reader。
-// 3. PTT：使用 GAS 原生 UrlFetchApp，帶 Cookie: over18=1 處理滿 18 歲確認頁。
-// 4. 一般網站：優先使用 Jina Reader 轉成 LLM 友善文字。
-// 5. Jina Reader 失敗時，保留 raw HTML + provider-neutral AI extraction 作為 legacy fallback。
-//
-// 維護原則：
-// 1. 本檔維持 Google Apps Script 架構，不導入 Node.js / npm / 自架伺服器。
-// 2. 本版不導入 Apify / ByCrawl。
-// 3. X / Twitter 只支援可抽出 /status/{id} 的公開單篇貼文；個人頁、搜尋頁、列表頁不自動擷取。
-// 4. Facebook / Threads 是否能讀到正文取決於 Jina Reader 與公開可讀性，不保證登入牆或私人內容。
-// 5. 主要 caller 是 25_WebTaskQueue.gs 與 30_NewsInbox.gs；本檔不擁有 AI Prompt/schema/normalizer。
-// 6. 快讀契約歸 25_WebTaskQueue.gs，raw HTML extraction 歸 21_WebReader.gs；本檔只決定 Reader routing。
-// 7. Reader 優先順序與成功結果的既有 webResult 欄位是相容性 contract，不可因 source layout 調整。
-//    失敗結果可向後相容地增加 errorType / retryable / httpStatus，供 Queue 判斷重試；
-//    舊 caller 若只讀 ok / error，行為仍維持不變。
+// 維護注意：
+// 1. 維持 URL 安全檢查、共用 deadline 與 webResult 欄位；httpStatus=0 不得當成缺值。
+// 2. internal read_url 的 noAi 模式禁止 legacy AI fallback，且不自動跟隨 HTTP redirect。
+// 3. X 僅支援公開單篇 status；Facebook／Threads 依公開可讀性，不保證登入牆或私人內容。
+// 4. 本檔管理 Reader routing，不組 provider payload，也不擁有下游業務 Prompt 或 validator。
 // ======================================================
 
 // ======================================================
@@ -89,6 +75,9 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
     return jinaResult;
   }
 
+  // 模型 read_url 的 no-AI 模式必須在任何 legacy extraction 前停止，禁止巢狀 AI。
+  if (executionContext && executionContext.noAi) return jinaResult;
+
   // absolute deadline 已耗盡時不可再嘗試 legacy；背景 Queue 會在沒有同步 context 時重新讀取。
   if (jinaResult.errorType === 'reader_sync_budget_exhausted') {
     return jinaResult;
@@ -146,7 +135,7 @@ function detectWebReaderRoute_(url) {
     return extractTwitterStatusIdFromUrl_(url) ? WEB_READER_ROUTE_FXTWITTER_API : WEB_READER_ROUTE_UNSUPPORTED_SOCIAL;
   }
 
-  // Facebook / fb.watch / Threads.com / Threads.net 在 v1.10.9 起不再特判為 unsupported。
+  // Facebook / fb.watch / Threads.com / Threads.net 交由一般公開網址讀取流程嘗試。
   // 它們會自然走 Jina Reader；讀不到再由既有 fallback 與錯誤流程處理。
   return WEB_READER_ROUTE_JINA;
 }
@@ -184,7 +173,7 @@ function isPttHostname_(hostname) {
 }
 
 // 舊函式名稱保留給相容與排查用。
-// v1.10.9 起，Facebook / Threads 不再由此函式視為 unsupported。
+// Facebook / Threads 不由此函式視為 unsupported；可讀性由 Reader 判斷。
 function isUnsupportedSocialHostname_(hostname) {
   return isTwitterLikeHostname_(hostname);
 }
@@ -255,7 +244,7 @@ function fetchTwitterStatusWithFxTwitter_(url, executionContext) {
   const options = {
     method: 'get',
     muteHttpExceptions: true,
-    followRedirects: true,
+    followRedirects: !(executionContext && executionContext.noAi),
     headers: {
       'Accept': 'application/json',
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; FxTwitter Reader)'
@@ -498,7 +487,7 @@ function fetchReadablePageWithJina_(url, executionContext) {
   const options = {
     method: 'get',
     muteHttpExceptions: true,
-    followRedirects: true,
+    followRedirects: !(executionContext && executionContext.noAi),
     headers: {
       // 明確要求文字輸出；Jina Reader 通常會回 Markdown / text。
       'Accept': 'text/plain',
