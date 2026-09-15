@@ -1,6 +1,6 @@
 2026-09-15
 v1.15.0 Unified Research & Capability Edition
-- 以 v1.14.4 / 4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58 為 baseline，整合 Structured Output / Tools 與 Multimodal Research；本地 working tree 完成不代表已部署。
+- 以 v1.14.4 / 4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58 為 baseline，整合 Structured Output / Tools 與 Multimodal Research；本地完成／Git merge 不等於 GAS deployment。
 - Capability-driven route/model registry 公告 text、thinking、vision、structuredOutput、webSearch、clientTools；adapter 決定 transport，未知／不支援組合在 HTTP 前 ai_configuration_error。舊 runAi* 入口與 compatibility wrappers 保留。
 - 新增 13_AiSchemas.gs，news_analysis、web_lazy_summary、archive_topics、archive_news、weekly_editorial_digest、manual_news_supplement 使用 Responses text.format json_schema。重用既有 schema builder，保留分類、StoryKey、partition、coverage、cache、非空摘要與業務 validators；新聞／快讀 schema failure 保留 retryable。raw_html_extraction 明確保留 28k legacy JSON，待長文 live corpus 驗證。
 - 新增 14_AiTools.gs，提供 search_news_inbox、get_topic_highlights、get_weekly_memory、read_url。模型 args 不含 conversationId，trusted service 注入 scope；整批先驗證名稱、JSON、ID、型別、enum、days、limit、URL。最多4 calls、1 URL、1 continuation，每份 serialized tool data 最多6000字元，回傳有限視窗標示。
@@ -13,7 +13,7 @@ v1.15.0 Unified Research & Capability Edition
 - Gemini保持dormant；新能力明確fail-fast並遮蔽錯誤原文，不啟用production、無新credential或自動fallback。未來需重新review當時Interactions API。
 - README改為現況／用法／架構／setup優先，後段按v1.x摘要；changelog沒有v1.8紀錄，明示而不補造。CURRENT_VERSION記錄完整契約、限制與live checklist；AGENTS補導航與只讀工具規則；#版本更新、#版本紀錄仍限6筆、help補研究用法。
 - 本機 node tests/v1140_smoke.cjs：23 sources、417 unique functions、97 checks PASS。保留v1.14.4 production句型fixture與所有既有回歸；新增schema、capability、tools、scope、deadline、privacy、multimodal與source checks。未能本機執行GAS，沒有真實LINE／DeepSeek／Sheet呼叫；新API組合與latency需部署後live smoke。
-- Sheet schema/migration、Trigger change、新Script Property、setup requirement均none。沒有新Queue、外部Search provider、backend、runtime dependency；不commit／push／merge／建PR。手動同步檔案與回復流程見CURRENT_VERSION.md。
+- Sheet schema/migration、Trigger change、新Script Property、setup requirement均none。沒有新Queue、外部Search provider、backend、runtime dependency。手動同步檔案與回復流程見CURRENT_VERSION.md。
 
 // ==================================================
 2026-09-13

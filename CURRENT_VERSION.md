@@ -4,10 +4,8 @@
 
 MEGA浣 / 小浣：**v1.15.0 Unified Research & Capability Edition**。
 
-- 工作分支：`feature/v1150-unified-research-capabilities`。
 - Baseline：v1.14.4 Search Transport Correction Hotfix，`4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58`。
-- 開工時 HEAD、local main、origin/main 皆為上述 commit，working tree 乾淨，`git diff main...HEAD` 為空。本次沒有 fetch／rebase／merge；origin/main 是本機 remote-tracking ref，未宣稱遠端即時狀態。
-- 本文件描述 v1.15.0 工作樹實作；尚未 commit、發布或手動同步 GAS。最後確認：2026-09-15。
+- 本文件描述 v1.15.0 的程式與部署契約；Git 版本不代表 GAS 已部署，執行環境需依部署清單手動同步。
 - 實際 `.gs` 優先；AI agent 工作規則見 AGENTS.md，使用方式見 README.md，完整歷史見 99_changelog.md。舊版 Search transport 記錄只代表當時版本。
 
 ## 版本邊界
@@ -64,7 +62,9 @@ provider 只在需要工具時交回 generic `{id,name,arguments}` 和不可序�
 | multimodal_research | Anthropic Messages | 單張 image + Search + client tools，同一 workflow |
 | structuredOutput + Search / tools / vision | 不支援本版組合 | HTTP 前 ai_configuration_error |
 
-模型固定 `deepseek-flash`，沿用 `DEEPSEEK_API_KEY`。沒有 Responses built-in Search，也沒有把 Chat Completions 全部遷移。
+模型固定 `deepseek-flash`，沿用 `DEEPSEEK_API_KEY`。本版 Search 使用 Anthropic-compatible Messages；Responses 只作 Structured Output transport，其他既有文字／普通圖片任務保留 Chat Completions。
+
+選型依據是 v1.14.4 production capability probe 未取得可靠的 Responses server Search execution，而 Anthropic-compatible Messages 已經 production live 驗證 Search 可用。Responses guide／reference 對 Web Search 的描述曾有版本同步不一致，不能把文件字樣當作執行成功證據。未來若 Responses Search contract 改變，須另行 live capability review，不因文件字樣自動切換 transport。
 
 ### Task budgets
 
@@ -164,11 +164,11 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## 2026-09-15 官方 contract 查核
 
-以下是本次直接讀取的官方資料；部分 DeepSeek reference 在 web tool timeout 後改用 HTTPS 直接讀取同一官方頁，並非只信 search snippet。
+以下保留 v1.15.0 的 API 契約參考；文件可能隨供應商更新，Search transport 的選型以本版記錄的 production capability 驗證為依據。
 
 - [DeepSeek Models](https://api-docs.deepseek.com/quick_start/pricing/) 與 [Updates](https://api-docs.deepseek.com/updates/)：canonical model 保持 deepseek-flash；不藉歷史 alias 改模型。
 - [Chat Completions reference](https://api-docs.deepseek.com/api/create-chat-completion/) 與 [JSON Output](https://api-docs.deepseek.com/guides/json_mode/)：legacy JSON 使用 json_object；不把它冒充 JSON Schema。
-- [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/)：text.format 支援 json_schema / name / schema；function tools 支援，built-in web_search ignored，stateless。依 reference 欄位實作，不自行加入未列出的 strict 開關。
+- [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/)：本版使用 stateless request 與 text.format 的 json_schema / name / schema，不加入 strict 開關。兩份文件的 Web Search 支援描述曾有版本同步不一致；本版不據此宣稱 Responses server Search 可用或永久不支援，選型與未來變更條件見上方 transport matrix。
 - [Tool calls](https://api-docs.deepseek.com/guides/tool_calls/) 與 [Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)：tool continuation 必須保留所需推理上下文；本版只在 provider closure 暫存，所有 active routes HIGH，不送 sampling。
 - [Vision](https://api-docs.deepseek.com/guides/vision/) 與 [Anthropic compatibility](https://api-docs.deepseek.com/guides/anthropic_api/)：image source/base64、client tool_use/tool_result、server Search blocks、thinking/output_config.effort 可用；is_error 被忽略，因此工具錯誤使用 provider-neutral data。
 - [Anthropic Web Search schema](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)：參照 server tool/result 結構；不把 Anthropic 新 tool 版本當成 DeepSeek 已支援，保留 production 的 web_search_20250305。
@@ -187,7 +187,7 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## Architecture improvements / deviations
 
-| 原構想 | 本次決定與理由 | 相容性、成本與風險 |
+| 原構想 | 本版決定與理由 | 相容性、成本與風險 |
 | --- | --- | --- |
 | capability model 可自由設計 | 使用字串能力集合與明確 adapter switch；舊旗標由 resolver 推導 | 無 class/DI/framework，保留 caller 入口 |
 | schema 靠近 validator 或獨立層 | 新增13_AiSchemas，重用兩個既有 builders | 不把 business schema 塞入 Profiles；保留 business rules |
@@ -207,9 +207,9 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## 部署清單
 
-先由維護者 review 工作樹，再自行 commit / push / PR / merge。本版沒有代為執行。保留 v1.14.4 GAS version 供回復；先同步全部檔案再切換 deployment，避免混用契約。
+完整建立／重建 GAS source 時，上方列出的 **23 個 active `.gs` 應一致採用 v1.15.0 內容**。
 
-需要手動同步的 `.gs`：
+從 v1.14.4 升級至 v1.15.0 時，下列 **13 個 runtime-changing `.gs` 是至少必須同步的檔案**，涵蓋程式邏輯、Prompt、Help 與版本文字變更。完成這份最低清單後再切換 deployment，並保留 v1.14.4 GAS version 供回復：
 
 - `01_Main.gs`
 - `02_LineCommands.gs`
@@ -225,7 +225,9 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 - `16_GeminiProvider.gs`
 - `20_ReaderLayer.gs`
 
-其餘10個 `.gs` 保留 baseline。GAS 共23檔；Markdown 與 tests 不部署。Sheet migration：**none**。Trigger change：**none**。新 Script Property：**none**。首次安裝才需原 setup / install 函式；v1.14.4 升級不重跑。
+相對 v1.14.4 baseline，其餘10個 `.gs` 只有註解整理，沒有 runtime behavior change，因此不列入最低升級清單；若要讓 GAS source 與 v1.15.0 repository 完整一致，可一併同步。最低清單包含新增的兩檔，升級後 GAS 仍應具備全部23個 active sources。
+
+Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**none**。新 Script Property：**none**。首次安裝才需原 setup / install 函式；v1.14.4 升級不重跑。Git merge 不等於 GAS deployment。
 
 ### 部署後 manual smoke checklist
 
@@ -244,9 +246,9 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 13. 檢查 Cache、ConversationLog、WeeklySummary、NewsInbox、TopicHighlights、PendingReplies、console：無原圖/base64、raw tool data、thinking、query 或 continuation。
 14. 確認 #版本 / #版本紀錄 / #help；現有兩個 Queue Trigger不重建、不重複，原LINE deployment URL不變。
 
-### Known limitations / merge and rollout gates
+### Known limitations / production rollout requirements
 
-靜態與 mock 檢查無已知未修正 blocker。production rollout 前必須完成上述 live 組合驗證，尤其 Responses 六個 schema、Search+tools+image、最終 tool_choice none 與真正30秒延遲。若維護者把 live acceptance 設為 merge gate，這些尚未實測項目就是 pending gate；本文件不宣稱可略過。
+靜態與 mock 檢查不能取代目標 GAS 環境的 live 驗證。production rollout 前必須完成上述 checklist，尤其 Responses 六個 schema、Search+tools+image、最終 tool_choice none 與真正30秒延遲。
 
 工具是有界字面查詢，不是全歷史語意搜尋；資料會因尾端掃描視窗而漏掉較舊紀錄。只允許一個工具批次，不能用第一次讀取結果再動態開第二批工具。final turn 不新增網路搜尋。成功答案可保存其摘要，沒有保留完整工具 evidence 供後續重播。Global ScriptLock 與實際 Google服務延遲仍限制並行性，無exactly-once保證。
 
