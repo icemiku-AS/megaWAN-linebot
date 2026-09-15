@@ -1,4 +1,4 @@
-// v1.15.0 能力／研究與 v1.14.x 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.15.1 mixed continuation、v1.15.0 能力／研究與 v1.14.x 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -213,7 +213,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.15.0'));
+  assert(replies.at(-1).text.includes('v1.15.1'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -1055,6 +1055,150 @@ function anthropicToolTurn(toolCalls, searched = false) {
   body.content.push(...toolCalls.map(call => ({ type: 'tool_use', id: call.id, name: call.name, input: call.arguments })));
   return response(200, body);
 }
+// 官方 mixed-tool contract：server use 在首輪，對應 result 在 client continuation 後才回來。
+function mixedSearchTurns() {
+  const first = JSON.parse(anthropicToolTurn([toolCall('search_news_inbox', {}, 'toolu_B')], true).getContentText());
+  first.content = first.content.filter(block => block.type !== 'web_search_tool_result');
+  const second = JSON.parse(anthropicCompletion('交叉研究回答', { searched: true, searchResults: [{
+    type: 'web_search_result', title: '正式來源', url: 'https://example.org/mixed',
+    encrypted_content: 'never persist raw search result'
+  }] }).getContentText());
+  second.content = second.content.filter(block => block.type !== 'server_tool_use');
+  return [first, second];
+}
+for (const forceWebSearch of [false, true]) check('pending Search completes after client results; forced=' + forceWebSearch, () => {
+  const turns = mixedSearchTurns();
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }) }, () => {
+    fetchImpl = () => response(200, turns[calls.length - 1]);
+    const result = context.runAiMemoryTask('general_chat', 'group:a', '研究問題', '研究問題', { forceWebSearch });
+    assert(result.ok, JSON.stringify(result)); assert.equal(result.usedWebSearch, true); assert.equal(calls.length, 2);
+    assert.equal(result.sources[0].url, 'https://example.org/mixed');
+    const [first, second] = calls.map(call => JSON.parse(call.options.payload));
+    assert.equal(first.tool_choice.type, forceWebSearch ? 'tool' : 'auto');
+    assert.equal(second.tool_choice.type, 'auto'); assert.deepEqual(second.tools, first.tools);
+    assert.deepEqual(second.thinking, first.thinking); assert.deepEqual(second.output_config, first.output_config);
+    assert.deepEqual(second.messages.at(-2), { role: 'assistant', content: turns[0].content });
+    assert.deepEqual(second.messages.at(-1).content.map(block => [block.type, block.tool_use_id]), [['tool_result', 'toolu_B']]);
+    assert.equal(context.getConversationHistory('group:a').at(-1).content, '交叉研究回答');
+    assert(!/never persist|srvtoolu_test|toolu_B|continueWithToolResults|searchUseIds|searchResultIds/.test(JSON.stringify([result, rows, logs, ...cache.values()])));
+  });
+});
+check('pending use alone never claims Search execution or exposes private state', () => {
+  const [first] = mixedSearchTurns();
+  fetchImpl = () => response(200, first);
+  const result = context.callDeepSeekProvider_({ messages: [{ role: 'user', content: '研究問題' }],
+    model: 'deepseek-flash', thinking: { type: 'enabled' }, reasoningEffort: 'high',
+    webSearchMode: 'required', tools: context.getAiReadOnlyToolDefinitions_(), timeoutSeconds: 20, maxOutputTokens: 4800, outputMode: 'text' });
+  assert(result.ok, JSON.stringify(result)); assert.equal(result.usedWebSearch, false); assert.equal(result.sources.length, 0);
+  assert.equal(typeof result.continueWithToolResults, 'function');
+  assert(!/srvtoolu_test|never persist|useIds|resultIds/.test(JSON.stringify(result)));
+});
+check('unmatched Search without valid client continuation fails before reads', () => {
+  for (const [change, expected] of [
+    [body => { body.content = body.content.filter(block => block.type !== 'tool_use'); body.stop_reason = 'end_turn'; }, 'ai_web_search_failed'],
+    [body => { body.stop_reason = 'end_turn'; }, 'ai_invalid_provider_response'],
+    [body => { body.content.find(block => block.type === 'tool_use').name = 'delete_news'; }, 'ai_tool_not_allowed'],
+    [body => { body.content.find(block => block.type === 'tool_use').input = { conversationId: 'other' }; }, 'ai_invalid_tool_arguments'],
+    [body => { body.content.find(block => block.type === 'tool_use').input = null; }, 'ai_invalid_provider_response'],
+    [body => { body.content.find(block => block.type === 'tool_use').id = ''; }, 'ai_invalid_tool_call'],
+    [body => { body.content.push(body.content.find(block => block.type === 'server_tool_use')); }, 'ai_web_search_failed'],
+    [body => { body.content.find(block => block.type === 'server_tool_use').input = {}; }, 'ai_invalid_provider_response'],
+    [body => { body.content.find(block => block.type === 'server_tool_use').name = 'web_fetch'; }, 'ai_invalid_provider_response']
+  ]) {
+    reset(); const [first] = mixedSearchTurns(); change(first); let reads = 0;
+    withStubs({ getSpreadsheet_: () => { reads++; throw Error('must not read'); } }, () => {
+      fetchImpl = () => response(200, first);
+      assert.equal(context.runAiMemoryTask('general_chat', 'group:a', '問題', '問題', { forceWebSearch: true }).errorType, expected);
+    });
+    assert.equal(calls.length, 1); assert.equal(reads, 0); assert.equal(cache.size, 0); assert.equal(rows.length, 0);
+  }
+});
+check('pending continuation errors, missing results, duplicate IDs and markup fail closed', () => {
+  for (const change of [
+    body => { body.content.find(block => block.type === 'web_search_tool_result').content = { type: 'web_search_tool_result_error', error_code: 'unavailable' }; },
+    body => { body.content = body.content.filter(block => block.type !== 'web_search_tool_result'); },
+    body => { body.content.find(block => block.type === 'web_search_tool_result').tool_use_id = 'unknown'; },
+    body => { body.content.push(body.content.find(block => block.type === 'web_search_tool_result')); },
+    body => { body.content.push(mixedSearchTurns()[0].content.find(block => block.type === 'server_tool_use')); },
+    body => { body.content.find(block => block.type === 'web_search_tool_result').content = [null]; },
+    body => { body.content.find(block => block.type === 'text').text = '<invoke name="web_search">never persist</invoke>'; }
+  ]) {
+    reset(); const turns = mixedSearchTurns(); change(turns[1]);
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }) }, () => {
+      fetchImpl = () => response(200, turns[calls.length - 1]);
+      const result = context.runAiMemoryTask('general_chat', 'group:a', '問題', '問題', { forceWebSearch: true });
+      assert.equal(result.errorType, 'ai_web_search_failed'); assert.equal(result.usedWebSearch, false);
+      assert.equal(result.sources.length, 0); assert(!JSON.stringify([result, logs]).includes('never persist'));
+    });
+    assert.equal(calls.length, 2); assert.equal(cache.size, 0); assert.equal(rows.length, 0);
+  }
+});
+check('a second client batch stops even while server Search is pending', () => {
+  for (const completeSearch of [false, true]) {
+    reset(); const turns = mixedSearchTurns(); let executions = 0;
+    if (!completeSearch) turns[1].content = turns[1].content.filter(block => block.type !== 'web_search_tool_result');
+    turns[1].stop_reason = 'tool_use';
+    turns[1].content.push({ type: 'tool_use', id: 'toolu_C', name: 'get_weekly_memory', input: {} });
+    const execute = context.runAiReadOnlyTool_;
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }),
+      runAiReadOnlyTool_: (...args) => { executions++; return execute(...args); } }, () => {
+      fetchImpl = () => response(200, turns[calls.length - 1]);
+      assert.equal(context.runAiMemoryTask('general_chat', 'group:a', '問題', '問題', { forceWebSearch: true }).errorType, 'ai_tool_round_limit');
+    });
+    assert.equal(calls.length, 2); assert.equal(executions, 1); assert.equal(cache.size, 0);
+  }
+});
+check('all pending IDs must finish, completed IDs cannot replay, state is request-local', () => {
+  for (const mode of ['complete', 'earlier_complete', 'missing', 'replay']) {
+    reset(); const turns = mixedSearchTurns();
+    const use = turns[0].content.find(block => block.type === 'server_tool_use');
+    const resultBlock = turns[1].content.find(block => block.type === 'web_search_tool_result');
+    turns[0].content.push({ ...use, id: 'srvtoolu_other' });
+    if (mode === 'replay' || mode === 'earlier_complete') turns[0].content.push({ ...resultBlock, tool_use_id: 'srvtoolu_other' });
+    if (mode === 'complete' || mode === 'replay') turns[1].content.unshift({ ...resultBlock, tool_use_id: 'srvtoolu_other' });
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }) }, () => {
+      fetchImpl = () => response(200, turns[calls.length - 1]);
+      const result = context.runAiMemoryTask('general_chat', 'group:a', '問題', '問題', { forceWebSearch: true });
+      const success = mode === 'complete' || mode === 'earlier_complete';
+      assert.equal(result.ok, success);
+      if (!success) assert.equal(result.errorType, 'ai_web_search_failed');
+      else assert.equal(result.sources.length, 1);
+      fetchImpl = () => anthropicCompletion('聲稱搜尋過但沒有執行');
+      assert.equal(context.runAiMemoryTask('general_chat', 'group:b', '幫我查', '幫我查', { forceWebSearch: true }).errorType, 'ai_web_search_failed');
+    });
+  }
+});
+check('image plus pending Search plus client tools uses the same private continuation', () => {
+  for (const sourceType of ['user', 'group']) {
+    reset(); const turns = mixedSearchTurns(); let providerCalls = 0;
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }) }, () => {
+      fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png)
+        : response(200, turns[providerCalls++]);
+      context.handleLineEvent(event('text', sourceType, { text: (sourceType === 'group' ? '#小浣 ' : '') + '幫我查這張圖並比對我們的新聞', quotedMessageId: '99999' }), now);
+      assert.equal(calls.length, 3); assert.equal(replies[0].text, '交叉研究回答');
+      assert(replies[0].finalText.includes('https://example.org/mixed'));
+      const [first, second] = calls.slice(1).map(call => JSON.parse(call.options.payload));
+      assert.deepEqual(second.messages.slice(0, -2), first.messages); assert.deepEqual(second.tools, first.tools);
+      assert(first.messages.at(-1).content.some(block => block.type === 'image'));
+      const persisted = JSON.stringify([rows, logs, replies, ...cache.values()]);
+      assert(!persisted.includes(Buffer.from(png).toString('base64')));
+      assert(!/never persist|srvtoolu_test|toolu_B/.test(persisted));
+    });
+  }
+});
+check('pending continuation preserves the absolute deadline and rejects late answers', () => {
+  for (const late of [false, true]) {
+    reset(); const turns = mixedSearchTurns();
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }) }, () => {
+      fetchImpl = () => { now += calls.length === 1 ? 3000 : (late ? 28000 : 2000); return response(200, turns[calls.length - 1]); };
+      const result = context.runAiMemoryTask('general_chat', 'group:a', '問題', '問題', { forceWebSearch: true });
+      assert.equal(result.ok, !late); assert.equal(calls.length, 2);
+      assert(calls[1].options.timeoutSeconds <= 27);
+      if (late) { assert.equal(result.errorType, 'ai_timeout'); assert.equal(cache.size, 0); assert.equal(rows.length, 0); }
+      else assert.equal(result.elapsedMs, 5000);
+    });
+  }
+});
 check('one/multiple tools continue with private thinking, final text alone persists', () => {
   const sheet = readOnlySheet([{ ConversationId: 'group:a', CreatedAt: new Date(now), Status: 'ok', Title: 'evidence-secret-title', Url: 'https://example.org/evidence' }]);
   withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => sheet }) }, () => {
@@ -1102,7 +1246,8 @@ check('Search plus tools keeps execution truth across continuation without repea
   const result = context.runAiMemoryTask('general_chat', 'group:a', '幫我查', '幫我查', { forceWebSearch: true });
   assert(result.ok); assert(result.usedWebSearch); assert.equal(calls.length, 2);
   assert.equal(JSON.parse(calls[0].options.payload).tool_choice.name, 'web_search');
-  assert(!JSON.parse(calls[1].options.payload).tools.some(tool => tool.name === 'web_search'));
+  assert.deepEqual(JSON.parse(calls[1].options.payload).tools, JSON.parse(calls[0].options.payload).tools);
+  assert.equal(JSON.parse(calls[1].options.payload).tool_choice.type, 'none');
 });
 check('private quoted image research and image tools preserve media privacy', () => {
   for (const [question, searched] of [['這張圖是真的假的？幫我查最新進度', true], ['之前有沒有相關重點？', false]]) {

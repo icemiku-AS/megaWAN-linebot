@@ -1,3 +1,14 @@
+2026-09-16
+v1.15.1 Mixed Tool Continuation Hotfix
+- 以 v1.15.0 Unified Research & Capability Edition / 30353cb99d73f4fff9af26e5742b0ee4b75c73d5 為 baseline，修正 Anthropic-compatible server Search 與 client tools 混用時，首輪尚未收到 Search result 就提前 ai_web_search_failed 的 regression。
+- 僅在合法 client tool_use 與 stop_reason=tool_use 時允許 pending web_search；provider closure 私有追蹤跨回合 use/result ID，收到匹配且成功的 result 才標 usedWebSearch。缺結果、重複／錯配 ID、Search error、malformed block 與 protocol markup 仍 fail closed。
+- Continuation 保留相同 tools、完整 assistant content／thinking，user 只回 client tool_result；有 pending Search 時採 auto，不再次強制 Search；沒有 pending 時維持 none。第二輪新 client tool_use 回 ai_tool_round_limit，server Search 完成不新增 client round。
+- 圖片研究共用同一修正；Responses Structured Output、Search transport、AiService／只讀工具、deadline、SSRF、Pending Reply、source bubble 與 Gemini dormant 狀態不變。Raw state／thinking／query／tool result 不進 feature、memory、Sheet、PendingReplies、LINE 或 raw log。
+- 本機 node tests/v1140_smoke.cjs：23 sources、417 unique functions、106 checks PASS；包含 auto／forced mixed fixture、pending 配對與失敗、一次 client round、圖片、隱私、deadline 及 v1.14.4 單純 Search 回歸。未能本機執行 GAS，mixed flow 的 production live 驗證仍需部署後完成。
+- 從 v1.15.0 升級至少同步 03_ResponseTexts.gs、15_DeepSeekProvider.gs；Markdown／tests 不部署。Sheet migration、Trigger change、新 Script Property 均 none。Git merge 不等於 GAS deployment。
+- Context & Cost Optimization 順延為 v1.15.2。
+
+// ==================================================
 2026-09-15
 v1.15.0 Unified Research & Capability Edition
 - 以 v1.14.4 / 4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58 為 baseline，整合 Structured Output / Tools 與 Multimodal Research；本地完成／Git merge 不等於 GAS deployment。

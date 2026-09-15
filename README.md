@@ -2,7 +2,7 @@
 
 Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-目前版本：**v1.15.0 Unified Research & Capability Edition**，以 v1.14.4 為 baseline。Git 版本不代表 GAS 已部署；現行契約與部署清單見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+目前版本：**v1.15.1 Mixed Tool Continuation Hotfix**，以 v1.15.0 為 baseline。Git 版本不代表 GAS 已部署；現行契約與部署清單見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 

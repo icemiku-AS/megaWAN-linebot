@@ -2,15 +2,15 @@
 
 ## 版本與 source of truth
 
-MEGA浣 / 小浣：**v1.15.0 Unified Research & Capability Edition**。
+MEGA浣 / 小浣：**v1.15.1 Mixed Tool Continuation Hotfix**（2026-09-16）。
 
-- Baseline：v1.14.4 Search Transport Correction Hotfix，`4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58`。
-- 本文件描述 v1.15.0 的程式與部署契約；Git 版本不代表 GAS 已部署，執行環境需依部署清單手動同步。
+- Baseline：v1.15.0 Unified Research & Capability Edition，main merge commit `30353cb99d73f4fff9af26e5742b0ee4b75c73d5`；其前版 baseline 為 v1.14.4 / `4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58`。
+- 本文件描述 v1.15.1 的程式與部署契約；Git 版本不代表 GAS 已部署，執行環境需依部署清單手動同步。
 - 實際 `.gs` 優先；AI agent 工作規則見 AGENTS.md，使用方式見 README.md，完整歷史見 99_changelog.md。舊版 Search transport 記錄只代表當時版本。
 
 ## 版本邊界
 
-本版包含 capability-driven AI architecture、JSON Schema structured output、四個只讀 internal tools、單輪 tool continuation、圖片＋Search＋internal data 研究，以及相關回歸與文件整理。
+本版只修 v1.15.0 的 Anthropic mixed server Search／client tool continuation regression，補回歸測試並更新版本文件。沿用 capability-driven AI architecture、JSON Schema structured output、四個只讀 internal tools、單輪 tool continuation 與圖片＋Search＋internal data 研究；沒有新增功能或 runtime 重構。
 
 DeepSeek Flash 仍是唯一 active provider。沒有 Gemini production route、provider auto fallback、write-capable agent、圖片保存、新 backend、外部 Search provider、第三套 Queue、npm runtime dependency 或新 credentials。
 
@@ -31,7 +31,7 @@ Sheet schema / migration：**none**。Trigger change：**none**。新 Script Pro
 | Topic | `40_TopicHighlights.gs`、`45_TopicFeatures.gs` |
 | Maintenance | `50_DataCleanup.gs` |
 
-新 runtime files：`13_AiSchemas.gs`、`14_AiTools.gs`。數字前綴不代表 load order，不新增 top-level executable side effects。新 schema 與 tool definition 都在函式內建立。
+v1.15.0 新增的 runtime files 為 `13_AiSchemas.gs`、`14_AiTools.gs`；本 hotfix 無新增檔案。數字前綴不代表 load order；schema 與 tool definition 都在函式內建立，無新增 top-level executable side effects。
 
 ### Capability model
 
@@ -128,6 +128,10 @@ NewsInbox / TopicHighlights 重用 header reader 並明確投影 allowlist；Wee
 
 流程只有：模型首輪 → 一批0～4個工具 → 最後模型回答。首輪沒有 tool call 就直接回覆；第二輪又要求工具時 `ai_tool_round_limit`，不再執行、不保存半成品。
 
+首輪 `stop_reason=tool_use` 且 client calls 通過既有整批驗證時，允許正式 `web_search` 暫時只有 server use、尚無 result。Provider closure 保存每個 server use/result ID 的配對計數與原始 assistant content；第二輪 result 可引用首輪 ID，無須重複 server use。第二輪結束仍有 pending、跨回合重複／錯配 ID、Search error 或 malformed block 均失敗；這不是新的 client round 或 pause_turn loop。
+
+Continuation 保留相同 tools array 與完整 assistant thinking/tool blocks，緊接的 user message 只包含 client tool_result。只有仍有 pending Search 時改用 `tool_choice:auto`，讓 server 完成待執行 Search，且不重送 forced Search；沒有 pending 時維持 `none`。兩種情況都不移除 web_search definition。Auto 仍由 provider 決定後續 server 行為，不能保證它完全不再搜尋；維持 `max_uses:3`、兩次 model request 與相同 deadline，第二批 client tools 一律拒絕。
+
 - 同一 webhook 所有 events 使用原 40 秒 absolute deadline，原同步 AI cap 約30秒不增加。
 - general_chat / research 的 lock、memory、首輪、工具、續接共用同一最多30秒 window，還要受 webhook deadline 限制。
 - 提供 tools 的首輪保留8秒 final model + 2秒資料讀取；每個工具前再次檢查至少9秒，final call 前至少8秒。
@@ -142,9 +146,9 @@ raw tool args/results、search query、retrieved full page、thinking/reasoning�
 
 普通聊天 auto，明確搜尋 forced。圖片研究的「最新／查證／來源／即時」或 explicit Search 也要求 Search；普通看圖保持 Chat Completions。引用非圖片維持自然文字 fallback，群組無 trigger 不下載，沒有 quote 不猜圖，Pending Reply 優先序與多圖限制維持。
 
-Search success 只認一對一、非錯誤的正式 server_tool_use / web_search_tool_result；不使用模型自述、prompt 或文字網址。required Search 沒執行就失敗，pause_turn 不追加無界續接。首輪最多3次 server Search；final continuation 停用工具選擇並移除 server Search definition，避免額外搜尋與超出本版 round budget。
+Search success 只認同一次 orchestration 內一對一、非錯誤的正式 server_tool_use / web_search_tool_result，可在同一 response 或合法的兩輪 response 配對；只見 pending use 時 usedWebSearch=false。不使用模型自述、prompt 或文字網址。required Search 最終未完成仍失敗，pause_turn 不追加續接。Search tool 維持 max_uses:3，continuation 規則見上節。
 
-首次同時 Search + client tools 時，把完整 assistant content（含 thinking 與 server result）保留於 provider closure 供第二次 request；feature 看不到原始 block。DeepSeek compatibility 明確列出所需單項能力；官方未提供本專案完全相同的三能力組合實例，採原生組合、mock 驗證、部署後 live 驗證。
+首次同時 Search + client tools 時，把完整 assistant content（含 thinking、server use 及已回傳的 result）保留於 provider closure 供第二次 request；feature 看不到原始 block 或 pending IDs。Anthropic 官方明訂 mixed continuation 可延後 server result；DeepSeek compatibility 列出所需 blocks。圖片沿用同一原生組合與 adapter，mock 驗證不取代 DeepSeek／GAS live 驗證。
 
 sources 只來自 provider search metadata 或實際送入模型的 NewsInbox／read_url URL。合併、public URL 驗證、去重、最多3筆；不從 final text 抽網址。內部資料只有來源，不會把 usedWebSearch 改成 true。主回答最多4個 LINE bubble，來源獨占最後1個；metadata 不保存到 memory。
 
@@ -158,11 +162,18 @@ read_url 重用既有 Reader，透過 trusted `noAi:true` 在 Jina 失敗後直�
 
 Gemini registry 保持 dormant；目前 adapter 只公告 text。thinking、vision、structuredOutput、Search 或 tools 要求一律在 HTTP 前明確失敗，沒有偷偷讀 key 或 fallback。既有 generateContent legacy JSON path 不代表正式支援 JSON Schema。
 
-本版只加 shared capability fail-fast 與錯誤原文遮蔽。未來 re-enable 應重新核對當時 Interactions API，實作 Gemini transport resolver、structured schema / tools / grounding normalization 與 transient continuation，再更新 provider/model registry；feature 不需知道 Gemini raw steps。
+沿用 v1.15.0 的 shared capability fail-fast 與錯誤原文遮蔽，本 hotfix 不修改 Gemini。未來 re-enable 應重新核對當時 Interactions API，實作 Gemini transport resolver、structured schema / tools / grounding normalization 與 transient continuation，再更新 provider/model registry；feature 不需知道 Gemini raw steps。
 
 Interactions 的 optional server state / storage 不可直接套入本專案 privacy policy；需明確 stateless / store=false review。沒有 production Gemini credential，也沒有雙 provider 成本。
 
-## 2026-09-15 官方 contract 查核
+## 2026-09-16 Mixed continuation contract 查核
+
+- [Anthropic server tools](https://platform.claude.com/docs/en/agents-and-tools/tool-use/server-tools) 與 [Web Search](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)：mixed response 可在 stop_reason=tool_use 時只回 server_tool_use 與 client tool_use；送回 client 結果後，下一次 request 才執行 pending server tool，其 result 依 ID 對應前輪 use。
+- [Client tool continuation](https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls)：保留相同 tools 與完整 assistant content；下一個 user message 只能含對應 client tool_result，不加尾隨文字、不代答 server result。
+- [DeepSeek Anthropic compatibility](https://api-docs.deepseek.com/guides/anthropic_api/) 支援相關 thinking、client 與 server blocks；[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)／[Tool Calls](https://api-docs.deepseek.com/guides/tool_calls/) 要求續接保留推理上下文。Anthropic transport 使用原始 thinking content，HIGH 與原工具定義維持。
+- [Tool choice](https://platform.claude.com/docs/en/agents-and-tools/tool-use/define-tools)：auto 由模型決定是否呼叫工具，none 禁止工具選擇。本版 pending 分支依官方預設 auto 的 continuation 範例處理，不假設 none 必然能完成 DeepSeek pending Search，也不沿用首輪 forced choice 強迫另一次 Search。這是本版 payload 決策，仍需目標 provider live 驗證。
+
+## v1.15.0 官方 contract 參考（2026-09-15）
 
 以下保留 v1.15.0 的 API 契約參考；文件可能隨供應商更新，Search transport 的選型以本版記錄的 production capability 驗證為依據。
 
@@ -177,7 +188,9 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## 測試與 regression review
 
-執行 `node tests/v1140_smoke.cjs`。Baseline 21 sources / 405 unique functions / 62 checks；本版23 sources / 417 unique functions / **97 checks PASS**。保留原 suite 名稱並擴充，沒有第二套大量重複測試。
+執行 `node tests/v1140_smoke.cjs`。v1.15.0 baseline 為23 sources / 417 unique functions / 97 checks；本版23 sources / 417 unique functions / **106 checks PASS**。保留原 suite 名稱並擴充，沒有第二套測試框架。
+
+新增 mixed contract fixture：首輪 server use + search_news_inbox、stop_reason=tool_use、無 server result；第二輪只回對應 result + text。涵蓋 auto／forced 成功、未完成不提前標 Search、非法 continuation、Search error／缺失／重複／錯配、第二批 client tools、多 pending、跨 request state 隔離、私訊／群組圖片、完整 tools/thinking payload、privacy 與 late deadline。
 
 涵蓋14 routes、payload、每個 migrated JSON task 的 valid/malformed/missing/type/enum（適用時）/extra/length/provider failure、既有 business validators；工具 allowlist、scope、JSON/enum/limit/day/URL/ID、bounded output、no-write、缺表/例外；單/多工具、一次 continuation、再請求工具停止、資料/編碼耗時、late response、thinking/privacy；Search production fixture、配對metadata、來源安全/去重/上限、simple image與multimodal research。
 
@@ -185,7 +198,7 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 這是靜態／VM mock 驗證。**未能本機執行 GAS**，沒有真實 LINE、DeepSeek 或 Sheet 呼叫；v1.14.4 搜尋 production 成功是維護者提供的 baseline，並非本版重新實測。
 
-## Architecture improvements / deviations
+## 沿用 v1.15.0 的 architecture decisions
 
 | 原構想 | 本版決定與理由 | 相容性、成本與風險 |
 | --- | --- | --- |
@@ -199,7 +212,7 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 | 圖片研究可分階段 | 單一原生 Vision/Search/tools workflow；只有模型要求 internal tools 才續接 | 普通圖片仍一次；研究最多兩次，真實 latency 須驗證 |
 | README patch history | 現況優先、後段 v1.x 摘要；v1.8 缺紀錄明示 | changelog 歷史一字未刪 |
 
-## Removed / retained compatibility
+## 沿用 v1.15.0 的 removed / retained compatibility
 
 移除未使用的 Responses Web Search payload、web_search_call 成功判定與 collectDeepSeekWebSearchSources_。Responses request/result helpers 改為 active structured transport，維持 protocol guard。沒有刪除 Responses API。
 
@@ -207,9 +220,11 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## 部署清單
 
-完整建立／重建 GAS source 時，上方列出的 **23 個 active `.gs` 應一致採用 v1.15.0 內容**。
+完整建立／重建 GAS source 時，上方列出的 **23 個 active `.gs` 應一致採用 v1.15.1 內容**。
 
-從 v1.14.4 升級至 v1.15.0 時，下列 **13 個 runtime-changing `.gs` 是至少必須同步的檔案**，涵蓋程式邏輯、Prompt、Help 與版本文字變更。完成這份最低清單後再切換 deployment，並保留 v1.14.4 GAS version 供回復：
+從 v1.15.0 升級至 v1.15.1，**至少同步 `03_ResponseTexts.gs`（版本回覆）與 `15_DeepSeekProvider.gs`（mixed continuation）**。其餘21個 `.gs` 與 v1.15.0 baseline 相同。完成同步後切換 deployment，保留先前 GAS version 供回復。
+
+若從 v1.14.4 直接升級至 v1.15.1，下列 **13 個 runtime-changing `.gs` 是至少必須同步的累計清單**，全部取 v1.15.1 內容，涵蓋程式邏輯、Prompt、Help 與版本文字變更：
 
 - `01_Main.gs`
 - `02_LineCommands.gs`
@@ -225,7 +240,7 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 - `16_GeminiProvider.gs`
 - `20_ReaderLayer.gs`
 
-相對 v1.14.4 baseline，其餘10個 `.gs` 只有註解整理，沒有 runtime behavior change，因此不列入最低升級清單；若要讓 GAS source 與 v1.15.0 repository 完整一致，可一併同步。最低清單包含新增的兩檔，升級後 GAS 仍應具備全部23個 active sources。
+相對 v1.14.4 baseline，其餘10個 `.gs` 只有註解整理，沒有 runtime behavior change，因此不列入最低升級清單；若要讓 GAS source 與 v1.15.1 repository 完整一致，可一併同步。累計最低清單包含 v1.15.0 新增的兩檔，升級後 GAS 仍應具備全部23個 active sources。
 
 Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**none**。新 Script Property：**none**。首次安裝才需原 setup / install 函式；v1.14.4 升級不重跑。Git merge 不等於 GAS deployment。
 
@@ -238,7 +253,7 @@ Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**non
 5. 問上週記憶、新聞封存與人工重點；測 topic/news、空資料與讀取失敗。
 6. 私訊引用普通圖片自然提問，群組引用 + #小浣，以及舊 #小浣 看圖；普通圖片仍 simple route。
 7. 私訊引用圖片問「這張圖是真的假的？幫我查最新進度」，群組引用問「#小浣 幫我查這張圖」；確認真正 Search、回答與來源。
-8. 圖片加舊資料查詢觸發工具；確認原生 thinking/image/Search/client-tools 組合能完成一次續接，最後一輪不再要求工具。
+8. 文字與圖片各測 Search + 舊資料工具混用；若首輪 Search 尚無 result，確認 client tool_result 續接後完成匹配 Search，答案及來源正常。只有 server use 尚未完成時不得標成功；第二輪再要求 client tools 應 ai_tool_round_limit。驗證時只核對安全 metadata／結果，不把 raw blocks 或 pending IDs 加入 console log。
 9. 測至少一個來源達三筆／重複URL／沒有可靠URL；長回答仍4+1 bubble，來源不進 memory。
 10. 每個遷移 task 至少跑一次；尤其 NewsInbox分類、#懶人包、兩種封存、#本週新聞、#新聞補充。檢查形狀與 business rules、Sheet欄位一致。
 11. 測網址比對觸發 read_url + news；Reader失敗不走 nested AI、不把研究網址入庫；已有 Pending Reply 時先交付並提示重問，普通網址仍收件。
@@ -248,10 +263,10 @@ Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**non
 
 ### Known limitations / production rollout requirements
 
-靜態與 mock 檢查不能取代目標 GAS 環境的 live 驗證。production rollout 前必須完成上述 checklist，尤其 Responses 六個 schema、Search+tools+image、最終 tool_choice none 與真正30秒延遲。
+靜態與 mock 檢查不能取代目標 GAS 環境的 live 驗證。部署後需完成上述 checklist；本 hotfix 尤其需確認 DeepSeek 的 pending Search＋client tools（含 forced 與圖片）、相同 tools／auto continuation、失敗情境與真正30秒延遲。六個 schema 沿用 v1.15.0，本輪沒有改動 Structured Output。
 
-工具是有界字面查詢，不是全歷史語意搜尋；資料會因尾端掃描視窗而漏掉較舊紀錄。只允許一個工具批次，不能用第一次讀取結果再動態開第二批工具。final turn 不新增網路搜尋。成功答案可保存其摘要，沒有保留完整工具 evidence 供後續重播。Global ScriptLock 與實際 Google服務延遲仍限制並行性，無exactly-once保證。
+工具是有界字面查詢，不是全歷史語意搜尋；資料會因尾端掃描視窗而漏掉較舊紀錄。只允許一個 client 工具批次，不能用第一次讀取結果再動態開第二批工具；pending Search 可以在 final request 完成，但不為 pause_turn 或仍未完成的 Search 增加第三次 request。成功答案可保存其摘要，沒有保留完整工具 evidence 供後續重播。Global ScriptLock 與實際 Google服務延遲仍限制並行性，無exactly-once保證。
 
-## Deferred to v1.15.1 — Context & Cost Optimization
+## Deferred to v1.15.2 — Context & Cost Optimization
 
-依實際 usage/latency 再評估：減少常駐工具定義與長期記憶成本、相關性選取／壓縮上下文、分 task token budget 調整、避免重複 evidence、聊天室資料讀取索引、窄化 global memory lock。不要現在新增框架或新 storage。Write agent、Gemini production rollout、多圖／圖片保存、新 backend/provider fallback 不屬於本次或必然屬於 v1.15.1。
+依實際 usage/latency 再評估：減少常駐工具定義與長期記憶成本、相關性選取／壓縮上下文、分 task token budget 調整、避免重複 evidence、聊天室資料讀取索引、窄化 global memory lock。不要現在新增框架或新 storage。Write agent、Gemini production rollout、多圖／圖片保存、新 backend/provider fallback 不屬於本次或必然屬於 v1.15.2。

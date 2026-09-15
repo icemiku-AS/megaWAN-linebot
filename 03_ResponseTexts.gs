@@ -12,11 +12,21 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.15.0 Unified Research & Capability Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-09-15';
+const BOT_CURRENT_VERSION = 'v1.15.1 Mixed Tool Continuation Hotfix';
+const BOT_CURRENT_VERSION_DATE = '2026-09-16';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.15.1 Mixed Tool Continuation Hotfix',
+    date: '2026-09-16',
+    summary: '修正網路搜尋與聊天室工具同時使用時，搜尋結果尚未回傳就提前失敗的問題。',
+    changes: [
+      '允許搜尋在聊天室工具回覆後完成，圖片交叉研究共用相同修正。',
+      '只有實際完成搜尋才算成功，來源維持獨立顯示。',
+      '工具仍最多一次續接，保留既有隱私、逾時與錯誤處理。'
+    ]
+  },
   {
     version: 'v1.15.0 Unified Research & Capability Edition',
     date: '2026-09-15',
