@@ -1,15 +1,16 @@
 // ======================================================
 // 25_WebTaskQueue.gs
-// Background jobs／Web workflows：WebTaskQueue、#懶人包、PendingReplies 與快讀契約。
+// 用途：Background jobs／Web workflows：網址工作佇列、快讀與 Pending Reply。
 //
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 職責與協作：
+// 1. processWebTaskQueue() 處理背景工作，Reader 提供正文，AiService 執行快讀或節目分析。
+// 2. 管理快讀 Prompt、normalizer、validator 及 PendingReplies 交付；Trigger 安裝入口在 01_Main.gs。
 //
-// 設計說明：
-// 1. 對外 Trigger 是 processWebTaskQueue()；installWebTaskQueueTrigger() 位於 01_Main.gs，名稱不可變更。
-// 2. 02_LineCommands.gs 建立工作，20_ReaderLayer.gs 提供正文，10_AiService.gs 執行 web_lazy_summary task。
-// 3. 本檔擁有快讀 Prompt、JSON contract、normalizer、validator 與 PendingReplies 交付流程。
-// 4. 本檔不處理 provider payload；WebTaskQueue/PendingReplies schema、retry、backoff 與批次上限是相容性 contract。
-// 5. 同步 webhook deadline 與背景 Trigger execution context 必須保持隔離，不能因檔案排序合併預算。
+// 維護注意：
+// 1. 公開 Trigger 名稱、Sheet schema、retry／backoff 與批次上限須保持相容。
+// 2. Pending Reply 在 LINE 傳送成功後才移除；傳送或 acknowledge 失敗仍可能再次交付。
+// 3. 同步 webhook deadline 與背景執行預算須分清，不讓後續工作重新取得同步完整時限。
+// 4. provider payload 留在 adapter，來源與 provider 私有資料不得混入待交付回覆。
 // ======================================================
 
 // ======================================================

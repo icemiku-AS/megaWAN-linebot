@@ -1,15 +1,14 @@
 // ======================================================
 // 00_Config.gs
-// Core／Shared foundation：集中管理 LINE/Reader endpoint、Sheet 名稱、指令前綴與非 AI 路由常數。
+// 用途：Core／Shared foundation：共用 endpoint、Sheet 名稱、指令前綴與執行上限。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 職責與協作：
+// 1. 集中跨領域且不含 secret 的常數；secret 值由使用端透過 Script Properties 延遲讀取。
+// 2. AI model、profile 與 task route 由 11_AiProfiles.gs 管理，provider endpoint 留在各 adapter。
 //
-// 維護原則：
-// 1. GAS 會把同一專案內的 .gs 視為同一個全域命名空間；數字前綴只供導航，不代表 load order。
-// 2. 不得用 top-level executable side effect 依賴檔案排序；跨檔函式與 const 名稱也不可重複。
-// 3. 本檔只放跨領域設定與不含 secret 的常數；Script Properties 的 secret 由使用端延遲讀取。
-// 4. AI provider endpoint 留在 15_DeepSeekProvider.gs / 16_GeminiProvider.gs；model、profile 與 task route 集中於 11_AiProfiles.gs。
-// 5. 修改 Sheet 名稱、Queue 上限、deadline 或快取識別都可能改變 contract，不能以 source layout 整理名義調整。
+// 維護注意：
+// 1. GAS 共用全域命名空間；數字前綴僅供導航，不可依賴檔案順序執行初始化副作用。
+// 2. Sheet 名稱、Queue 上限、deadline 與 cache 識別皆有相容性影響，修改時須追蹤 callers。
 // ======================================================
 
 const LINE_REPLY_ENDPOINT = 'https://api.line.me/v2/bot/message/reply';
@@ -31,7 +30,7 @@ const LINE_WEBHOOK_SYNC_AUXILIARY_AI_MIN_REQUEST_SECONDS = 20;
 // 背景 WebTaskQueue / NewsUrlQueue 不帶 execution context，維持既有 Reader 預設行為。
 const LINE_WEBHOOK_SYNC_READER_TIMEOUT_CAP_SECONDS = 12;
 
-// FxTwitter API：v1.10.9 起用於讀取 X / Twitter 單篇 status 貼文。
+// FxTwitter API：讀取 X / Twitter 公開單篇 status 貼文。
 // 使用方式：FXTWITTER_API_STATUS_ENDPOINT_PREFIX + statusId
 // 例：https://api.fxtwitter.com/2/status/1234567890123456789
 const FXTWITTER_API_STATUS_ENDPOINT_PREFIX = 'https://api.fxtwitter.com/2/status/';
@@ -51,7 +50,7 @@ const TOPIC_HIGHLIGHTS_SHEET_NAME = 'TopicHighlights';
 const WEEKLY_SUMMARY_SHEET_NAME = 'WeeklySummary';
 
 // WeeklySummary 封存類型。
-// v1.12.0 起 #封存本週話題 與 #封存本週新聞 共用 WeeklySummary，
+// #封存本週話題 與 #封存本週新聞 共用 WeeklySummary，
 // 透過 ArchiveType 區分「對話記憶」與「新聞記憶」，避免未來讀取長期記憶時混淆來源。
 const WEEKLY_ARCHIVE_TYPE_TOPIC = 'topic';
 const WEEKLY_ARCHIVE_TYPE_NEWS = 'news';
@@ -93,9 +92,8 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會靜默進入 NewsUrlQueue 背景收件流程，不回覆群組。
 // 2. 個人聊天室直接貼網址仍保留同步回覆路徑，方便維護者測試 Reader / AI 行為。
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
-// 4. v1.10.3 將 #記錄 升級為 #畫重點，並寫入 TopicHighlights。
-// 5. v1.10.4 新增多資料表清理指令，所有清理都只作用於目前 conversationId。
-// 6. v1.12.0 起，群組直接貼網址不再回 Brief；失敗或不支援網址改由 PendingReplies 延後回報。
+// 4. #畫重點 明確保存人工素材；清理指令只作用於目前 conversationId，且須二段確認。
+// 5. 靜默收件失敗或網址不支援時，由 PendingReplies 延後回報。
 const TRIGGER_PREFIXES = [
   '#小浣',
   '#help',
@@ -134,7 +132,7 @@ const MAX_HISTORY_PAIRS = 6;
 
 
 // ======================================================
-// v1.12.5 本週編輯台設定
+// 本週編輯台設定
 // ======================================================
 
 const WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.13.0';

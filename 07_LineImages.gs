@@ -1,18 +1,22 @@
 // ======================================================
 // 07_LineImages.gs
-// LINE 圖片：Get message content、輸入驗證與 image_analysis 功能入口。
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 用途：LINE images：圖片下載、輸入驗證、普通分析與多模態研究。
 //
-// 01_Main.gs 決定私訊／群組觸發；本檔只接受 webhook 提供的 message ID。
-// 10_AiService.gs 接收 text + image bytes；15_DeepSeekProvider.gs 才產生 Base64/data URL。
-// 不保存原圖，不建立圖片 queue；memory / ConversationLog 只保存 placeholder 與分析文字。
+// 職責與協作：
+// 1. 01_Main.gs 決定私訊／群組觸發，本檔依問題選擇 image_analysis 或 multimodal_research。
+// 2. 只接受 webhook 提供的 message ID；AiService 接收 text／image bytes，Base64 由 provider adapter 編碼。
+//
+// 維護注意：
+// 1. 維持單圖、MIME、大小、來源與共用 deadline 檢查；沒有引用時不得猜上一張圖片。
+// 2. 不保存原圖或建立圖片 Queue；記憶僅保存文字 placeholder、問題與最後回答。
+// 3. 回傳 string／null 的既有契約保留，選填 reply metadata 僅供來源展示。
 // ======================================================
 
 const LINE_MESSAGE_CONTENT_ENDPOINT_PREFIX = 'https://api-data.line.me/v2/bot/message/';
 const LINE_IMAGE_DOWNLOAD_TIMEOUT_SECONDS = 10;
 
 /** 私訊直接傳圖，或以自然文字／舊 #小浣 看圖 引用圖片。所有錯誤只回固定文案。 */
-function analyzeLineImage_(event, conversationId, messageId, question, executionContext, allowNonImageFallback) {
+function analyzeLineImage_(event, conversationId, messageId, question, executionContext, allowNonImageFallback, replyMetadata) {
   if (!messageId) return getBotTextImageError_('image_need_quote');
   const safeQuestion = redactAiMediaText_(question).trim().slice(0, 1000);
   const historyText = '[使用者提供圖片]' + (safeQuestion ? ' ' + safeQuestion : ' 請描述圖片重點。');
@@ -36,16 +40,20 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
       return getBotTextImageError_(downloaded.errorType);
     }
 
-    const result = runAiMemoryTask('image_analysis', conversationId, historyText, [
+    const needsSearch = isExplicitWebSearchRequest_(safeQuestion) || /最新|查證|來源|即時/.test(safeQuestion);
+    const research = needsSearch || /收過|之前|上週|畫(?:過|的)?重點|重複/.test(safeQuestion);
+    const result = runAiMemoryTask(research ? 'multimodal_research' : 'image_analysis', conversationId, historyText, [
       { type: 'text', text: safeQuestion || '請描述這張圖片的重點；如果有文字或錯誤訊息，請說明可辨識的內容。' },
       downloaded.image
-    ], requireAiCallOptionsForExecutionContext_(executionContext));
-    if (!result.ok) return getBotTextImageError_(result.errorType);
+    ], requireAiCallOptionsForExecutionContext_(executionContext, { forceWebSearch: needsSearch }));
+    if (!result.ok) return needsSearch || result.errorType === 'ai_web_search_failed'
+      ? getBotTextWebSearchError_(result.errorType) : getBotTextImageError_(result.errorType);
 
-    // 本流程只有 Vision；明確查證要求必須區分圖片判讀與尚未完成的網路搜尋。
-    return result.text + (isExplicitWebSearchRequest_(safeQuestion)
-      ? '\n\n目前圖片已分析，但即時網路查證未完成。'
-      : '');
+    // 可選的純展示 metadata 保持舊 string caller 相容；來源 bubble 不進 ConversationLog。
+    if (replyMetadata && (result.usedWebSearch || result.sources.length)) {
+      replyMetadata.finalMessage = buildWebSearchSourcesBubble_(result.sources);
+    }
+    return result.text;
   } catch (error) {
     // 不記錄 exception：下載錯誤可能包含 URL/token，序列化錯誤可能包含圖片。
     return getBotTextImageError_(error && error.errorType);

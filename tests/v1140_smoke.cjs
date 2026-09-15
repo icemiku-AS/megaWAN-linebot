@@ -1,4 +1,4 @@
-// v1.14.0 基礎 + v1.14.1/v1.14.2/v1.14.3/v1.14.4 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.15.0 能力／研究與 v1.14.x 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,7 +10,7 @@ const source = files.map(name => {
   new vm.Script(code, { filename: name });
   return code;
 }).join('\n');
-assert.equal(files.length, 21);
+assert.equal(files.length, 23);
 assert(!/deepseek-v4-flash|deepseek_v4_flash/.test(source));
 const functions = [...source.matchAll(/^function (\w+)\(/gm)].map(match => match[1]);
 assert.equal(new Set(functions).size, functions.length, 'duplicate GAS function');
@@ -35,6 +35,7 @@ const context = vm.createContext({
 vm.runInContext(source, context);
 // 保留實際 ConversationLog writer 和 Cache memory，只替換 Google 服務的資料來源。
 context.ensureLogSheet_ = () => ({ appendRow: row => rows.push(row) });
+const weeklyMemoryReader = context.getRecentWeeklySummaryText;
 context.getRecentWeeklySummaryText = () => '';
 const pendingDelivery = context.deliverPendingReply_;
 context.deliverPendingReply_ = (conversationId, replyToken, buildDeliveryText) => {
@@ -73,6 +74,13 @@ function responsesCompletion(text = '純文字回答', options = {}) {
     usage: { input_tokens: 1200, input_tokens_details: { cached_tokens: 200 }, output_tokens: 2600, output_tokens_details: { reasoning_tokens: 2200 }, total_tokens: 3800 }
   });
 }
+function schemaExample(schema) {
+  if (schema.enum) return schema.enum[0];
+  if (schema.type === 'object') return Object.fromEntries(Object.entries(schema.properties).map(([key, child]) => [key, schemaExample(child)]));
+  if (schema.type === 'array') return [];
+  if (schema.type === 'number' || schema.type === 'integer') return schema.minimum || 0;
+  return '有效摘要';
+}
 function anthropicCompletion(text = '純文字回答', options = {}) {
   const content = [{ type: 'thinking', thinking: 'never persist anthropic thinking' }];
   if (options.searched) {
@@ -109,21 +117,22 @@ const budgets = {
   general_chat: [4800, 45], news_analysis: [8000, 60], web_lazy_summary: [8000, 60],
   raw_html_extraction: [28000, 90], news_question: [7000, 90], program_topic_analysis: [8000, 120],
   integrate_topics: [9000, 120], archive_topics: [6000, 60], archive_news: [7000, 60],
-  weekly_editorial_digest: [10000, 60], manual_news_supplement: [5000, 60], news_memory_bridge: [5000, 90], image_analysis: [8000, 60]
+  weekly_editorial_digest: [10000, 60], manual_news_supplement: [5000, 60], news_memory_bridge: [5000, 90], image_analysis: [8000, 60], multimodal_research: [8000, 60]
 };
 assert.deepEqual(Object.keys(json('AI_TASK_ROUTES')).sort(), Object.keys(budgets).sort());
 for (const [task, [tokens, timeout]] of Object.entries(budgets)) check('route/payload ' + task, () => {
   const config = context.resolveAiTaskConfig_(task);
   assert.equal(config.modelRegistryKey, 'deepseek_flash');
   assert.equal(config.maxOutputTokens, tokens); assert.equal(config.timeoutSeconds, timeout);
-  fetchImpl = url => task === 'general_chat' && url.endsWith('/anthropic/v1/messages')
+  const schema = context.getAiTaskOutputSchema_(task);
+  fetchImpl = url => config.allowsWebSearch && url.endsWith('/anthropic/v1/messages')
     ? anthropicCompletion('純文字回答')
-    : completion(config.outputMode === 'json' ? '{"ok":true}' : '純文字回答');
+    : schema ? responsesCompletion(JSON.stringify(schemaExample(schema))) : completion(config.outputMode === 'json' ? '{"ok":true}' : '純文字回答');
   const result = context.runAiMessagesTask(task, [{ role: 'user', content: '請只輸出 JSON object 或指定文字' }]);
-  assert(result.ok); assert.equal(result.usage.reasoningTokens, task === 'general_chat' ? null : 2200);
+  assert(result.ok, JSON.stringify(result)); assert.equal(result.usage.reasoningTokens, config.allowsWebSearch ? null : 2200);
   const payload = JSON.parse(calls[0].options.payload);
   assert.equal(payload.model, 'deepseek-flash');
-  if (task === 'general_chat') {
+  if (config.allowsWebSearch) {
     assert.equal(config.allowsWebSearch, true); assert(calls[0].url.endsWith('/anthropic/v1/messages'));
     assert.deepEqual(payload.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]);
     assert.deepEqual(payload.tool_choice, { type: 'auto' });
@@ -133,6 +142,13 @@ for (const [task, [tokens, timeout]] of Object.entries(budgets)) check('route/pa
     assert.equal(calls[0].options.headers['anthropic-version'], '2023-06-01'); assert(!('Authorization' in calls[0].options.headers));
     assert.equal(result.transport, 'anthropic_messages'); assert.equal(result.usedWebSearch, false);
     assert.equal(result.usage.inputTokens, 1200); assert.equal(result.usage.outputTokens, 2600); assert.equal(result.usage.totalTokens, 3800);
+  } else if (schema) {
+    assert(calls[0].url.endsWith('/responses'));
+    assert.equal(payload.text.format.type, 'json_schema');
+    assert.deepEqual(payload.text.format.schema, JSON.parse(JSON.stringify(schema)));
+    assert.equal(payload.max_output_tokens, tokens); assert.equal(payload.reasoning.effort, 'high');
+    assert(!('tools' in payload)); assert(!('response_format' in payload));
+    assert.deepEqual(JSON.parse(JSON.stringify(result.json)), schemaExample(schema));
   } else {
     assert.equal(config.allowsWebSearch, false); assert(calls[0].url.endsWith('/chat/completions'));
     assert.equal(payload.thinking.type, 'enabled'); assert.equal(payload.reasoning_effort, 'high'); assert.equal(payload.max_tokens, tokens);
@@ -197,7 +213,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.14.4'));
+  assert(replies.at(-1).text.includes('v1.15.0'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -210,7 +226,8 @@ check('general chat Search uses auto by default and forces explicit requests', (
   context.handleLineEvent(event('text', 'user', { text: '幫我想五個標題' }), now);
   let payload = JSON.parse(calls[0].options.payload);
   assert(calls[0].url.endsWith('/anthropic/v1/messages')); assert.deepEqual(payload.tool_choice, { type: 'auto' });
-  assert.deepEqual(payload.tools, [{ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }]);
+  assert.deepEqual(payload.tools[0], { type: 'web_search_20250305', name: 'web_search', max_uses: 3 });
+  assert.equal(payload.tools.length, 5);
   assert(!calls.some(call => call.url.endsWith('/responses')));
   assert.equal(replies[0].finalText, '');
   reset();
@@ -307,7 +324,7 @@ check('Anthropic and legacy Responses tool protocol markup fail closed', () => {
   assert(legal.ok); assert.equal(legal.text, legalText); assert(JSON.stringify([...cache.values()]).includes(legalText));
 
   const legacyJson = JSON.parse(responsesCompletion(leaked).getContentText());
-  assert.equal(context.normalizeDeepSeekResponsesResult_(legacyJson, 200, 'auto', 1).errorType, 'ai_web_search_failed');
+  assert.equal(context.normalizeDeepSeekResponsesResult_(legacyJson, 200, 1).errorType, 'ai_invalid_provider_response');
 });
 check('Search and ordinary Anthropic failures use honest context-specific wording', () => {
   fetchImpl = () => anthropicCompletion('未搜尋的舊知識');
@@ -370,13 +387,15 @@ check('Search metadata stays out of memory and source bubble keeps the fifth LIN
   assert.equal(linePayload.messages.length, 5); assert(linePayload.messages[3].text.includes('內容太多'));
   assert.equal(linePayload.messages[4].text, '參考來源：\nhttps://example.org/source');
 });
-check('quoted image remains Chat Completions Vision without two-stage Search', () => {
+check('quoted image research uses one Vision plus Search request', () => {
+  fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png)
+    : anthropicCompletion('查證後回答', { searched: true, searchResults: [{ type: 'web_search_result', title: '來源', url: 'https://example.org/source' }] });
   context.handleLineEvent(event('text', 'group', { text: '#小浣 幫我查一下這張圖', quotedMessageId: '55555' }), now);
   assert.equal(calls.length, 2); assert(calls[0].url.includes('api-data.line.me'));
-  assert(calls[1].url.endsWith('/chat/completions'));
-  assert(replies[0].text.includes('看見可辨識'));
-  assert(replies[0].text.includes('目前圖片已分析，但即時網路查證未完成'));
-  assert(!replies[0].text.includes('參考來源'));
+  assert(calls[1].url.endsWith('/anthropic/v1/messages'));
+  assert.equal(replies[0].text, '查證後回答'); assert(replies[0].finalText.includes('https://example.org/source'));
+  const payload = JSON.parse(calls[1].options.payload);
+  assert.equal(payload.messages.at(-1).content[1].source.type, 'base64');
 });
 check('untriggered quote, missing quote, external image, album', () => {
   context.handleLineEvent(event('text', 'group', { text: '哪裡出錯？', quotedMessageId: '99999' }), now);
@@ -478,9 +497,9 @@ check('multimodal trust boundary rejects unsupported structures', () => {
     assert.throws(() => context.normalizeAiMessages_([{ role: 'user', content }]));
   }
   assert.throws(() => context.normalizeAiMessages_([{ role: 'system', content: [imagePart] }]));
-  value('AI_MODEL_REGISTRY.deepseek_flash.supportsImages = false');
+  value("AI_MODEL_REGISTRY.deepseek_flash.capabilities = AI_MODEL_REGISTRY.deepseek_flash.capabilities.filter(c => c !== 'vision')");
   assert.equal(context.runAiMessagesTask('image_analysis', [message]).errorType, 'ai_configuration_error');
-  value('AI_MODEL_REGISTRY.deepseek_flash.supportsImages = true');
+  value("AI_MODEL_REGISTRY.deepseek_flash.capabilities.push('vision')");
   assert.equal(calls.length, 0);
 });
 check('only user accepts content arrays under the published message schema', () => {
@@ -548,7 +567,7 @@ check('background has full timeout; Reader cap and status zero contract retained
 });
 check('invalid JSON, empty/length responses never enter memory', () => {
   for (const [text, finish, errorType] of [['{"x":', 'stop', 'ai_invalid_json'], ['{}', 'length', 'ai_finish_reason_length'], ['', 'stop', 'ai_empty_response']]) {
-    fetchImpl = () => completion(text, finish);
+    fetchImpl = () => responsesCompletion(text, finish === 'length' ? { status: 'incomplete', incompleteReason: 'max_output_tokens' } : {});
     assert.equal(context.runAiJsonTask('archive_news', 'JSON').errorType, errorType);
   }
   fetchImpl = () => completion('partial image description', 'length');
@@ -568,10 +587,10 @@ check('provider HTTP errors and exceptions never echo media or secret', () => {
   assert(!logs.join('').includes(sensitive));
 });
 check('reasoning-only truncation and malformed provider response', () => {
-  fetchImpl = () => response(200, { choices: [{ message: { content: null }, finish_reason: 'length' }] });
+  fetchImpl = () => responsesCompletion('', { status: 'incomplete', incompleteReason: 'max_output_tokens' });
   const result = context.runAiJsonTask('news_analysis', 'JSON');
   assert.equal(result.errorType, 'ai_finish_reason_length'); assert.equal(result.retryable, false);
-  fetchImpl = () => response(200, { choices: [{ message: { content: null }, finish_reason: 'insufficient_system_resource' }] });
+  fetchImpl = () => responsesCompletion('', { status: 'failed' });
   assert.equal(context.runAiJsonTask('news_analysis', 'JSON').retryable, true);
   for (const text of [null, 'partial analysis']) {
     fetchImpl = () => completion(text, 'aborted');
@@ -804,7 +823,7 @@ check('synchronous and queued news persist the same analysis in reordered column
   const headers = ['SourceMode', 'ConversationId', 'Url', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'Custom'].concat(Object.values(fieldHeaders).reverse());
   const sheet = headerSheet(headers), queue = headerSheet(['Status']), changes = {};
   const url = 'https://example.org/news';
-  fetchImpl = () => completion(JSON.stringify(analysis));
+  fetchImpl = () => responsesCompletion(JSON.stringify(analysis));
   withStubs({ ensureNewsInboxSheet_: () => sheet, ensureNewsUrlQueueSheet_: () => queue,
     fetchAndExtractWebPageByReaderLayer_: () => ({ ok: true, mainText: '正文', readerRoute: 'jina_reader' }),
     setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
@@ -876,7 +895,7 @@ check('weekly clusters keep conflict repair, cache revalidation and rendered cov
   assert.deepEqual(JSON.parse(JSON.stringify(validated.normalizedResult)), { newsClusters: [{ title: '完整事件', itemIds: ['N001', 'N002'] }], ungroupedNewsIds: ['N003', 'N004', 'N005'], conversationTopics: [] });
   const options = { viewMode: 'compact', onlyHighPotential: false, days: 7 };
   withStubs({ getRecentWeeklyEditorialConversationItems_: () => [], buildWeeklyEditorialCacheKey_: () => 'test-weekly' }, () => {
-    fetchImpl = () => completion(JSON.stringify(raw));
+    fetchImpl = () => responsesCompletion(JSON.stringify(raw));
     const first = context.tryBuildWeeklyEditorialDigest_('group:a', items, options);
     assert(first.includes('完整事件')); const callCount = calls.length;
     assert.equal(context.tryBuildWeeklyEditorialDigest_('group:a', items, options), first); assert.equal(calls.length, callCount);
@@ -894,4 +913,356 @@ check('weekly clusters keep conflict repair, cache revalidation and rendered cov
   assert.throws(() => context.assertWeeklyEditorialRenderedCoverage_(['N001'], ['N001', 'N001'], [], 0));
 });
 
+// v1.15.0：沿用同一 suite 和 GAS VM，不另建重複測試框架。
+const migratedTasks = ['news_analysis', 'web_lazy_summary', 'archive_topics', 'archive_news', 'weekly_editorial_digest', 'manual_news_supplement'];
+for (const task of migratedTasks) {
+  check('structured contract success and missing/type/extra fields ' + task, () => {
+    const schema = context.getAiTaskOutputSchema_(task), valid = schemaExample(schema);
+    fetchImpl = () => responsesCompletion(JSON.stringify(valid));
+    assert(context.runAiJsonTask(task, '資料').ok);
+    const payload = JSON.parse(calls[0].options.payload);
+    assert.equal(payload.text.format.type, 'json_schema'); assert.equal(payload.text.format.name, task);
+    assert(!('response_format' in payload)); assert(!('tools' in payload));
+    const missing = { ...valid }; delete missing[Object.keys(valid)[0]];
+    for (const invalid of [missing, { ...valid, [Object.keys(valid)[0]]: 42 }, { ...valid, extra: 'must reject' }]) {
+      fetchImpl = () => responsesCompletion(JSON.stringify(invalid));
+      assert.equal(context.runAiJsonTask(task, '資料').errorType, 'ai_validation_error');
+    }
+    for (const [key, child] of Object.entries(schema.properties)) if (child.enum) {
+      fetchImpl = () => responsesCompletion(JSON.stringify({ ...valid, [key]: 'invalid enum' }));
+      assert.equal(context.runAiJsonTask(task, '資料').errorType, 'ai_validation_error');
+    }
+    assert.equal(cache.size, 0); assert.equal(rows.length, 0);
+  });
+  check('structured malformed/length/provider failure without fallback ' + task, () => {
+    for (const [reply, expected] of [
+      [responsesCompletion('{bad'), 'ai_invalid_json'],
+      [responsesCompletion('{}', { status: 'incomplete', incompleteReason: 'max_output_tokens' }), 'ai_finish_reason_length'],
+      [response(503, 'raw-provider-secret'), 'ai_provider_http_error'],
+      [response(200, '{}'), 'ai_invalid_provider_response']
+    ]) {
+      const before = calls.length; fetchImpl = () => reply;
+      assert.equal(context.runAiJsonTask(task, '資料').errorType, expected);
+      assert.equal(calls.length, before + 1); assert(calls.at(-1).url.endsWith('/responses'));
+    }
+    assert(!logs.join('').includes('raw-provider-secret'));
+  });
+}
+check('capability resolver rejects unsupported combinations before HTTP', () => {
+  const request = { task: 'test', messages: [{ role: 'user', content: 'x' }], thinking: { type: 'enabled' }, reasoningEffort: 'high', outputMode: 'text' };
+  assert.equal(context.resolveDeepSeekTransport_(request), 'chat_completions');
+  assert.equal(context.resolveDeepSeekTransport_({ ...request, capabilities: ['vision'] }), 'chat_completions');
+  assert.equal(context.resolveDeepSeekTransport_({ ...request, webSearchMode: 'auto', capabilities: ['vision', 'webSearch', 'clientTools'] }), 'anthropic_messages');
+  assert.equal(context.resolveDeepSeekTransport_({ ...request, outputMode: 'json', outputSchema: context.getAiTaskOutputSchema_('archive_news') }), 'responses');
+  for (const patch of [{ capabilities: ['telepathy'] }, { outputSchema: {}, webSearchMode: 'auto' }, { capabilities: ['webSearch'] }]) {
+    assert.equal(context.callDeepSeekProvider_({ ...request, ...patch }).errorType, 'ai_configuration_error');
+  }
+  assert.equal(context.runAiTextTask('general_chat', 'hi', { capabilities: ['telepathy'] }).errorType, 'ai_configuration_error');
+  for (const capability of ['thinking', 'vision', 'structuredOutput', 'webSearch', 'clientTools']) {
+    assert.equal(context.callGeminiProvider_({ ...request, thinking: { type: 'disabled' }, capabilities: [capability] }).errorType, 'ai_configuration_error');
+  }
+  assert.equal(calls.length, 0);
+  assert.equal(context.getAiTaskOutputSchema_('raw_html_extraction'), null);
+});
+function toolCall(name, args = {}, id = 'tool_1') { return { id, name, arguments: args }; }
+function validatedTools(callsToValidate) { return context.validateAiToolCalls_(callsToValidate, context.getAiReadOnlyToolDefinitions_()); }
+function executeTool(name, args = {}) {
+  return context.runAiReadOnlyTool_(validatedTools([toolCall(name, args)])[0], { conversationId: 'group:a', deadlineAtMs: now + 30000 });
+}
+function readOnlySheet(records) {
+  const headers = [...new Set(records.flatMap(record => Object.keys(record)))];
+  const data = [headers, ...records.map(record => headers.map(header => record[header] ?? ''))];
+  return {
+    getLastRow: () => data.length, getLastColumn: () => headers.length,
+    getRange: (row, column, count, columns) => ({ getValues: () => data.slice(row - 1, row - 1 + count).map(values => values.slice(column - 1, column - 1 + columns)) }),
+    appendRow() { throw Error('WRITE NOT ALLOWED'); }, deleteRow() { throw Error('WRITE NOT ALLOWED'); }
+  };
+}
+check('all read tools isolate conversations without ensure or writes', () => {
+  const sheet = readOnlySheet([
+    { ConversationId: 'group:other', CreatedAt: new Date(now), Status: 'ok', Title: 'FOREIGN SECRET', Summary: 'FOREIGN SECRET', HighlightText: 'FOREIGN SECRET' },
+    { ConversationId: 'group:a', CreatedAt: new Date(now), Status: 'ok', Title: 'Anthropic news', Brief: '簡介', Outline: '重點大綱', Url: 'https://example.org/news', StoryKey: '事件' },
+    { ConversationId: 'group:a', CreatedAt: new Date(now), Status: 'active', HighlightText: 'Anthropic 人工重點', Tags: '科技' },
+    { ConversationId: 'group:a', CreatedAt: new Date(now), Summary: 'Anthropic 封存記憶', TopicTitle: '上週', ArchiveType: 'news' }
+  ]);
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => sheet }), getRecentWeeklySummaryText: weeklyMemoryReader,
+    ensureWeeklySummarySheet_: () => { throw Error('MUST NOT ENSURE'); }, ensureNewsInboxSheet_: () => { throw Error('MUST NOT ENSURE'); },
+    ensureTopicHighlightsSheet_: () => { throw Error('MUST NOT ENSURE'); }
+  }, () => {
+    for (const [name, args, expected] of [
+      ['search_news_inbox', { query: 'Anthropic', days: 7, limit: 5 }, 'Anthropic news'],
+      ['get_topic_highlights', { query: 'Anthropic' }, '人工重點'],
+      ['get_weekly_memory', { archiveType: 'news' }, '封存記憶']
+    ]) {
+      const result = executeTool(name, args); assert(result.data.ok); assert(JSON.stringify(result).includes(expected));
+      assert(!JSON.stringify(result).includes('FOREIGN SECRET')); assert(!JSON.stringify(result).includes('ConversationId'));
+    }
+    assert(!JSON.stringify(executeTool('get_weekly_memory', { archiveType: 'topic' })).includes('封存記憶'));
+  });
+  assert.equal(rows.length, 0); assert.equal(cache.size, 0); assert.equal(calls.length, 0);
+});
+check('tool allowlist, JSON, IDs, enums, dates, URL and bounds reject before reads', () => {
+  for (const call of [toolCall('delete_news'), toolCall('__proto__'), toolCall('get_weekly_memory', '{bad'),
+    toolCall('get_weekly_memory', { conversationId: 'other' }), toolCall('get_weekly_memory', { archiveType: 'secret' }),
+    toolCall('get_weekly_memory', { limit: '2' }), toolCall('get_weekly_memory', { limit: 0 }), toolCall('get_weekly_memory', { limit: 11 }),
+    toolCall('search_news_inbox', { days: 31 }), toolCall('search_news_inbox', { days: -1 }), toolCall('search_news_inbox', { date: '2020-01-01' }),
+    toolCall('search_news_inbox', { query: 'x'.repeat(201) }), toolCall('read_url', {}), toolCall('read_url', { url: 'http://127.0.0.1' }),
+    toolCall('get_weekly_memory', {}, 'invalid id')]) assert.throws(() => validatedTools([call]));
+  assert.throws(() => validatedTools([toolCall('read_url', { url: 'https://example.org' }, 'one'), toolCall('read_url', { url: 'https://example.com' }, 'two')]));
+  assert.throws(() => validatedTools([toolCall('get_weekly_memory'), toolCall('get_weekly_memory')]));
+  assert.throws(() => validatedTools(Array.from({ length: 5 }, (_, i) => toolCall('get_weekly_memory', {}, 'id' + i))));
+  assert.equal(calls.length, 0); assert.equal(rows.length, 0);
+});
+check('tool scan, text and serialized result bounds; missing sheets and exceptions are safe', () => {
+  const large = readOnlySheet(Array.from({ length: 800 }, () => ({ ConversationId: 'group:a', CreatedAt: new Date(now), Status: 'ok', Title: 'x'.repeat(50000), Outline: 'y'.repeat(50000), Url: 'https://example.org' })));
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => large }) }, () => {
+    const result = executeTool('search_news_inbox', { limit: 10 });
+    assert(result.data.ok); assert(result.data.data.limitedWindow); assert(JSON.stringify(result.data).length <= 6000);
+    assert(result.data.data.records.length <= 10); assert(result.data.data.records[0].title.length <= 200);
+  });
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }), getRecentWeeklySummaryText: weeklyMemoryReader }, () => {
+    assert(executeTool('search_news_inbox').data.ok); assert(executeTool('get_weekly_memory').data.ok);
+  });
+  withStubs({ getSpreadsheet_: () => { throw Error('secret sheet exception'); }, getRecentWeeklySummaryText: weeklyMemoryReader }, () => {
+    for (const name of ['search_news_inbox', 'get_topic_highlights', 'get_weekly_memory']) {
+      const result = executeTool(name); assert.equal(result.data.errorCode, 'tool_read_failed'); assert(!JSON.stringify(result).includes('secret'));
+    }
+  });
+  assert(!logs.join('').includes('secret sheet exception'));
+});
+check('read_url shares SSRF guard and no-AI Reader; redirects and recursion fail safe', () => {
+  for (const url of ['http://localhost', 'http://10.0.0.1', 'http://100.64.1.1', 'http://169.254.169.254', 'http://metadata.google.internal', 'http://127.1', 'http://[::1]', 'https://user:pass@example.org']) {
+    assert.throws(() => executeTool('read_url', { url }));
+  }
+  assert.equal(calls.length, 0);
+  withStubs({ fetchAndExtractWebPageLegacy_: () => { throw Error('NESTED AI MUST NOT RUN'); } }, () => {
+    fetchImpl = () => response(503, 'full page secret');
+    assert.equal(executeTool('read_url', { url: 'https://example.org' }).data.errorCode, 'tool_read_failed');
+    assert.equal(calls.length, 1); assert.equal(calls[0].options.followRedirects, false);
+    assert(calls[0].options.timeoutSeconds <= 5);
+    fetchImpl = () => response(302, '', { Location: 'http://169.254.169.254' });
+    assert.equal(executeTool('read_url', { url: 'https://example.org' }).data.errorCode, 'tool_read_failed');
+    fetchImpl = () => response(200, 'Title: 篇名\n\nMarkdown Content:\n' + '可供研究的公開文字。'.repeat(500));
+    const result = executeTool('read_url', { url: 'https://example.org' });
+    assert(result.data.ok); assert(result.data.data.truncated); assert(result.data.data.text.length <= 3000);
+    assert.equal(result.sources[0].url, 'https://example.org');
+  });
+  assert(!logs.join('').includes('full page secret')); assert.equal(cache.size, 0); assert.equal(rows.length, 0);
+});
+function anthropicToolTurn(toolCalls, searched = false) {
+  const body = JSON.parse(anthropicCompletion('', { searched }).getContentText());
+  body.stop_reason = 'tool_use';
+  body.content.push(...toolCalls.map(call => ({ type: 'tool_use', id: call.id, name: call.name, input: call.arguments })));
+  return response(200, body);
+}
+check('one/multiple tools continue with private thinking, final text alone persists', () => {
+  const sheet = readOnlySheet([{ ConversationId: 'group:a', CreatedAt: new Date(now), Status: 'ok', Title: 'evidence-secret-title', Url: 'https://example.org/evidence' }]);
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => sheet }) }, () => {
+    fetchImpl = (_url, options) => {
+      const body = JSON.parse(options.payload);
+      if (calls.length === 1) return anthropicToolTurn([toolCall('search_news_inbox'), toolCall('get_topic_highlights', {}, 'tool_2')]);
+      assert.equal(body.tool_choice.type, 'none');
+      assert(body.messages.at(-2).content.some(block => block.type === 'thinking'));
+      assert.equal(body.messages.at(-1).content.length, 2);
+      assert(body.messages.at(-1).content[0].content.includes('evidence-secret-title'));
+      assert(!('is_error' in body.messages.at(-1).content[0]));
+      return anthropicCompletion('整理後回答');
+    };
+    const result = context.runAiMemoryTask('general_chat', 'group:a', '我們收過哪些新聞', '我們收過哪些新聞');
+    assert(result.ok, JSON.stringify(result)); assert.equal(calls.length, 2); assert.equal(result.sources[0].url, 'https://example.org/evidence');
+    assert.equal(result.usedWebSearch, false); assert.equal(result.usage.totalTokens, 7600);
+    assert(!('toolCalls' in result)); assert(!('continueWithToolResults' in result));
+    assert.equal(context.getConversationHistory('group:a').at(-1).content, '整理後回答');
+    assert(!JSON.stringify([...cache.values(), rows, logs]).includes('evidence-secret-title'));
+    assert(!JSON.stringify([...cache.values(), rows, logs, result]).includes('never persist anthropic thinking'));
+  });
+});
+check('tool workflow errors, repeated rounds and insufficient final deadline stop', () => {
+  fetchImpl = () => anthropicToolTurn([toolCall('delete_news')]);
+  assert.equal(context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi').errorType, 'ai_tool_not_allowed');
+  assert.equal(calls.length, 1); assert.equal(cache.size, 0);
+  reset();
+  fetchImpl = () => anthropicToolTurn([toolCall('get_weekly_memory')]);
+  assert.equal(context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi').errorType, 'ai_tool_round_limit');
+  assert.equal(calls.length, 2); assert.equal(cache.size, 0);
+  reset();
+  fetchImpl = () => { now += 23000; return anthropicToolTurn([toolCall('get_weekly_memory')]); };
+  assert.equal(context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi').errorType, 'ai_timeout');
+  assert.equal(calls.length, 1); assert.equal(cache.size, 0);
+  reset();
+  let reads = 0;
+  withStubs({ getRecentWeeklySummaryText: () => { if (++reads > 1) now += 24000; return ''; } }, () => {
+    fetchImpl = () => anthropicToolTurn([toolCall('get_weekly_memory')]);
+    assert.equal(context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi').errorType, 'ai_timeout');
+    assert.equal(calls.length, 1);
+  });
+});
+check('Search plus tools keeps execution truth across continuation without repeat Search', () => {
+  fetchImpl = () => calls.length === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')], true) : anthropicCompletion('有查網路並參考記憶');
+  const result = context.runAiMemoryTask('general_chat', 'group:a', '幫我查', '幫我查', { forceWebSearch: true });
+  assert(result.ok); assert(result.usedWebSearch); assert.equal(calls.length, 2);
+  assert.equal(JSON.parse(calls[0].options.payload).tool_choice.name, 'web_search');
+  assert(!JSON.parse(calls[1].options.payload).tools.some(tool => tool.name === 'web_search'));
+});
+check('private quoted image research and image tools preserve media privacy', () => {
+  for (const [question, searched] of [['這張圖是真的假的？幫我查最新進度', true], ['之前有沒有相關重點？', false]]) {
+    reset(); let providerCalls = 0;
+    fetchImpl = url => {
+      if (url.includes('api-data.line.me')) return response(200, '', { 'Content-Type': 'image/png' }, png);
+      providerCalls++;
+      return providerCalls === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')], searched) : anthropicCompletion('交叉研究回答');
+    };
+    context.handleLineEvent(event('text', 'user', { text: question, quotedMessageId: '99999' }), now);
+    assert.equal(calls.length, 3); assert.equal(replies[0].text, '交叉研究回答');
+    assert.equal(JSON.parse(calls[1].options.payload).messages.at(-1).content[1].type, 'image');
+    assert(!JSON.stringify([...cache.values(), rows, logs, replies]).includes(Buffer.from(png).toString('base64')));
+    assert(!JSON.stringify([...cache.values(), rows, logs, replies]).includes('never persist'));
+  }
+});
+check('research URL comparison uses read_url plus news tools and a provenance bubble', () => {
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => null }),
+    handleDirectNewsUrlMessage_: () => { throw Error('must not collect research URL'); } }, () => {
+    let providerCalls = 0;
+    fetchImpl = url => {
+      if (url.startsWith('https://r.jina.ai/')) return response(200, 'Title: title\nMarkdown Content:\n' + '文章的研究內容。'.repeat(50));
+      return ++providerCalls === 1 ? anthropicToolTurn([toolCall('read_url', { url: 'https://example.org/news' }), toolCall('search_news_inbox', {}, 'second')]) : anthropicCompletion('有限資料中未見重複');
+    };
+    context.handleLineEvent(event('text', 'user', { text: 'https://example.org/news 跟之前收過的新聞有沒有重複？' }), now);
+    assert.equal(replies[0].text, '有限資料中未見重複'); assert(replies[0].finalText.includes('https://example.org/news'));
+  });
+});
+check('pending research URL stays a question; ordinary and silent group intake remain', () => {
+  let intakes = 0;
+  withStubs({ handleSilentNewsUrlMessage_: () => { intakes++; return { ok: true }; } }, () => {
+    for (const sourceType of ['user', 'group']) {
+      pending = { text: '先前結果' };
+      context.handleLineEvent(event('text', sourceType, { text: (sourceType === 'group' ? '#小浣 ' : '') + 'https://example.org/news 跟之前收過的有沒有重複？' }), now);
+      assert.equal(intakes, 0); assert(replies.at(-1).text.includes('網址問題尚未研究'));
+    }
+    context.handleLineEvent(event('text', 'group', { text: 'https://example.org/news 跟之前收過的有沒有重複？' }), now);
+    assert.equal(intakes, 1, 'non-trigger group remains silent intake');
+    pending = { text: '先前結果' };
+    context.handleLineEvent(event('text', 'user', { text: 'https://example.org/ordinary' }), now);
+    assert.equal(intakes, 2); assert.equal(calls.length, 0);
+  });
+});
+check('explicit feature commands retain deterministic routing and cleanup confirmation', () => {
+  const routed = [];
+  const record = name => (_event, scope) => { assert.equal(scope, 'group:group1'); routed.push(name); return name; };
+  withStubs({
+    saveTopicHighlight_: record('highlight'), archiveWeeklyTopics: record('archive_topics'), archiveWeeklyNews: record('archive_news'),
+    handleWeeklyNewsDigest_: record('weekly'), handleNewsQuestion_: record('news_question'), integrateRecentTopics: record('integrate'),
+    performDataCleanup_: (key, scope) => { assert.equal(key, 'topic_highlights'); assert.equal(scope, 'group:group1'); routed.push('cleanup'); return { total: 0, details: [] }; }
+  }, () => {
+    for (const text of ['#畫重點 保留人工觀點', '#封存本週話題', '#封存本週新聞', '#本週新聞', '#新聞問答 有什麼變化？', '#統整話題']) {
+      context.handleLineEvent(event('text', 'group', { text }), now);
+    }
+    assert.deepEqual(routed, ['highlight', 'archive_topics', 'archive_news', 'weekly', 'news_question', 'integrate']);
+    context.handleLineEvent(event('text', 'group', { text: '#清空重點' }), now);
+    assert.equal(routed.length, 6); assert(replies.at(-1).text.includes('確認'));
+    context.handleLineEvent(event('text', 'group', { text: '#清空重點 確認' }), now);
+    assert.equal(routed.at(-1), 'cleanup'); assert.equal(calls.length, 0);
+  });
+  const deleted = [];
+  const sheet = { getLastRow: () => 4, getLastColumn: () => 1, getRange: row => ({ getValues: () => row === 1 ? [['ConversationId']] : [['group:other'], ['group:group1'], ['group:group1']] }), deleteRow: row => deleted.push(row) };
+  assert.equal(context.deleteRowsByConversationIdFromSheet_(sheet, 'group:group1'), 2);
+  assert.deepEqual(deleted, [4, 3]);
+});
+check('archive features persist validated structured output only after explicit command', () => {
+  const saved = [];
+  withStubs({ getRecentConversationItems: (scope, _count, includeAssistant) => {
+    assert.equal(scope, 'group:a'); assert.equal(includeAssistant, false); return [{ role: 'user', mode: 'chat', text: '素材' }];
+  }, getRecentNewsInboxItems_: () => [{ title: '新聞', brief: '摘要', url: 'https://example.org/news' }], appendWeeklySummaryRow_: item => saved.push(item) }, () => {
+    fetchImpl = () => responsesCompletion(JSON.stringify(schemaExample(context.getAiTaskOutputSchema_('archive_news'))));
+    context.archiveWeeklyTopics(event(), 'group:a'); context.archiveWeeklyNews(event(), 'group:a');
+    assert.deepEqual(saved.map(item => item.archiveType), ['topic', 'news']);
+    assert(saved.every(item => item.conversationId === 'group:a' && item.sourceItemCount === 1));
+    assert(calls.every(call => JSON.parse(call.options.payload).text.format.type === 'json_schema'));
+    fetchImpl = () => responsesCompletion(JSON.stringify({ ...schemaExample(context.getAiTaskOutputSchema_('archive_news')), summary: '' }));
+    assert.throws(() => context.archiveWeeklyNews(event(), 'group:a')); assert.equal(saved.length, 2);
+  });
+});
+check('orchestration elapsed metadata includes both model turns and tool time', () => {
+  let reads = 0;
+  withStubs({ getRecentWeeklySummaryText: () => { if (++reads > 1) now += 1000; return ''; } }, () => {
+    fetchImpl = () => { now += 2000; return calls.length === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')]) : anthropicCompletion('final'); };
+    const result = context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi');
+    assert(result.ok); assert.equal(result.elapsedMs, 5000);
+  });
+});
+check('tool evidence sources reject unsafe/duplicate URLs and cap at three', () => {
+  const sources = context.mergeAiEvidenceSources_([{ url: 'http://10.0.0.1' }, { url: 'https://example.org/a' }, { url: 'https://example.org/a' },
+    { url: 'https://example.org/b' }, { url: 'https://example.org/c' }, { url: 'https://example.org/d' }]);
+  assert.equal(sources.length, 3); assert.equal(sources[0].url, 'https://example.org/a');
+  const output = JSON.parse(responsesCompletion('{}', { searched: true }).getContentText());
+  assert.equal(context.normalizeDeepSeekResponsesResult_(output, 200, 0).errorType, 'ai_invalid_provider_response');
+});
+check('source titles redact media before truncation even without client tools', () => {
+  fetchImpl = () => anthropicCompletion('回答', { searched: true, searchResults: [{ type: 'web_search_result', title: 'data:image/png;base64,' + 'A'.repeat(400), url: 'https://example.org/evidence' }] });
+  const result = context.runAiMemoryTask('general_chat', 'group:a', '幫我查', '幫我查', { forceWebSearch: true });
+  assert(result.ok); assert.equal(calls.length, 1);
+  assert(!JSON.stringify(result.sources).includes('data:image')); assert(!JSON.stringify(result.sources).includes('A'.repeat(100)));
+  assert.equal(result.sources[0].url, 'https://example.org/evidence');
+});
+check('capability implementation stays outside feature layers and preserves business guards', () => {
+  for (const file of ['01_Main.gs', '07_LineImages.gs', '30_NewsInbox.gs', '45_TopicFeatures.gs']) {
+    const code = fs.readFileSync(path.join(root, file), 'utf8');
+    assert(!/web_search_20250305|server_tool_use|function_call|input_schema|json_schema|reasoning_content/.test(code), file);
+  }
+  assert(!/insertSheet|appendRow|setValues|deleteRow|CacheService|console\./.test(fs.readFileSync(path.join(root, '14_AiTools.gs'), 'utf8')));
+  assert.throws(() => context.validateArchiveJsonContract_({ ...schemaExample(context.getAiTaskOutputSchema_('archive_topics')), summary: '' }));
+  assert.throws(() => context.normalizeWebLazySummaryResult_({ ...schemaExample(context.getAiTaskOutputSchema_('web_lazy_summary')), summary: '' }, {}));
+  assert.equal(value('BOT_VERSION_HISTORY_LIMIT'), 6);
+});
+check('simple image questions do not accidentally enable research', () => {
+  for (const question of ['這是什麼？', '這張圖在講什麼重點？', '這是真的假的？']) {
+    reset(); context.handleLineEvent(event('text', 'user', { text: question, quotedMessageId: '99999' }), now);
+    assert.equal(calls.length, 2); assert(calls[1].url.endsWith('/chat/completions'));
+    assert.equal(replies[0].finalText, '');
+  }
+});
+check('Search metadata duplicates and malformed blocks cannot claim success', () => {
+  for (const change of [
+    body => body.content.push(body.content.find(block => block.type === 'server_tool_use')),
+    body => body.content.find(block => block.type === 'web_search_tool_result').content.push({ type: 'web_search_tool_result_error' }),
+    body => body.content.find(block => block.type === 'server_tool_use').id = '',
+    body => body.content.push({ type: 'unexpected_raw_block', text: 'never persist raw' })
+  ]) {
+    const body = JSON.parse(anthropicCompletion('不應採用', { searched: true }).getContentText()); change(body);
+    fetchImpl = () => response(200, body);
+    const result = context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi');
+    assert(!result.ok); assert(!result.usedWebSearch); assert.equal(cache.size, 0);
+  }
+});
+check('tool read errors continue as safe data without provider-specific is_error', () => {
+  let reads = 0;
+  withStubs({ getRecentWeeklySummaryText: () => { if (++reads > 1) throw Error('SECRET'); return ''; } }, () => {
+    fetchImpl = (_url, options) => {
+      if (calls.length === 1) return anthropicToolTurn([toolCall('get_weekly_memory')]);
+      const resultBlock = JSON.parse(options.payload).messages.at(-1).content[0];
+      assert.deepEqual(JSON.parse(resultBlock.content), { ok: false, errorCode: 'tool_read_failed' });
+      assert(!('is_error' in resultBlock)); return anthropicCompletion('封存資料未能讀取');
+    };
+    assert(context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi').ok);
+    assert(!JSON.stringify([...cache.values(), rows, logs]).includes('SECRET'));
+  });
+});
+check('late continuation and encoding consume the same deadline; no partial memory', () => {
+  fetchImpl = () => calls.length === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')]) : (now += 31000, anthropicCompletion('too late'));
+  assert.equal(context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi').errorType, 'ai_timeout');
+  assert.equal(cache.size, 0); assert(!logs.join('').includes('too late'));
+  reset(); encodedDelay = 23000;
+  fetchImpl = () => anthropicToolTurn([toolCall('get_weekly_memory')]);
+  assert.equal(context.runAiMemoryTask('multimodal_research', 'group:a', '[image]', message.content).errorType, 'ai_timeout');
+  assert.equal(calls.length, 0);
+});
+check('all output protocols guard reasoning and unknown status from persistence', () => {
+  fetchImpl = () => completion('<think>secret reasoning</think>');
+  assert.equal(context.runAiMemoryTask('image_analysis', 'group:a', '[image]', message.content).errorType, 'ai_invalid_provider_response');
+  fetchImpl = () => responsesCompletion('{}', { status: 'incomplete', incompleteReason: 'secret raw status' });
+  assert(!context.runAiJsonTask('archive_topics', 'data').ok);
+  assert(!logs.join('').includes('secret raw status')); assert.equal(cache.size, 0);
+  const globals = [...source.matchAll(/^(?:const|let|var) (\w+)/gm)].map(match => match[1]);
+  assert.equal(globals.length, new Set(globals).size);
+});
 process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed. No live GAS/LINE/DeepSeek calls.\n`);

@@ -1,14 +1,13 @@
 // ======================================================
 // 04_Utils.gs
-// Shared foundation：放跨多個領域共用、但不屬於特定功能的純輔助函式。
+// 用途：Shared foundation：共用 ID 產生與寬鬆 JSON object 解析。
 //
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 職責與協作：
+// 1. 提供跨功能使用的基礎 helper；特定功能的規則與驗證留在所屬檔案。
 //
-// 設計說明：
-// 1. 此檔從原本肥大的 03_AiLogic.gs 拆出，功能邏輯盡量維持不變。
-// 2. Google Apps Script 不需要 import / export；同一專案內函式可直接互相呼叫。
-// 3. 本檔不決定 feature policy、provider route、Sheet schema、Queue retry 或 LINE 回覆格式。
-// 4. 函式名稱後綴底線（例如 xxx_）代表內部輔助函式；GAS 沒有真正 private，仍須避免全域名稱衝突。
+// 維護注意：
+// 1. 寬鬆 JSON 解析不取代 AiService 的結構檢查或各功能的 business validator。
+// 2. GAS 函式共用全域命名空間，底線後綴只是內部 helper 慣例，不提供真正 private 隔離。
 // ======================================================
 
 // ======================================================

@@ -1,32 +1,33 @@
 // ======================================================
 // 03_ResponseTexts.gs
-// Prompt／response content：集中管理「不經過 LLM」的固定回覆、版本資訊與版本紀錄。
+// 用途：Response content：固定回覆、執行時版本資訊與近期版本紀錄。
 //
-// 小浣 LINE Bot v1.14.4 Search Transport Correction Hotfix
+// 職責與協作：
+// 1. 集中不經過 LLM 的文字與簡單格式化，供 LINE、Reader、新聞及資料管理流程使用。
+// 2. 維持小浣一致的回覆語氣；AI system prompt 由 12_Prompts.gs 管理。
 //
-// 設計說明：
-// 1. 這個檔案只放固定文字與簡單格式化，不呼叫 DeepSeek / Gemini。
-// 2. 目的不是讓小浣變吵，而是讓非 LLM 回覆也維持一致人格。
-// 3. v1.10.9 將社群 reader 版本資訊與非 status 社群網址提示併回本檔，避免額外版本文字小檔。
-// 4. v1.10.10 限制 #版本紀錄 只顯示最近 6 筆，避免回覆隨版本增加而過長。
-// 5. v1.11.0 新增直接貼單一網址的同步大綱、queue fallback 與失敗固定回覆。
-// 6. v1.11.1 將直接網址回覆縮短為 20 字內 Brief，完整 Outline 留給 NewsInbox 與 #統整話題。
-// 7. v1.11.2 將 Brief 改為 30～50 字目標區間，程式端只保留防爆上限，不再正常硬裁。
-// 8. v1.12.0 將群組貼網址改為靜默收件，新增 #狀態回報 與 #封存本週新聞。
-// 9. v1.12.1 強化 #本週新聞 查詢模式，並讓 #help 聚焦核心新聞工作流。
-// 10. v1.12.2 強化 NewsInbox 分類稽核、#本週新聞 精簡分組與診斷檢視。
-// 11. v1.12.3 新增 #新聞問答，並移除低頻的 #本週新聞 24 小時檢視。
-// 12. v1.12.4 起，#本週新聞 預設按 StoryKey 精簡聚合，長回覆會自動分段。
-// 13. v1.12.5 起，預設與精簡週新聞使用一次 DeepSeek 編輯台；StoryKey 保留為候選提示。
-// 14. 正常 runtime 統一走 provider-neutral AiService；本檔不呼叫 provider，也不擁有 Prompt contract。
-// 15. v1.13.2 起，X status 的週新聞展示標題優先使用既有 Brief，raw NewsInbox Title 保持不變。
+// 維護注意：
+// 1. BOT_CURRENT_VERSION 與日期須和 CURRENT_VERSION.md 一致；完整版本沿革保留在 99_changelog.md。
+// 2. BOT_VERSION_HISTORY_LIMIT 控制 LINE 顯示筆數，不能將完整 changelog 直接輸出。
+// 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.14.4 Search Transport Correction Hotfix';
-const BOT_CURRENT_VERSION_DATE = '2026-09-13';
+const BOT_CURRENT_VERSION = 'v1.15.0 Unified Research & Capability Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-09-15';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.15.0 Unified Research & Capability Edition',
+    date: '2026-09-15',
+    summary: '統一能力路由、JSON Schema、聊天室只讀工具與圖片交叉研究。',
+    changes: [
+      '一般聊天可查近期新聞、人工重點、週記憶與公開網址；工具只讀、不修改資料。',
+      '引用圖片後可要求查證最新資訊，回答與最多三個來源分開顯示。',
+      '六個 JSON task 使用結構化輸出，既有業務驗證與 fallback 保留。',
+      '工具最多一次續接，沿用 webhook deadline、圖片隱私與 DeepSeek；Gemini 保持 dormant。'
+    ]
+  },
   {
     version: 'v1.14.4 Search Transport Correction Hotfix',
     date: '2026-09-13',
@@ -595,7 +596,7 @@ function getBotTextCleanupDone_(cleanupInfo, cleanupResult) {
   ].join('\n');
 }
 
-// 舊函式名稱保留給未來相容用；v1.10.4 主流程已改走 getBotTextCleanupWarning_ / getBotTextCleanupDone_。
+// 相容性：保留舊函式名稱；主流程使用 getBotTextCleanupWarning_ / getBotTextCleanupDone_。
 function getBotTextClearWarning_() {
   return getBotTextCleanupWarning_(getCleanupCommandInfo_('#清空紀錄'));
 }

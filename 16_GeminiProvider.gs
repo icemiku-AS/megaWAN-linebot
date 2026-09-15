@@ -1,25 +1,16 @@
 // ======================================================
 // 16_GeminiProvider.gs
-// AI provider adapter：保留 dormant Gemini transport 與 provider protocol translation。
-// 小浣 LINE Bot v1.13.1 Source Layout & File Ordering Edition
+// 用途：AI provider adapter：保留 dormant Gemini transport 與協議轉譯。
 //
-// 主要責任：
-// 1. 保留 dormant Gemini provider transport：authentication、endpoint、payload、HTTP、response 與 usage parsing。
-// 2. 將 Gemini candidates / usageMetadata 轉為和其他 provider 相同的 provider result contract。
-// 3. 只有 11_AiProfiles.gs 的 task route 明確選到 Gemini 時，才讀取 GEMINI_API_KEY。
+// 職責與協作：
+// 1. 保留 generateContent 的 payload、HTTP 與結果正規化，供未來明確啟用時檢視。
+// 2. 只有能力驗證通過且實際 dispatch 時才讀 GEMINI_API_KEY，缺 key 不影響 DeepSeek runtime。
 //
-// 明確不負責：
-// 1. 現行正常 runtime 不使用 Gemini；Gemini 也不是 DeepSeek 的自動 fallback。
-// 2. 不保存 NewsInbox、快讀摘要或 raw HTML extraction 的 Prompt、schema、normalizer、validator。
-// 3. 不決定 task route，不寫 Sheet，不處理 memory、Queue retry 或 LINE 排版。
-//
-// 保留原因與維護注意：
-// 1. 保留 provider 是為了未來模型價格/能力競爭、快速重新啟用與可能的多模態用途。
-// 2. 缺少 GEMINI_API_KEY 不影響 DeepSeek runtime；key 只在 callGeminiProvider_() 真正被 dispatch 時讀取。
-// 3. 重新啟用前必須核對當時最新 Gemini API、model ID、thinking 與 payload 規格；
-//    本檔不保證現存的 v1beta generateContent 格式永遠有效。
-// 4. 本版 adapter 僅允許 non-thinking route。未來若要把 thinking task 切到 Gemini，
-//    必須先明確實作並驗證 Gemini 當時的推理參數，不可靜默忽略 execution profile。
+// 維護注意：
+// 1. 目前僅公告 text 能力且要求 non-thinking；Search、tools、vision、structuredOutput 不得靜默接受。
+// 2. 啟用前須重新查核當時 Gemini API、model 與 Interactions 契約，不能直接假定舊 payload 有效。
+// 3. 不是 DeepSeek 的自動 fallback；不處理功能 Prompt、Sheet、memory 或 Queue retry。
+// 4. legacy wrappers 僅維持舊呼叫介面，不代表 Gemini production route 已啟用。
 // ======================================================
 
 const GEMINI_API_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
@@ -33,6 +24,11 @@ function callGeminiProvider_(request) {
   const safeRequest = request || {};
 
   try {
+    if ((safeRequest.capabilities || []).some(function(capability) { return capability !== 'text'; }) ||
+        safeRequest.webSearchMode || safeRequest.outputSchema || (safeRequest.tools || []).length ||
+        (safeRequest.messages || []).some(function(message) { return Array.isArray(message.content); })) {
+      throw createAiConfigurationError_('Dormant Gemini adapter does not implement these capabilities.');
+    }
     if (String(safeRequest.thinking && safeRequest.thinking.type || '') !== 'disabled') {
       return buildGeminiProviderFailure_(
         'ai_configuration_error',
@@ -220,7 +216,8 @@ function buildGeminiProviderFailure_(errorType, errorMessage, httpStatus, retrya
     usage: usage || {},
     elapsedMs: Number(elapsedMs || 0),
     errorType: errorType || 'ai_unknown_error',
-    errorMessage: String(errorMessage || 'Gemini provider request failed.'),
+    // dormant path 也不可把 exception／HTTP body 原文交給 service 或 log。
+    errorMessage: 'Gemini provider request failed (' + String(errorType || 'ai_unknown_error') + ').',
     httpStatus: Number(httpStatus || 0),
     retryable: retryable === true
   };

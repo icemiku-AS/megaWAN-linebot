@@ -1,800 +1,255 @@
 # CURRENT_VERSION
 
-本文件是 MEGA浣 / 小浣 專案的現行版本判定文件。
+## 版本與 source of truth
 
-本文件主要給網頁版 ChatGPT、GitHub connector、未來 AI 助手、維護者與協作者讀取，用來快速判斷目前正式架構，避免誤用舊對話、舊分支、已 revert 的 PR、舊版上傳檔案或歷史 changelog 內容。
+MEGA浣 / 小浣：**v1.15.0 Unified Research & Capability Edition**。
 
-若是在本機使用 Codex / AI coding agent，工作規則請優先閱讀 `AGENTS.md`。本文件只負責描述目前版本狀態，不負責定義 Codex 的操作規則。
+- 工作分支：`feature/v1150-unified-research-capabilities`。
+- Baseline：v1.14.4 Search Transport Correction Hotfix，`4ab76565a13c78c9ccbd5bf9d2bcc80152db7f58`。
+- 開工時 HEAD、local main、origin/main 皆為上述 commit，working tree 乾淨，`git diff main...HEAD` 為空。本次沒有 fetch／rebase／merge；origin/main 是本機 remote-tracking ref，未宣稱遠端即時狀態。
+- 本文件描述 v1.15.0 工作樹實作；尚未 commit、發布或手動同步 GAS。最後確認：2026-09-15。
+- 實際 `.gs` 優先；AI agent 工作規則見 AGENTS.md，使用方式見 README.md，完整歷史見 99_changelog.md。舊版 Search transport 記錄只代表當時版本。
 
----
+## 版本邊界
 
-## Project
+本版包含 capability-driven AI architecture、JSON Schema structured output、四個只讀 internal tools、單輪 tool continuation、圖片＋Search＋internal data 研究，以及相關回歸與文件整理。
 
-正式名稱：MEGA浣
-小名：小浣
-用途：Podcast「現正熱潮中」的 LINE 群組企劃助理
-執行環境：Google Apps Script
-程式碼版本管理：GitHub
-正式部署方式：維護者手動複製 / 同步至 Google Apps Script
-主要資料儲存：Google Sheet
-外部服務：LINE Messaging API、DeepSeek API、Jina Reader、FxTwitter API；Gemini API transport 保留但正常 runtime 不啟用
+DeepSeek Flash 仍是唯一 active provider。沒有 Gemini production route、provider auto fallback、write-capable agent、圖片保存、新 backend、外部 Search provider、第三套 Queue、npm runtime dependency 或新 credentials。
 
----
+Sheet schema / migration：**none**。Trigger change：**none**。新 Script Property：**none**。既有環境不需 setup / migration，不需清除 cache。研究工具不寫入；既有新聞收件、對話紀錄與最終回答 memory 照原流程保存，畫重點／封存／清理由使用者明確指令執行。
 
-## Version Represented by This Git Ref
+## 現行架構與檔案
 
-Repository: `icemiku-AS/megaWAN-linebot`
-Version represented by this Git ref: `v1.14.4 Search Transport Correction Hotfix`
-Previous stable baseline described in this file: `v1.14.3 Search Reliability Hotfix`
+`Feature → runAi*Task → Profiles / capabilities / output schema → provider resolver → transport → normalized result → business validator / presentation`
 
-本文件描述「目前這個 Git ref 的實際檔案所代表的版本」與版本邊界。
+23 個 active runtime source：
 
-本文件不記錄暫時性的開發流程欄位。這些資訊應放在 Codex 任務提示詞、PR body 或維護者的開發紀錄中，不應寫進會被納入長期版本判定的文件。
-
----
-
-## Reference Priority
-
-若本文件、README、AGENTS、Changelog、舊對話紀錄、先前上傳檔案或其他分支之間出現矛盾，請依照下列優先順序判斷：
-
-1. 目前 Git ref 的實際 `.gs` 程式碼
-2. `CURRENT_VERSION.md`
-3. `README.md`
-4. `AGENTS.md` 的 Codex / AI coding agent 工作規則
-5. `99_changelog.md` 的最新版本段落
-6. 舊版 changelog、舊對話紀錄、過去上傳檔案、歷史備份內容
-
-如果是詢問「Codex 應該怎麼工作」，請讀 `AGENTS.md`。
-
-如果是詢問「小浣目前正式版本與功能狀態」，請讀本文件。
-
-如果是詢問「目前實際程式如何運作」，請讀實際 `.gs` 檔案。
-
----
-
-## Read Order for Web ChatGPT / GitHub Connector
-
-網頁版 ChatGPT 或透過 GitHub connector 讀取本專案時，建議順序如下：
-
-1. 先讀 `CURRENT_VERSION.md`
-2. 再讀 `README.md`
-3. 如果本次任務涉及 Codex、本機開發流程、AI agent 工作規則，再讀 `AGENTS.md`
-4. 再依任務需要讀實際 `.gs` 檔案
-5. 最後才讀 `99_changelog.md`，且只把它當歷史紀錄
-
-如果 `99_changelog.md` 的舊版段落與目前 `.gs` 實作不同，請一律相信目前 `.gs`。
-
----
-
-## Active Runtime Source Files
-
-以下 21 個檔案代表 v1.14.4 Search Transport Correction Hotfix 的 active GAS runtime source：
-
-* `00_Config.gs`
-* `01_Main.gs`
-* `02_LineCommands.gs`
-* `03_ResponseTexts.gs`
-* `04_Utils.gs`
-* `05_Storage.gs`
-* `06_Memory.gs`
-* `07_LineImages.gs`
-* `10_AiService.gs`
-* `11_AiProfiles.gs`
-* `12_Prompts.gs`
-* `15_DeepSeekProvider.gs`
-* `16_GeminiProvider.gs`
-* `20_ReaderLayer.gs`
-* `21_WebReader.gs`
-* `25_WebTaskQueue.gs`
-* `30_NewsInbox.gs`
-* `35_WeeklyEditorialDigest.gs`
-* `40_TopicHighlights.gs`
-* `45_TopicFeatures.gs`
-* `50_DataCleanup.gs`
-
----
-
-## Source Layout Navigation Rule
-
-數字前綴只供人類／AI 架構導航與 GAS 編輯器平面排序，不代表 Google Apps Script runtime load order。
-
-* `00–09`：Core／LINE transport／Shared foundation
-* `10–19`：AI configuration／orchestration／providers
-* `20–29`：Reader／Web workflows／background jobs
-* `30–39`：News／Editorial
-* `40–49`：Topic／material workflows
-* `50–59`：Data operations／maintenance
-* `60–89`：未來新領域保留
-
-新檔案應優先使用所屬領域的保留空號。不得為了完美插入順序再次重編既有檔案，也不得新增依賴檔名、檔號或排序的 top-level executable side effect。
-
----
-
-## Active Project Documents
-
-以下檔案不是 GAS runtime 程式，但會影響維護與 AI 協作：
-
-* `README.md`：專案說明、功能、指令與檔案配置。
-* `CURRENT_VERSION.md`：目前版本判定與版本邊界。
-* `AGENTS.md`：Codex / AI coding agent 的本機工作規則。
-* `99_changelog.md`：歷史版本紀錄。
-
-修改這些文件通常不需要手動同步到 Google Apps Script，除非同時修改了 `.gs` 程式碼。
-
----
-
-## v1.14.4 Version Boundary
-
-v1.14.4 是以 main `4300f9c` 的 v1.14.3 為唯一 baseline 的 production patch release，只修正一般文字 Search transport，不是 v1.15.0 agent/tool 功能開發。
-
-Production capability probe 顯示 DeepSeek `/responses` 雖接受 `web_search` request，卻未產生實際 `web_search_call`；相同 `DEEPSEEK_API_KEY` 與 `deepseek-flash` 經 Anthropic-compatible `/anthropic/v1/messages` 實測會回傳 `server_tool_use` 與 `web_search_tool_result`，因此 active `general_chat` Search transport 改用後者。舊 Responses parser 與 v1.14.3 DSML fail-closed 防線暫留 compatibility，但不再是 active Search route。
-
-1. 普通 `general_chat` 提供 `{type:"web_search_20250305",name:"web_search",max_uses:3}`，使用 `tool_choice:{type:"auto"}`；v1.14.3 已確認的明確搜尋句型使用 `{type:"tool",name:"web_search"}` 強制搜尋，explicit regex 不變。
-2. HIGH 映射為 DeepSeek Anthropic 正式支援的 `thinking:{type:"enabled"}` 與 `output_config:{effort:"high"}`；原 4,800 budget 轉為 `max_tokens:4800`，不放大 timeout、不 retry、不建立 Search Queue。
-3. `usedWebSearch=true` 只接受成對的 `server_tool_use(name=web_search)` 與非錯誤 `web_search_tool_result`。tool result error、未成對執行或 forced Search 未執行皆回 `ai_web_search_failed`；正常 auto 回答未搜尋仍可成功。
-4. 最終回答只取 `text` block；thinking、server tool、raw result、query、encrypted content、citation text 與完整 provider response 不進 LINE、ConversationLog、memory、Sheet、PendingReplies 或原文 log。來源只從正式 `web_search_result` 取得 title／URL，經既有 public HTTP(S)／SSRF 驗證、去重後最多三筆。
-5. Anthropic usage 的 `input_tokens`／`output_tokens` 映射為 provider-neutral 欄位，兩者都存在時相加為 `totalTokens`；沒有正式獨立 reasoning token 欄位，因此 `reasoningTokens=null`，不猜值。
-
-其他 12 個 task 仍走 DeepSeek Chat Completions；`image_analysis` 仍是 Chat Completions Vision，Vision + Search 繼續延後。Natural Vision、source bubble、SSRF、Pending Reply、Reader、NewsInbox、Weekly Editorial、Topic、cleanup、deadline、Gemini dormant、Sheet schema、Trigger 與 memory contract 不變。沒有新 runtime file、Script Property、Sheet migration、setup、Queue、外部 Search provider、runtime dependency 或 credential；仍只使用既有 `DEEPSEEK_API_KEY`。
-
-本機 `node tests/v1140_smoke.cjs` 共 62 項通過，涵蓋 Anthropic auto／forced payload、production fixture、thinking/tool/result/text response、來源驗證與三筆上限、tool error、HTTP 分類、malformed／empty response、DSML fail-closed、memory privacy，以及既有 Vision、SSRF、Pending Reply 與其他 12 task 回歸。未能本機執行 GAS；維護者需手動同步 `03_ResponseTexts.gs`、`15_DeepSeekProvider.gs`，建立 v1.14.4 Apps Script version 並更新既有 deployment，文件與 test 不部署。
-
----
-
-## v1.14.3 Version Boundary
-
-v1.14.3 是以 main `4e9b676` 的 v1.14.2 為唯一 baseline 的 production patch release，只修正一般文字 Search reliability，不是 v1.15.0 功能開發。
-
-1. `isExplicitWebSearchRequest_()` 補強「幫我查／請幫我查／麻煩幫我查／幫我搜尋」等明確搜尋自然句型；「最近／今天／現在／最新」本身仍維持 `tool_choice:"auto"`。
-2. DeepSeek Responses normalization 不再無條件信任 `output_text`。若文字含明確 DSML／invoke／tool-call／reasoning protocol tag，即使 HTTP response completed 也會 fail closed；Search markup 分類為 `ai_web_search_failed`，其他 internal protocol 分類為 `ai_invalid_provider_response`。
-3. `usedWebSearch` 仍只看正式 `web_search_call`。正常搜尋回答與最多三個來源 bubble 不變；被拒絕的 provider markup 不進 LINE、ConversationLog、memory、PendingReplies、Sheet 或原文 log。
-
-Search architecture、Natural Vision、Vision + Search 延後邊界、SSRF、Pending Reply、其他 12 個 AI task transport、deadline 與 model/profile 全部不變。沒有新 runtime file、Script Property、Sheet migration、setup、Trigger、Queue、外部 Search API 或 runtime dependency。維護者只需手動同步 `02_LineCommands.gs`、`03_ResponseTexts.gs`、`15_DeepSeekProvider.gs`，建立 v1.14.3 Apps Script version 並更新既有 deployment。
-
-本機 `node tests/v1140_smoke.cjs` 共 61 項通過；包含 production 句型、required／auto DSML leakage、一般 DSML／web_search 文字不誤殺，以及既有 Natural Vision、來源最多三筆、SSRF、Pending Reply 與 deadline 回歸。未能本機執行 GAS，未呼叫真實 LINE／DeepSeek。
-
----
-
-## v1.14.2 Version Boundary
-
-本版是 Natural Search & Vision Edition，正式基線為 main 的 v1.14.1。現行 source of truth 是目前 Git ref 的實際 `.gs`；本地修改不代表已 merge、發布或部署到 GAS。
-
-### DeepSeek official contract and Search boundary
-
-現行 [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/) 明確支援 server-side `web_search`；`tool_choice` 使用 `auto` 或特定 `{type:"web_search"}`，真正執行搜尋時 output 會出現 `web_search_call`。Responses 是 stateless，本版每次仍完整送入 system、trimmed user/assistant history、WeeklySummary memory 與當次 user message，並使用 `reasoning.effort=high`、`max_output_tokens`，不依賴 `previous_response_id`、`conversation` 或 `store`。
-
-普通一般聊天使用 `tool_choice:"auto"`，由模型判斷是否需要搜尋；非常明確的上網／搜尋要求使用 `{type:"web_search"}` 強制執行。`usedWebSearch` 只以正式 response output 中實際存在的 `web_search_call` 判定，不能把 Prompt、回答文字或模型自述當成搜尋成功。
-
-[DeepSeek updates](https://api-docs.deepseek.com/updates/)與[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)所列現行 API model 為 `deepseek-flash`。本專案統一稱為 DeepSeek Flash；舊文件或 compatibility alias 中的 V4／V4.1 名稱不再作為本專案模型世代判定依據。registry、Responses 與 Chat Completions 均維持 `deepseek-flash`。[Thinking Mode](https://api-docs.deepseek.com/guides/thinking_mode/)與[Vision](https://api-docs.deepseek.com/guides/vision/)的現行 HIGH／圖片 contract 保留。
-
-`general_chat` 現在由 provider-neutral AiService 路由到 DeepSeek `/responses`，一律提供 `tools:[{type:"web_search"}]`。普通對話使用 `tool_choice:"auto"`；只有非常明確的上網／搜尋要求才強制 `{type:"web_search"}`，「最近／今天／現在」仍交給模型 auto 判斷。其他 12 個 task 全部維持 `/chat/completions`、thinking enabled／high 與既有 JSON／Vision contract。
-
-`usedWebSearch` 只在 output 真的有 `web_search_call` 時為 true。來源只從 `web_search_call.action.sources`、action URL 或 `output_text.annotations[type=url_citation]` 取得，經 public HTTP(S)／SSRF 驗證、URL 去重後最多 3 個；不從回答文字 regex 猜網址。實際搜尋會把來源獨立放在同一次 LINE Reply 的最後一則；主回答最多占 4 則。Search metadata、raw action、annotations、reasoning 與網頁內容不進 memory、Sheet 或 console。若 provider 未提供可靠 URL，最後一則會誠實說明沒有可列來源。
-
-明確 Search 未產生 `web_search_call`、Responses HTTP／provider failure、timeout、malformed output 或截斷都不會 fallback 到 Chat Completions 或舊知識。明確搜尋或 provider 回報 `ai_web_search_failed` 才顯示 Search-specific 錯誤；普通 auto 對話若只是 HTTP、auth、timeout 或 generic provider failure，改顯示一般 AI 服務錯誤，不臆測搜尋已開始。AiService 不 retry，DeepSeek server-side continuation 只限單一 request，仍受 webhook absolute deadline 與現行 request timeout 約束。
-
-### Natural quoted-image Vision
-
-1. 私訊直接傳 JPEG/PNG 仍會自動分析；私訊用 LINE Reply 引用圖片後，可直接輸入任意自然問題，不需要 `#小浣` 或「看圖」。
-2. 群組／room 單純貼圖與普通引用圖片聊天仍完全靜默；只有引用圖片且文字以 `#小浣` 觸發時才探測並分析。舊 `#小浣 看圖 <問題>` 完整相容。
-3. LINE `quotedMessageId` 不提供原訊息型別；自然路由只向固定 Get message content endpoint 安全探測。確定取得 JPEG/PNG 才進 Vision，非圖片／不可取得的自然引用回到普通文字流程；明確舊看圖指令仍顯示既有圖片錯誤提示。
-4. 沒有 `quotedMessageId` 絕不猜上一張圖，不新增圖片 cache、配對 Sheet、媒體資料庫或永久保存。圖片 bytes、Base64、data URL、reasoning 仍不進 Sheet、Cache、LINE 或 console；memory 只保存 placeholder、問題與分析文字。
-5. Vision 仍走 `image_analysis` Chat Completions。引用圖片要求查證時會先完成可靠圖片判讀，再明示即時網路查證未完成；本版沒有把圖片 raw bytes 再送入 Responses，也沒有加入可能撞上 40 秒同步 deadline 的第二次 HIGH 呼叫。Vision + Search 尚未正式支援。
-
-### Reliability and security fixes
-
-1. `getReaderLayerHostname_()` 先解析完整 authority，拒絕所有 userinfo、IPv6 authority、非法 port、非法 label 與非 canonical numeric host；`isSafePublicUrl()` 擴充 all-127 loopback、localhost suffix、private/link-local/CGNAT/multicast 與 metadata host 防線。拒絕時不把可能含帳密的 raw URL 寫入 console。
-2. PTT 與 legacy raw HTML 的直接 UrlFetch 關閉自動 redirect，避免已通過檢查的公開 URL 轉向內網／metadata host。Jina 與 FxTwitter 仍只呼叫固定 provider endpoint。
-3. Pending Reply 改由 `deliverPendingReply_()` 在 ScriptLock 內取得資料、呼叫既有 LINE Reply transport，確認 HTTP 2xx 後才 delete。非 2xx／exception 會保留 row，下一次可再交付；程序若在成功送達後、刪除前中斷，可能 at-least-once 重送，但不會 delete-before-send 永久遺失。
-4. PendingReplies schema、conversationId isolation、ReplyMode、image pending priority 與既有清理指令均不變。沒有承諾 exactly-once，也沒有新增 distributed transaction 或平行 Queue。
-
-Lock review：保留讀取→LINE→acknowledge 同一 ScriptLock；只把 HTTP 移出鎖會允許同聊天室同時取到同一 pending。沒有導入 claim／lease 狀態，避免中斷後卡住交付。代價是其他聊天室、memory 與 Queue 會競爭全域鎖；持鎖時間包含 Sheet、callback 與 LINE 的 10 秒 request cap，不能宣稱整段最多 10 秒。取鎖失敗會略過本次 pending，row 留待下次；LINE 已送達但刪除失敗可能重送。人工直接改 Sheet 與未取同鎖的 cleanup 不受這把鎖保護，不能視作完整資料庫交易。
-
-### Preserved contracts
-
-同一 webhook batch 仍共用 40 秒 absolute deadline；AI 30 秒 cap、Reader 12 秒 cap、最小 request budget、圖片下載 10 秒、LINE Reply 10 秒與背景 task timeout 均未放大。AiService 不 retry；Search 是單一 Responses request，不建立 client continuation loop。NewsInbox、Weekly Editorial、NewsUrlQueue、WebTaskQueue、Reader priority、PTT/FxTwitter/Jina、JSON validators、Sheet schema、Script Properties、Trigger handlers、compatibility wrappers、Gemini dormant、cleanup 二段確認與 memory/cache contract 保留。
-
-### Migration, deployment and verification
-
-沒有新增 runtime file、Script Property、Sheet migration、setup、Trigger、Web App URL 或外部 service credential；仍只需既有 `DEEPSEEK_API_KEY`。手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`，再建立 v1.14.2 Apps Script version 並更新既有 deployment。文件與 test 不部署。
-
-本機 `node tests/v1140_smoke.cjs` 共 60 項通過，未呼叫真實 GAS／LINE／DeepSeek。新增回歸涵蓋 general_chat Responses、auto／forced Search、完整 history、HIGH／token budget、實際 `web_search_call`、來源 metadata 驗證／去重／最多三筆／獨立 bubble／保留第 5 則、情境化錯誤文案、fail-closed、memory／reasoning privacy；原有 Natural Vision、舊看圖、沒有 quote 不猜圖、SSRF、Pending Reply、deadline、Reader／Queue 回歸皆通過。
-
----
-
-## v1.14.1 Version Boundary
-
-本版是 Codebase Simplification Edition，正式基線為 main 的 v1.14.0（`75decaa`）。現行 source of truth 是目前 Git ref 的實際 `.gs`；本地修改不代表已 merge、發布或部署到 GAS。
-
-### Included
-
-1. `05_Storage.gs` 新增 `appendRowByHeaders_()`，合併 WeeklySummary / NewsInbox 完全相同的表頭對位寫入，保留欄序、未知欄位空白及 0 / false / 空字串。
-2. 同步與背景新聞收件以 `Object.assign` 沿用已驗證 analysis，再明確設定來源與狀態；不再逐欄重建相同分析物件，人工補充的獨立預設值保留。
-3. WebTaskQueue 直接把 task 交給只讀取所需欄位的 PendingReplies writer，移除不必要的中間投影。
-4. AiService 移除保存前重複的 `trimHistory()`；保存端驗證、六輪上限、讀取端驗證與 conversation isolation 保留。
-5. URL 安全檢查沿用 Reader hostname parser；NewsUrlQueue error 沿用 `getReaderFailureHttpStatus_()`，顯式 `httpStatus=0` 不退回 200。
-6. 移除已被通用 `/status/` regex 涵蓋的 `/i/web/status/` 分支，以及已被 `.twitter.com` 涵蓋的 mobile hostname 比較。PTT title fallback 重用已轉換正文。
-7. 移除弱分類檢查中不可能再成立的 `!brief` 分支與其兩個局部變數，以及 category normalizer 中與最終 fallback 相同的 return。
-8. 週編輯台潛力 normalization 共用既有 `normalizeTopicPotential_()`；移除只在內部物件複製、從未參與結果的 `sourceIndex`。
-9. 延伸既有 `tests/v1140_smoke.cjs`，保留原 39 項並新增 10 項回歸；版本文字與三份版本文件同步。
-
-共採用 13 項局部清理；未刪除任何既有全域函式或常數，389 個既有函式簽名全部保留，新增一個共用 writer。runtime 仍為 21 檔，沒有 rename 或合併檔案。
-
-### Preserved contracts and rejected cleanup
-
-`01_Main.gs` 的 parse / Pending Reply / text / image / command routing 不變。13 個 AI task、deepseek-flash、explicit HIGH、provider-neutral service、Gemini dormant、圖片驗證與隱私、所有 Prompt / JSON business validators、Reader priority / deadline / retry、Sheet headers / 欄序、StoryKey、memory / cache payload、cleanup 二段確認均保留。
-
-保留全部 compatibility wrappers、手動 setup / 診斷入口、`doPost`、`setupLogSheet`、`installWebTaskQueueTrigger`、`processWebTaskQueue`、`processNewsUrlQueue`。`deleteConversationLogs()`、舊 StoryKey grouping / formatting helpers、`isAiErrorRetryable_()` 等 repo 內無 caller 的項目仍可能被外部或 GAS 手動使用，不能只因搜尋不到 caller 就刪除。`formatWeeklyNewsDefaultDigest_()` 依既有文件明確保留。
-
-不同 trust boundary 的驗證、不同規則的 URL / title normalizer、provider adapter、週編輯台 partition / rendered coverage 與 cache revalidation 不強行合併；本版不包含獨立產品 bugfix、新功能、模型、Prompt 改版或架構 redesign。
-
-### Migration, deployment and verification
-
-沒有 Sheet migration、setup、新 Script Property 或 Trigger 變更；`WEEKLY_EDITORIAL_CACHE_VERSION` 仍為 `v1.13.0`。從 v1.14.0 手動同步 `03_ResponseTexts.gs`、`05_Storage.gs`、`10_AiService.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`。同步後仍為 21 個 `.gs`，建立 v1.14.1 Apps Script version 並更新既有 deployment，保留 Web App URL 與既有 Trigger。文件和 tests 不部署。
-
-本機 `node tests/v1140_smoke.cjs` 共 49 項通過，涵蓋 syntax、原 13 routes / 圖片 / privacy / deadline 防線，以及表頭對位、memory 上限、X/PTT、status zero、同步／背景 NewsInbox 入庫、PendingReplies、Queue retry/backoff、分類 defaults、週編輯台 cache / partition / rendered coverage。
-
-未能本機執行 GAS；未呼叫真實 LINE / DeepSeek。部署前依 README 第 10 節測試，特別比對新聞與封存寫入的所有欄位、背景成功／失敗交付、X/PTT 與週編輯台 fallback。runtime 行為相容性的結論來自靜態檢查與 mock regression，仍需維護者完成 live smoke tests。
-
----
-
-## v1.14.0 Version Boundary（歷史基線）
-
-本版為 DeepSeek Flash Multimodal Edition，基線 v1.13.2。現行 source of truth 是目前 Git ref 的實際 .gs；本地修改不代表已 merge、發布或部署到 GAS。
-
-### Included
-
-1. 正式 model 使用 `deepseek-flash`，internal key 使用 `deepseek_flash`；本專案統一稱為 DeepSeek Flash，不以舊文件或 compatibility alias 判定模型世代。
-2. 原有 12 個 task 加上 `image_analysis` 共 13 個，全部 thinking enabled / reasoning_effort high。profiles 只保留 `thinking_high`（text）、`thinking_json`（JSON）、`long_extraction_json`（長文 HIGH JSON）；各 route 顯式驗證 thinking/effort，預算詳見 README task 表。
-3. 因 reasoning 與最終輸出共用 max_tokens，原 non-thinking task 分別補足預算；既有 HIGH task 不放大。所有舊 task timeout、40 秒共同 webhook deadline、30 秒 AI cap、12 秒 Reader cap、8/20 秒啟動門檻保留。
-4. 私訊直接傳 JPEG/PNG 圖；群組貼圖靜默，使用 LINE 原生「回覆圖片」+ `#小浣 看圖 <問題>` 指定。沒有 caption pairing／永久圖片 queue；私訊多圖僅處理 index=1，舊版 LINE 缺有效 index 時提示單張／引用。Pending Reply 優先交付後提示重送看圖指令，問題中的 URL 不作新聞收件。
-5. 新增 `07_LineImages.gs`：固定 LINE Get content endpoint、數字 message ID、HTTP 200、MIME／signature、空內容與 raw bytes ≤ 4 MiB 驗證；拒絕 redirect／external content。下載 cap 10 秒，之後 memory／編碼耗時繼續扣原 deadline。
-6. AiService content 向後相容字串，只有 user 接受 text/image parts，system／assistant 不接受任何 content array；image 以 mimeType + bytes 表達，最多一張。DeepSeek adapter 才將 bytes 編成 Base64 image_url data URL，完整 JSON body ≤ 8 MiB。Gemini 沒有 image capability，仍 dormant 且不 fallback。
-7. 圖片原始資料不進 Sheet、Cache、console 或永久儲存；只保存 placeholder／問題／分析文字。看圖問題在 Sheet logging 前、圖片結果在文字出口移除 data URL／大段編碼。包含 LINE Reply 在內的 HTTP／exception 不輸出外部原始 error body；Reply timeout 設 10 秒，AI 共同 deadline 不變。
-8. 新增圖片 prompt、固定繁中錯誤與 help。圖片逾時、過大、格式無法解析、過期、下載／AI 失敗時提示重新傳送，不把原圖送背景 queue。
-9. 原 JSON schema／validator、NewsInbox／StoryKey、Reader routing／typed errors、Queue retry／fallback、compatibility wrappers 均保留；`25/35` 僅同步 profile 註解。DeepSeek `aborted` 與 `insufficient_system_resource` 都轉為可重試中斷並保留 finish／usage，不保存半截內容。Weekly Editorial cache contract/version 不變，既有 cache 自然到期後重算使用 HIGH。
-10. 版本、README、CURRENT_VERSION 與 changelog 同步；歷史段落仍保留當時的模型／profile 事實。
-
-### Migration and deployment
-
-沒有新增 Script Property、Sheet 欄位、setup／migration、Trigger 或 handler。沿用 LINE_CHANNEL_ACCESS_TOKEN、SPREADSHEET_ID、DEEPSEEK_API_KEY；GEMINI_API_KEY 仍非必要。無 Node runtime、npm dependency、Drive／Cloud Storage、Files API、圖片資料庫、多圖配對或新 provider。
-
-手動同步 `01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、新增 `07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`25_WebTaskQueue.gs`、`35_WeeklyEditorialDigest.gs`。完成後 GAS 應有 21 個 .gs，建立 v1.14.0 Apps Script version，更新既有 Web App deployment；URL 與 Trigger handler 維持不變。文件與 tests/v1140_smoke.cjs 不部署。
-
-### Verification and limits
-
-本機 `node tests/v1140_smoke.cjs` 使用內建模組與 mock 服務檢查 syntax、13 routes、HIGH／JSON payload、圖片與純文字路由、privacy、size、expired no-fetch、共同 deadline、Reader retry metadata 與業務 validator。未能本機執行 GAS，未實際呼叫 LINE／DeepSeek；圖片辨識品質與 HIGH latency／length 比例需用 README 的部署 smoke tests 校準。
-
-本地只接收 JPEG/PNG；GIF/WebP 雖為 DeepSeek 官方格式，但本版未啟用。原圖每邊的官方上限為 8192 px，由 DeepSeek 解碼驗證；本地限制 raw bytes，不引入 image decoder。GAS 先緩衝下載，無法在 HTTP 過程提早截流。引用圖片取決於 LINE 尚可提供內容，不保證永久可取；後續文字記憶不代表能重新查看原圖。
-
-官方規格（2026-09-10）：[Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)、[Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)、[Vision](https://api-docs.deepseek.com/guides/vision/)、[Chat Completions](https://api-docs.deepseek.com/api/create-chat-completion/)、[LINE](https://developers.line.biz/en/reference/messaging-api/nojs/)、[GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)。官方目前明列 thinking 的 temperature／presence_penalty／frequency_penalty 無效，top_p 可用但低於 0.95 會被提升至 0.95；本版仍不送任何 sampling fields。
-
----
-
-以下舊版 Version Boundary 是歷史沿革；其中的 alias、disabled thinking、舊檔案數量與部署清單描述當時狀態，不可覆蓋上方 v1.14.3 實作。
-
-## v1.13.2 Version Boundary
-
-v1.13.2 是 X Post Weekly Display Edition。Previous stable baseline 是 v1.13.1；本版只改善 `#本週新聞` 對 X / Twitter 單篇 status 的 presentation title，並修正診斷模式因 synthetic X title 產生的假重複。
-
-### Included
-
-1. 建立共同的 weekly-news Display Title helper；真正 X status 優先顯示 `X｜Brief`。
-2. Brief 缺失時，只使用 NewsInbox 已保存且有效、非 fallback 的 StoryKey；再依序退回 raw Title 與 `未取得標題`。
-3. Weekly Editorial success、AI/API/JSON/validator/cache-invalid fallback、cache hit、高潛力、分類與詳細模式共用同一套 Display Title semantics。
-4. 診斷模式仍顯示 raw NewsInbox Title，但真正 X status 不再使用 synthetic Title 進行 title duplicate diagnosis；同 URL 重複仍照常檢查。
-5. Display Title 只做 whitespace 正規化與 100 字 presentation 防爆，不寫回 Sheet，也不修改 canonical Brief。
-6. 同步 `BOT_CURRENT_VERSION`、內建版本紀錄、README、CURRENT_VERSION 與 changelog。
-
-### Runtime invariants
-
-* X status 判定直接復用 Reader Layer 的 Twitter-like hostname 與 numeric status ID helpers；不依賴 synthetic title pattern。
-* Reader priority、FxTwitter endpoint、webResult 與 canonical Reader title contract 不變；`20_ReaderLayer.gs` runtime 不修改。
-* NewsInbox headers、欄序、Title / Brief / Outline / StoryKey contract、舊資料與人工補充資料不變。
-* Weekly Editorial AI input、Prompt、schema、profile、provider、model、partition validator、排序與 cache payload contract 不變。
-* `normalizeNewsTitleForDuplicateCheck_()` contract 不變；X 特規只位於 Diagnostic duplicate decision layer。
-* `formatWeeklyNewsDefaultDigest_()` 保持既有 defensive / compatibility 行為；正常 query parser 不會產生可到達該 formatter 的 viewMode。
-* `WEEKLY_EDITORIAL_CACHE_VERSION` 維持 `v1.13.0`，因 cache 保存的是模型整理 / partition 結果，最終文字仍由本地 formatter 即時 render。
-* LINE command/router、Trigger、Script Properties、新聞問答、封存、統整與 memory bridge contract 不變。
-
-### Migration and deployment
-
-本版不需要 Sheet migration、setup、回填舊資料、重跑 AI、新 Trigger 或新增 Script Properties。既有 NewsInbox row 只要 URL 可辨識為真正 X status 且 Brief 已存在，部署後下一次 `#本週新聞` 就會套用新展示。
-
-本版修改 `.gs` runtime，維護者完成 review 後需手動同步 `03_ResponseTexts.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs` 至 Google Apps Script，再建立新 Apps Script version 並更新既有 Web App deployment。
-
----
-
-## v1.13.1 Version Boundary
-
-v1.13.1 是 Source Layout & File Ordering Edition。Previous stable baseline 是 v1.13.0；本版只整理 source layout、active 註解、版本顯示與維護文件，不改 runtime 行為。
-
-### Rename mapping
-
-| v1.13.0 active name | v1.13.1 active name |
+| 區段 | 檔案 |
 | --- | --- |
-| `12_ResponseTexts.gs` | `03_ResponseTexts.gs` |
-| `03_Utils.gs` | `04_Utils.gs` |
-| `04_Storage.gs` | `05_Storage.gs` |
-| `05_Memory.gs` | `06_Memory.gs` |
-| `18_AiService.gs` | `10_AiService.gs` |
-| `19_AiProfiles.gs` | `11_AiProfiles.gs` |
-| `11_Prompts.gs` | `12_Prompts.gs` |
-| `09_DeepSeekService.gs` | `15_DeepSeekProvider.gs` |
-| `08_GeminiService.gs` | `16_GeminiProvider.gs` |
-| `16_ReaderLayer.gs` | `20_ReaderLayer.gs` |
-| `06_WebReader.gs` | `21_WebReader.gs` |
-| `07_WebTaskQueue.gs` | `25_WebTaskQueue.gs` |
-| `13_NewsInbox.gs` | `30_NewsInbox.gs` |
-| `17_WeeklyEditorialDigest.gs` | `35_WeeklyEditorialDigest.gs` |
-| `14_TopicHighlights.gs` | `40_TopicHighlights.gs` |
-| `10_TopicFeatures.gs` | `45_TopicFeatures.gs` |
-| `15_DataCleanup.gs` | `50_DataCleanup.gs` |
-
-`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs` 保持原名。共 20 個 runtime `.gs`、17 個 rename。
-
-### Included
-
-1. 依穩定領域區段重新編號，並保留區段內空號供未來擴充。
-2. 將 DeepSeek／Gemini adapter 檔名由 Service 改為 Provider，明確區分 `10_AiService.gs` 與 vendor adapter。
-3. 更新 20 個檔頭 self-name、版本、責任、caller/dependency 與重要相容性註解。
-4. 更新現行跨檔引用、`BOT_CURRENT_VERSION`、`BOT_CURRENT_VERSION_DATE`、最新 `BOT_VERSION_HISTORY` 與四份 active 文件。
-5. 提供 GAS 直接 Rename、部署、驗證與反向 rename rollback 邊界。
-
-### Runtime invariants
-
-* top-level function、Trigger handler 與 global const 名稱不變；只有版本顯示 metadata 值與最新版本紀錄更新。
-* Prompt、AI task route/profile/model/thinking/token/timeout/retry metadata、normalized response contract 不變。
-* Reader priority、typed error、retry/backoff/deadline、Queue/PendingReplies 行為不變。
-* Sheet 名稱、headers、欄序、Script Properties、setup/migration、cleanup 範圍不變。
-* LINE 指令、router、reply format、Web App entry 與 Trigger handler 名稱不變。
-* `WEEKLY_EDITORIAL_CACHE_VERSION` 維持 `v1.13.0`，因 weekly editorial 資料 contract 未變。
-
-### GAS deployment and rollback boundary
-
-GAS 應在低流量時段直接 Rename 既有 17 個檔案，不得用「新增新檔、稍後刪舊檔」。同時存在新舊檔會造成重複 top-level function／const 宣告，可能讓專案無法載入。Rename 完成後仍須正好有 20 個 `.gs`，且 17 個舊 active 名稱全部消失。
-
-Trigger 綁定函式名稱，不綁定檔名；本版不需重建 Trigger。程式同步與 smoke tests 通過後，建立 v1.13.1 Apps Script version，將既有 Web App deployment 指向新 version，deployment URL 不變。
-
-回滾時先將 Web App deployment 指回先前穩定 Apps Script version；若要回復 source 名稱，依上表右欄 → 左欄直接反向 Rename，最後確認仍是 20 個 `.gs`、主要 handler 與既有 Trigger 綁定完整。Script Properties 與 Sheet 不需回滾。
-
----
-
-## v1.13.0 Version Boundary
-
-v1.13.0 是 AI Routing & Project Architecture Edition。
-
-本版建立薄的 provider-neutral AI routing，並讓 DeepSeek V4 Flash 接管正常 runtime：
-
-1. 新增 `18_AiService.gs`，統一 task route/profile resolution、memory orchestration、provider dispatch、normalized response、finish reason、空回覆、JSON 基礎檢查與安全 console metadata。
-2. 新增 `19_AiProfiles.gs`，集中 provider/model registry、execution profiles、task routes、thinking、reasoning effort、output mode、token、timeout、sampling 與 caller-owned retry metadata。
-3. 正常 runtime task 全部使用 `deepseek-v4-flash`；每個 task 都顯式指定 thinking，不依賴 API 預設。
-4. `fast_text`、`fast_json`、`long_extraction_json` 均使用 thinking disabled；`thinking_high` 使用官方 `reasoning_effort=high`；`thinking_max` 保留但沒有 runtime task 綁定。
-5. DeepSeek thinking enabled 時不送 temperature、top_p、presence_penalty 或 frequency_penalty；JSON task 使用 `response_format={type:"json_object"}` 與合理 `max_tokens`。
-6. `news_analysis` 接管 NewsInbox title、brief、outline、分類稽核、StoryKey 等固定 JSON；Prompt/schema/normalizer/audit 仍由 `13_NewsInbox.gs` 負責。
-7. `web_lazy_summary` 接管 `#懶人包`；Prompt/schema/normalizer/validator 歸 `07_WebTaskQueue.gs`。
-8. `raw_html_extraction` 接管 Jina 失敗後的 legacy raw HTML 正文抽取；Prompt injection 防護、長輸出 contract 與 mainText validator 歸 `06_WebReader.gs`。
-9. Reader 優先順序維持 FxTwitter / PTT / Jina / legacy fallback；新 legacy route 為 `legacy_raw_html_ai`，歷史 `legacy_raw_html_gemini` 不 migration 且仍可辨識。
-10. 既有 DeepSeek 功能全部改走正式 task：`general_chat`、`news_question`、`program_topic_analysis`、`integrate_topics`、`archive_topics`、`archive_news`、`weekly_editorial_digest`、`manual_news_supplement`、`news_memory_bridge`。
-11. `08_GeminiService.gs` 保留 dormant provider transport；正常 runtime 不使用、不是 fallback，只有 route 明確選到 Gemini 時才讀 `GEMINI_API_KEY`。
-12. Gemini 重新啟用前必須核對當時最新 API/model/payload；v1.13.0 dormant adapter 不保證未來格式不變，也不支援未經 review 的 thinking route。
-13. normalized response 固定提供 `ok/text/json/task/profile/provider/model/finishReason/usage/elapsedMs/errorType/errorMessage/httpStatus/retryable`。
-14. usage 可觀察 input/cached/uncached/output/reasoning/total tokens；provider 沒有的欄位為 optional null。
-15. typed error 區分 configuration/auth/rate limit/timeout/provider HTTP/empty/invalid JSON/length/validation/unknown；AiService 不 retry，NewsUrlQueue 依 `retryable` 或穩定 errorType 決策。
-16. structured AI log 只寫 console metadata，不新增 AI Log Sheet，也不記錄完整 Prompt、聊天、網頁正文、response text 或 API key。
-17. 保留既有公開入口與 trigger：`doPost`、`setupLogSheet`、`installWebTaskQueueTrigger`、`processWebTaskQueue`、`processNewsUrlQueue`。
-18. 保留一版 `callDeepSeek...`、`callGeminiWeb...` 與 `buildSystemPrompt` compatibility wrapper；正式 runtime 不使用舊 wrapper。
-19. `WEEKLY_EDITORIAL_CACHE_VERSION` 更新為 `v1.13.0`，避免舊 normalized cache 混入新 provider contract。
-20. 本版不修改任何 Sheet header/欄序、LINE 指令或既有回覆格式；不需要 migration、setup、新 Trigger 或新增 Script Properties。
-21. Jina、FxTwitter、PTT 與 legacy Reader failure 會保留 `errorType/retryable/httpStatus` 到 ReaderLayer 與 NewsUrlQueue；configuration/auth/永久 4xx 不重試，408/timeout/429/5xx 才依 typed metadata 重試。成功 webResult 欄位不變，舊 caller 若只讀 `ok/error` 仍相容。
-22. 同一個 LINE webhook payload 的所有 events 共用一個 40 秒 absolute deadline；單次同步 AI 最多 30 秒、同步 Reader 最多 12 秒，直接網址會用同一 deadline 扣除 Reader 與前一次 AI 耗時，預算不足即進既有 Queue。
-23. profile timeout 是任務最大值，背景 Queue 不傳同步 context 時仍使用完整上限；`retryPolicy` 只供 caller 描述與決策，AiService 不自動 retry。
-24. `AI_CALL_METADATA.ok` 只代表 provider transport、finish/content 與 JSON 基礎格式通過，不代表功能 schema/business validator 已完成。
-
-Task/profile 對照：
-
-* `general_chat` → `fast_text` → thinking disabled → text
-* `news_analysis` → `fast_json` → thinking disabled → JSON
-* `web_lazy_summary` → `fast_json` → thinking disabled → JSON
-* `raw_html_extraction` → `long_extraction_json` → thinking disabled → JSON
-* `news_question` → `thinking_high` → thinking enabled/high → text
-* `program_topic_analysis` → `thinking_high` → thinking enabled/high → text
-* `integrate_topics` → `thinking_high` → thinking enabled/high → text
-* `archive_topics` / `archive_news` → `fast_json` → thinking disabled → JSON
-* `weekly_editorial_digest` → `fast_json` → thinking disabled → JSON
-* `manual_news_supplement` → `fast_json` → thinking disabled → JSON
-* `news_memory_bridge` → `thinking_high` → thinking enabled/high → text
-
-以上 profile timeout 為任務最大值；所有由 `handleLineEvent()` 同步執行的 AI task 都另受 30 秒單次 cap 與 40 秒 event deadline 約束。`news_memory_bridge` 是輔助脈絡，剩餘少於 20 秒時直接跳過；週編輯台 compact route 與 memory bridge 依現行 query 條件互斥。
-
-Script Properties：正常 runtime 需要 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。`GEMINI_API_KEY` 只在 dormant Gemini route 被明確選中時需要；本版沒有新增 key。
-
-部署到 Google Apps Script 後，維護者需手動同步本版修改與新增的 `.gs` 檔。
-
----
+| Core / LINE / Shared | `00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs` |
+| AI | `10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs` |
+| Reader / Jobs | `20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs` |
+| News / Editorial | `30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs` |
+| Topic | `40_TopicHighlights.gs`、`45_TopicFeatures.gs` |
+| Maintenance | `50_DataCleanup.gs` |
 
-## v1.12.5 Version Boundary
+新 runtime files：`13_AiSchemas.gs`、`14_AiTools.gs`。數字前綴不代表 load order，不新增 top-level executable side effects。新 schema 與 tool definition 都在函式內建立。
 
-v1.12.5 是 Weekly Editorial Digest Edition。
+### Capability model
 
-本版把 StoryKey 從 compact 的最終聚合鍵改為「單篇新聞提供的候選事件提示」，並新增一次同步 DeepSeek 週編輯台：
+model registry 公告 adapter 已實作的能力，task route 宣告附加需求，profile 提供 text / JSON、thinking、token / timeout。共同能力名稱為 `text`、`thinking`、`vision`、`structuredOutput`、`webSearch`、`clientTools`。
 
-1. `#本週新聞` 與 `#本週新聞 精簡` 只有在 `viewMode=compact`、沒有高潛力 filter、沒有分類 filter 時啟用週編輯台。
-2. viewMode 優先順序固定為 `diagnostic > detailed > compact`；高潛力與分類維持獨立 filter。
-3. 同一次 `weekly_editorial_digest` DeepSeek JSON 呼叫處理新聞聚類、群組話題提煉，以及群組話題與新聞的重複判斷。
-4. DeepSeek 使用專用 direct JSON helper、低溫度、JSON object 格式、thinking disabled、`finish_reason` 驗證；webhook 內不 retry。
-5. GAS 為新聞建立 `N001` 類固定 ID，最多送模型 30 則；網址不送模型，最後由原始 NewsInbox item 取回。
-6. 至少兩則才成立焦點故事線；不確定或只有單篇的新聞回到其他新聞，並按主要分類精簡顯示。
-7. 模型 JSON 採保守部分採納：未知 ID 移除、同陣列去重、跨 cluster 或 cluster / ungrouped 衝突退回其他新聞、漏項由 GAS 補回。
-8. validator 完成後的 partition coverage 保證每則原始新聞恰好位於一個故事線或其他新聞；未送模型新聞也必定進入其他新聞。
-9. ConversationLog 使用表頭讀取真正最近七天、相同 conversationId、role=user 的資料；從尾端每批 500 列有限掃描，最多 2500 列。
-10. GAS 先移除指令、純網址、符號短語、完全重複與單純新聞標題轉貼；「實質評論＋網址」會保留移除網址後的評論。
-11. 有效對話最多 60 則、單則 240 字、總長約 6000 字；UserId 轉成本次查詢的匿名代號。
-12. 模型/API/JSON/頂層契約失敗時，直接回到已事先建立的分類 compact fallback；錯誤只寫 console log。
-13. LINE block fitter 先移除低順位群組話題，再省略完整低順位新聞 block；rendered coverage 與 partition coverage 分開驗證，省略新聞準確顯示「尚有 N 則未顯示」。
-14. 既有 `splitTextForLineMessages_(text)` 簽名、回傳型別與行為保持不變；metadata helper 只供週編輯台預演，通用 splitter 僅作最後防線。
-15. 通過 validator 的 normalized JSON 使用 10 分鐘 ScriptCache；key 包含版本、conversationId hash 與實際送模型的新聞/對話 hash。
-16. 詳細模式不顯示 StoryKey；診斷、`#新聞問答`、`#統整話題` 與 `#封存本週新聞` 仍可使用 StoryKey 候選提示。
-17. 聚類結果不回寫 NewsInbox，不建立永久故事線表，不修改舊資料。
-18. 本版新增 `17_WeeklyEditorialDigest.gs`，並更新 help、版本文字、README、CURRENT_VERSION 與 changelog。
+所有 active task 維持 HIGH。JSON profile 預設要求 structuredOutput；只有 raw_html_extraction 明確設 `legacyJson:true`。`supportsImages`、`allowsWebSearch`、`allowsClientTools` 是 resolver 產生的相容旗標，source of truth 為 capability list。
 
-本版不修改 NewsInbox 或其他 Sheet schema，不需要 migration、setup、Trigger 或新增 Script Properties；不修改 Gemini 單篇新聞分析、Reader Layer、NewsUrlQueue、WebTaskQueue、`#新聞問答` 核心行為、WeeklySummary schema 或封存結構。
+未知能力、model 不支持的能力或 adapter 未實作的能力組合在 HTTP 前回 `ai_configuration_error`。沒有把不支持的欄位送出後期待 vendor 忽略。直接呼叫 runAiTextTask / runAiMessagesTask 且未提供 trusted conversation scope 時不提供 internal tools；正常聊天與圖片入口由 runAiMemoryTask 注入 scope。
 
-部署到 Google Apps Script 後，維護者需手動同步本版修改的 `.gs` 檔。
+### Request / result contract
 
----
+保留 `runAiTextTask`、`runAiJsonTask`、`runAiMemoryTask`、`runAiMessagesTask`。本版不新增功能重複的入口。
 
-## v1.12.4 Version Boundary
+內部 request 帶 task、messages、capabilities、thinking / reasoningEffort / profile、outputMode / outputSchema、可用工具、token budget、timeout / absolute deadline。Feature 不組 Anthropic／Responses payload。
 
-v1.12.4 是 Weekly News Compact & Story Grouping Edition。
+Feature result 保留 `ok`、`text`、`json`、`usage`、`finishReason`、`errorType`、`retryable`、`httpStatus`、task/profile/provider/model 等既有欄位，附 `usedWebSearch`、最多三筆安全 sources。transport 名稱只作既有診斷 metadata，feature 不依它分支。
 
-本版讓 `#本週新聞` 預設變成適合 LINE 閱讀的精簡剪報，並新增 StoryKey 作為同一事件線的聚合鍵：
+provider 只在需要工具時交回 generic `{id,name,arguments}` 和不可序列化的 continuation function。AiService 驗證、執行工具後呼叫 closure；raw assistant turn、thinking、tool IDs 的 vendor 結構由 provider closure 保存，從未放進 feature result、Sheet、Cache、PendingReplies、LINE 或 log。
 
-1. `#本週新聞` 預設改為 compact，顯示最近 7 天新聞素材，按 StoryKey / 故事線聚合。
-2. `#本週新聞 精簡` 等同 `#本週新聞`；`#本週新聞 詳細` 才展開完整 Outline / Brief、切角、節目潛力、主分類、StoryKey 與完整來源網址。
-3. `#本週新聞 高潛力`、`#本週新聞 高潛力 詳細`、`#本週新聞 分類 <分類名>`、`#本週新聞 分類 <分類名> 詳細` 保留既有篩選語意，但預設顯示為故事線 compact。
-4. LINE `replyToLine(replyToken, text)` 會自動把長文字拆成最多 5 則 text message；每則使用 4900 字安全上限，仍維持單次 Reply API call。
-5. NewsInbox 最右側追加 `StoryKey` 欄位，不重排、不刪除、不改名既有欄位；舊資料缺欄或空白時，會用 SpecialTopic、MatchedEntities、標題、分類或網址產生 fallback。
-6. Gemini 新聞分析 prompt / JSON schema 新增 `storyKey`，並強化 category 的「主討論軸」判斷、防錯規則、分類理由與警告規則。
-7. `#本週新聞` compact 模式優先依 StoryKey 分組；故事線排序依高潛力數量、同故事線素材數量、最新時間與文字排序。
-8. `#本週新聞 診斷` 新增 StoryKey 空白、舊資料 fallback、同 URL 重複、標題正規化重複、同故事線跨多個 category，以及 category / StoryKey 疑似不一致提示。
-9. `#新聞問答`、`#統整話題` 與 `#封存本週新聞` 的素材文字會帶入 StoryKey，方便後續整理引用事件線。
-10. 更新 `#help`、`#版本`、README、CURRENT_VERSION 與 changelog。
+## DeepSeek transport matrix
 
-本版包含 LINE reply 分段、NewsInbox schema 相容追加、Gemini 新聞分析 prompt / schema、`#本週新聞` compact / detailed / diagnostic 排版、分類 keyword fallback、重複素材診斷、help 與版本文件更新。
+| 能力／task | Transport | 輸出／特性 |
+| --- | --- | --- |
+| 普通 text tasks、simple image_analysis | Chat Completions | text、HIGH；圖片在 adapter 編碼 |
+| raw_html_extraction | Chat Completions | legacy json_object，28k token / 90 秒 profile |
+| 六個 migrated JSON tasks | Responses | `text.format` 的 json_schema / name / schema、HIGH |
+| general_chat | Anthropic Messages | auto / forced server Search，加可用的只讀 client tools |
+| multimodal_research | Anthropic Messages | 單張 image + Search + client tools，同一 workflow |
+| structuredOutput + Search / tools / vision | 不支援本版組合 | HTTP 前 ai_configuration_error |
 
-本版不修改 Reader Layer provider 策略；不導入 ByCrawl / Apify / 外部爬蟲服務；不修改 `#懶人包` 核心流程；不修改網址版 `#節目話題分析` 核心流程；不修改 NewsUrlQueue 基本背景收件架構；不重排或刪除既有 NewsInbox 欄位；不導入 Node.js / npm / package.json / 自架伺服器架構；不寫入任何 secret。
+模型固定 `deepseek-flash`，沿用 `DEEPSEEK_API_KEY`。沒有 Responses built-in Search，也沒有把 Chat Completions 全部遷移。
 
-部署到 Google Apps Script 後，維護者需手動同步本版修改的 `.gs` 檔。`StoryKey` 欄位會在 `setupLogSheet()` 或任何呼叫 `ensureNewsInboxSheet_()` 的流程中自動追加到 NewsInbox 最右側，不需要手動重排欄位。
+### Task budgets
 
----
+| Task | Max output tokens / profile seconds | 格式 |
+| --- | --- | --- |
+| general_chat | 4,800 / 45 | text |
+| news_analysis | 8,000 / 60 | schema |
+| web_lazy_summary | 8,000 / 60 | schema |
+| raw_html_extraction | 28,000 / 90 | legacy JSON |
+| news_question | 7,000 / 90 | text |
+| program_topic_analysis | 8,000 / 120 | text |
+| integrate_topics | 9,000 / 120 | text |
+| archive_topics | 6,000 / 60 | schema |
+| archive_news | 7,000 / 60 | schema |
+| weekly_editorial_digest | 10,000 / 60 | schema |
+| manual_news_supplement | 5,000 / 60 | schema |
+| news_memory_bridge | 5,000 / 90 | text |
+| image_analysis | 8,000 / 60 | text |
+| multimodal_research | 8,000 / 60 | text |
 
-## v1.12.3 Version Boundary
+上述是單次 provider request token 上限與 profile timeout，不是 LINE 可等待時間。一般聊天／研究共用最多 30 秒 orchestration；其他同步 caller 仍套 webhook cap。真的呼叫工具時最多兩次模型 request，因此 token 花費可能上升至兩次 request 的總和；不查工具時只有一次。最終成功 usage 累計兩次，未知 usage 欄位保持 null。
 
-v1.12.3 是 News QA Edition。
+## Structured Output migration
 
-本版讓 NewsInbox 可以直接支援素材問答，並收斂低頻的本週新聞檢視：
+`13_AiSchemas.gs` 是清楚的 schema responsibility layer：重用 NewsInbox 與 WebTaskQueue 的既有 schema builders，補上封閉 object、完整 required fields、型別、適用 enum 與信心 0～1；封存與週編輯台 schema 在此依既有 business validator contract 建立。
 
-1. 新增 `#新聞問答 <問題>`，根據最近 7 天 NewsInbox 素材回答新聞問題。
-2. `#新聞問答` 支援 `高潛力` 與 `分類 <分類名>` 篩選；回答必須附完整原文網址，方便直接點回原文。
-3. `#新聞問答` 可讀取最近新聞封存作為輔助脈絡，但 NewsInbox 仍是主要事實依據；素材不足時必須明確說目前素材池看不出來。
-4. `#本週新聞 精簡` 保持按分類分組，但來源改為完整原文網址，不再只顯示網域。
-5. `#本週新聞 診斷` 的來源改為完整原文網址，方便檢查分類問題後回到原文。
-6. 移除 `#本週新聞 24小時` 與 `#本週新聞 24小時 診斷` 的支援與文件說明。
-7. 核心 `#help` 新增 `#新聞問答 <問題>`；`#help 進階` 移除 24 小時說明，保留詳細、精簡、分類與診斷模式。
-8. 更新 `#版本`、README、CURRENT_VERSION 與 changelog。
+本地 validator 只支援本版使用的 schema subset，不是完整 JSON Schema engine。不取代語意分類、弱分類拒絕、StoryKey、空摘要、duplicate、partition repair、coverage、render 或 cache revalidation。
 
-本版包含 LINE router、指令解析、DeepSeek news_question 模式、新聞問答 prompt、`#本週新聞` 精簡 / 診斷來源顯示、help 分層與版本文件更新。
+| Task | 遷移 | 保留的業務檢查 |
+| --- | --- | --- |
+| news_analysis | 是 | validateNewsAnalysisContract_、分類 audit、weak classification、Brief / Outline / StoryKey normalizers |
+| web_lazy_summary | 是 | normalizeWebLazySummaryResult_、非空摘要、keyPoints / warnings 與分類 |
+| archive_topics | 是 | validateArchiveJsonContract_、非空摘要、陣列；來源仍只有使用者 ConversationLog |
+| archive_news | 是 | 同一 archive validator；來源仍為 NewsInbox |
+| weekly_editorial_digest | 是 | ID / partition / conflict repair / coverage / cache 與 fallback |
+| manual_news_supplement | 是 | validateManualNewsSupplementContract_、分類 normalizers 與人工補件 fallback |
+| raw_html_extraction | 否 | mainText 長輸出與 legacy extraction validator；保留 28k 空間，待真實長頁 corpus 驗證後再遷移 |
 
-本版不修改 Reader Layer；不導入 ByCrawl / Apify；不修改 NewsInbox schema；不修改 WeeklySummary schema；不改群組貼網址靜默收件流程；不改 WebTaskQueue、`#懶人包` 或網址版 `#節目話題分析`；不新增 Node.js / npm / package.json / 自架伺服器架構；不寫入任何 secret。
+所有 migrated task 都必須成功解析 JSON、通過 schema，才交給 business validator。缺欄／enum／型別／額外欄位不得 silently fallback 到 json_object。JSON malformed、length、HTTP、provider failure 保留 typed failure。新聞／快讀 schema violation 保留可由 Queue 重試語意；封存／週編輯台／人工補件由原 caller 決定 fallback。
 
----
+## Read-only internal tools
 
-## v1.12.0 Version Boundary
+工具 definition 為 provider-neutral name / description / parameters。只有 adapter 轉成 vendor schema；沒有任意 GAS function invocation、任意 Sheet/range/column 或 write tool。
 
-v1.12.0 是 Silent URL Status & News Archive Edition。
+| Tool | 可接受 args | Scope / 讀取視窗 | Compact result |
+| --- | --- | --- | --- |
+| search_news_inbox | query ≤200 字元、days 1～30（預設7）、limit 1～10（預設5） | 目前 conversation；NewsInbox 尾端最多500列；Status=ok、日期符合 | title、brief、bounded outline、category、raw storyKey、安全 source URL、timestamp |
+| get_topic_highlights | query、days、limit 同上 | 目前 conversation；尾端300列；active 或 legacy 空 status | 人工 highlight text、tags、timestamp |
+| get_weekly_memory | limit 1～10（預設5）、archiveType 可省略或 topic / news | 目前 conversation；沿用 WeeklySummary 尾端100列與 legacy topic default | 既有封存文字格式，截限後回傳 |
+| read_url | 一個公開 HTTP(S) URL，≤2048 字元 | 同一 orchestration deadline，最多一次 URL | title、URL、最多3000字元正文、truncated flag |
 
-本版調整新聞收件、狀態回報與封存記憶分工：
+所有欄位可省略但 read_url.url 必填；未知欄位（含 conversationId、日期、任意 range）拒絕。不開任意日期介面，使用有上限的 days，拒絕未來時間的新聞／重點。
 
-1. 群組非 trigger 訊息內含網址時，不再回覆 Brief，改靜默寫入 NewsUrlQueue 背景整理。
-2. 網址不支援、入隊失敗或背景讀取失敗時，改透過 PendingReplies 延後回報。
-3. 個人聊天室直接貼網址與明確指令中的網址，仍保留同步回覆路徑，方便維護測試 Reader / Gemini。
-4. 新增 `#狀態回報`，統計最近 7 天網址收件、NewsInbox 入庫、NewsUrlQueue 佇列與失敗狀態。
-5. 新增 `#封存本週新聞`，將最近 7 天 NewsInbox 摘要寫入 WeeklySummary。
-6. `#封存本週話題` 改為只讀 ConversationLog，不再混入 TopicHighlights、WebSummary 或 NewsInbox。
-7. `#本週新聞` 移除節目潛力顯示；若已有新聞封存，會嘗試比對過去新聞脈絡。
-8. WeeklySummary 最右側追加 `ArchiveType`、`PeriodStart`、`PeriodEnd`、`SourceItemCount`，用來區分 `topic` / `news` 封存並保留期間資訊。
+conversationId 由 runAiMemoryTask 的可信參數覆蓋注入，模型永遠不能選 scope。整批 calls 先驗證 allowlist、JSON、ID 唯一性、型別、數值、enum、URL、call count，再開始讀取。最大4 calls、1 URL、1 continuation、每份完整序列化 tool data ≤6000 UTF-16 字元；上限保護同步成本與最終回答預算。
 
-本版包含 LINE router、NewsInbox / NewsUrlQueue 收件流程、WeeklySummary 相容 schema、固定回覆文字、help、README、CURRENT_VERSION 與 changelog 更新。
+Read-only path 不用 ensureSheet、不建表、不補欄。缺表為空資料；服務例外以 `{ok:false,errorCode:'tool_read_failed'}` 返回，無 raw exception / HTTP body。argument / allowlist 等致命錯誤直接終止 orchestration。工具資料帶 `evidenceOnly`；查詢資料帶 `limitedWindow`，表示只查近期有限視窗，不保證全歷史檢索。
 
-本版不刪除 `#統整話題`、`#節目話題分析`、`#懶人包`、`#畫重點` 等既有功能；不修改 Reader Layer provider；不新增 Node.js / npm / 自架伺服器架構；不寫入任何 secret。
+NewsInbox / TopicHighlights 重用 header reader 並明確投影 allowlist；WeeklySummary 保留既有 read/format path，第四個 readOnly 參數禁止 ensure，舊 caller 三個參數仍相容。模型不會修改任何永久資料。
 
----
+## Tool continuation、deadline 與 privacy
 
-## v1.11.2 Version Boundary
+流程只有：模型首輪 → 一批0～4個工具 → 最後模型回答。首輪沒有 tool call 就直接回覆；第二輪又要求工具時 `ai_tool_round_limit`，不再執行、不保存半成品。
 
-v1.11.2 是 Brief Range Hotfix。
+- 同一 webhook 所有 events 使用原 40 秒 absolute deadline，原同步 AI cap 約30秒不增加。
+- general_chat / research 的 lock、memory、首輪、工具、續接共用同一最多30秒 window，還要受 webhook deadline 限制。
+- 提供 tools 的首輪保留8秒 final model + 2秒資料讀取；每個工具前再次檢查至少9秒，final call 前至少8秒。
+- read_url timeout cap 5秒，reader deadline 提前8秒保留回答空間。編碼、序列化與真正 HTTP 前重算；返回後若總期限已過則拒絕晚到的答案。
+- 不 sleep、不自動 retry、不開 agent loop、不新增 Queue。GAS Sheet／lock／fetch 的真實延遲仍需部署後測試；mock 只證明本地 phase guards。
 
-本版只調整直接網址與 NewsInbox Brief 的長度策略：
+Prompt 將網站、圖片與所有 retrieved records 限定為 evidence/context，不能覆蓋 system/developer 指示，也不能觸發任意函式或修改資料。人工重點作為可信使用者觀點，但不能直接當作已查證外部事實。
 
-1. Gemini 維持一次 JSON 呼叫，不新增 API 呼叫。
-2. Brief 從 20 字內改為 30～50 字目標區間，避免回覆太像標題。
-3. X / Twitter 貼文、公告或單句消息等短內容可以自然少於 30 字，不硬湊字數。
-4. 程式端不再以目標字數硬裁 Brief，只保留 120 字防爆上限，避免模型失控輸出。
-5. `#本週新聞` 沿用 Brief 欄位，因此會自然顯示較完整的短簡介。
-6. NewsInbox schema、Outline 欄位、`#統整話題` 讀取 Outline 的流程都不變。
+raw tool args/results、search query、retrieved full page、thinking/reasoning、encrypted content、raw provider body 與 opaque state 不保存。Feature result 明確投影安全欄位；memory / ConversationLog 只保存使用者文字（圖片 placeholder）與最後主回答。所有成功結果清除 data URL / 長編碼；內部協議 markup fail closed。Log 沿用安全 AI metadata，不列 query、正文、tool args 或 response text。
 
-本版包含 Gemini 新聞 prompt、Brief normalizer、help、版本文字與文件更新。
+## Web Search、Vision 與來源
 
-本版不修改 Reader Layer、WebTaskQueue、LINE router、NewsInbox schema、Outline、網址版 `#節目話題分析` 或 `#懶人包` 行為。
+普通聊天 auto，明確搜尋 forced。圖片研究的「最新／查證／來源／即時」或 explicit Search 也要求 Search；普通看圖保持 Chat Completions。引用非圖片維持自然文字 fallback，群組無 trigger 不下載，沒有 quote 不猜圖，Pending Reply 優先序與多圖限制維持。
 
----
+Search success 只認一對一、非錯誤的正式 server_tool_use / web_search_tool_result；不使用模型自述、prompt 或文字網址。required Search 沒執行就失敗，pause_turn 不追加無界續接。首輪最多3次 server Search；final continuation 停用工具選擇並移除 server Search definition，避免額外搜尋與超出本版 round budget。
 
-## v1.11.1 Version Boundary
+首次同時 Search + client tools 時，把完整 assistant content（含 thinking 與 server result）保留於 provider closure 供第二次 request；feature 看不到原始 block。DeepSeek compatibility 明確列出所需單項能力；官方未提供本專案完全相同的三能力組合實例，採原生組合、mock 驗證、部署後 live 驗證。
 
-v1.11.1 是 Compact News Brief Edition。
+sources 只來自 provider search metadata 或實際送入模型的 NewsInbox／read_url URL。合併、public URL 驗證、去重、最多3筆；不從 final text 抽網址。內部資料只有來源，不會把 usedWebSearch 改成 true。主回答最多4個 LINE bubble，來源獨占最後1個；metadata 不保存到 memory。
 
-本版只調整直接網址的摘要分工、NewsInbox 欄位與 `#統整話題` 的素材來源：
+## Reader / SSRF
 
-1. Gemini 維持一次 JSON 呼叫，同時產生 20 字內 Brief、100～200 字 Outline、標題、分類、切角與節目潛力。
-2. 單一直接網址同步成功後，LINE 只回覆短 Brief。
-3. NewsInbox 在既有欄位最右側新增 `Outline`，保存完整內容大綱。
-4. 同步與 NewsUrlQueue 背景入庫都會保存 Brief 與 Outline。
-5. `#本週新聞` 顯示標題、短 Brief、來源網址與節目潛力，不再顯示切角。
-6. `#統整話題` 會讀取最近 7 天、最多 20 筆 NewsInbox 素材，優先使用 Outline；舊資料沒有 Outline 時退回 Brief。
-7. `#新聞補充` 維持人工補充流程，Outline 留空，Brief 統一限制在 20 字內。
-8. `ensureNewsInboxSheet_()` 會自動把 Outline 補到既有 NewsInbox 最右側，不需要 migration。
+read_url 重用既有 Reader，透過 trusted `noAi:true` 在 Jina 失敗後直接返回，不進 legacy AI extraction。PTT / FxTwitter 本來就不呼叫 AI；一般新聞收件的 legacy fallback 完全保留。
 
-本版包含 Gemini 新聞 prompt、NewsInbox schema 與寫入相容處理、`#本週新聞` 排版、`#統整話題` DeepSeek 素材組裝、版本文字與文件更新。
+重用 public URL guard：拒絕 localhost、loopback、private、CGNAT、link-local、metadata、非 canonical numeric host、userinfo、IPv6 authority 與非法 port。工具模式下對 Jina/FxTwitter 的 HTTP 也關閉自動 redirect；PTT / raw direct fetch 原有不跟 redirect 的防線維持。沒有另建任意 fetch 或 DNS resolver；Jina 服務端實際抓取與其 DNS/redirect 防護仍屬既有外部 Reader 信任邊界，不能宣稱本地驗證等於服務端網路隔離證明。
 
-本版不修改 Reader Layer、WebTaskQueue、網址版 `#節目話題分析`、`#懶人包`、LINE router、外部 reader 服務或其他 Sheet schema。
+## Gemini future portability
 
----
+Gemini registry 保持 dormant；目前 adapter 只公告 text。thinking、vision、structuredOutput、Search 或 tools 要求一律在 HTTP 前明確失敗，沒有偷偷讀 key 或 fallback。既有 generateContent legacy JSON path 不代表正式支援 JSON Schema。
 
-## v1.11.0 Version Boundary
+本版只加 shared capability fail-fast 與錯誤原文遮蔽。未來 re-enable 應重新核對當時 Interactions API，實作 Gemini transport resolver、structured schema / tools / grounding normalization 與 transient continuation，再更新 provider/model registry；feature 不需知道 Gemini raw steps。
 
-v1.11.0 是 Direct URL Summary Edition。
+Interactions 的 optional server state / storage 不可直接套入本專案 privacy policy；需明確 stateless / store=false review。沒有 production Gemini credential，也沒有雙 provider 成本。
 
-本版只調整「直接貼網址」的收件與回覆流程：
+## 2026-09-15 官方 contract 查核
 
-1. 單則訊息只有一個可支援網址時，先透過現有 Reader Layer 取得正文。
-2. Gemini 在一次 JSON 呼叫中，同時產生 LINE 回覆用的 100～200 字內容大綱，以及 NewsInbox 的標題、分類、50 字內簡介、切角與節目潛力。
-3. 同步成功後直接寫入 NewsInbox，並使用當次 LINE replyToken 回覆大綱。
-4. 同步成功不建立 NewsUrlQueue 或 PendingReplies。
-5. 多網址、Reader 過慢、同步 API 失敗、分類不足或大綱結果不足時，退回既有 NewsUrlQueue 背景處理。
-6. 若當下已有舊 Pending Reply，仍先交付舊結果；新網址維持背景入隊，避免同一 replyToken 同時承擔兩套結果。
-7. 同步大綱只用於當次 LINE 回覆，不新增 NewsInbox 欄位。
-8. 群組與個人聊天室維持一致行為。
+以下是本次直接讀取的官方資料；部分 DeepSeek reference 在 web tool timeout 後改用 HTTPS 直接讀取同一官方頁，並非只信 search snippet。
 
-本版包含 LINE webhook 直接網址分流、NewsInbox Gemini prompt 與固定回覆調整，也包含 README、CURRENT_VERSION、版本文字與 changelog 更新。
+- [DeepSeek Models](https://api-docs.deepseek.com/quick_start/pricing/) 與 [Updates](https://api-docs.deepseek.com/updates/)：canonical model 保持 deepseek-flash；不藉歷史 alias 改模型。
+- [Chat Completions reference](https://api-docs.deepseek.com/api/create-chat-completion/) 與 [JSON Output](https://api-docs.deepseek.com/guides/json_mode/)：legacy JSON 使用 json_object；不把它冒充 JSON Schema。
+- [Responses reference](https://api-docs.deepseek.com/api/create-response/) 與 [Responses guide](https://api-docs.deepseek.com/guides/responses_api/)：text.format 支援 json_schema / name / schema；function tools 支援，built-in web_search ignored，stateless。依 reference 欄位實作，不自行加入未列出的 strict 開關。
+- [Tool calls](https://api-docs.deepseek.com/guides/tool_calls/) 與 [Thinking](https://api-docs.deepseek.com/guides/thinking_mode/)：tool continuation 必須保留所需推理上下文；本版只在 provider closure 暫存，所有 active routes HIGH，不送 sampling。
+- [Vision](https://api-docs.deepseek.com/guides/vision/) 與 [Anthropic compatibility](https://api-docs.deepseek.com/guides/anthropic_api/)：image source/base64、client tool_use/tool_result、server Search blocks、thinking/output_config.effort 可用；is_error 被忽略，因此工具錯誤使用 provider-neutral data。
+- [Anthropic Web Search schema](https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool)：參照 server tool/result 結構；不把 Anthropic 新 tool 版本當成 DeepSeek 已支援，保留 production 的 web_search_20250305。
+- [Gemini Interactions](https://ai.google.dev/gemini-api/docs/interactions)、[Structured Output](https://ai.google.dev/gemini-api/docs/structured-output)、[Function Calling](https://ai.google.dev/gemini-api/docs/function-calling)、[Google Search](https://ai.google.dev/gemini-api/docs/google-search)、[Image Understanding](https://ai.google.dev/gemini-api/docs/image-understanding)、[Thinking](https://ai.google.dev/gemini-api/docs/thinking)：確認未來 adapter 可採能力映射；本版不啟用。
+- [GAS UrlFetchApp](https://developers.google.com/apps-script/reference/url-fetch/url-fetch-app)：現行 advanced parameters 列有 timeoutSeconds；仍在每個 phase 以 Date.now 重算 absolute deadline，不能只依 timeout options 假設總流程未超時。
 
-本版不修改 `#本週新聞` 的資料讀取或排版，不修改 `#懶人包`、網址版 `#節目話題分析`、`#新聞補充`、Reader 路由或 Google Sheet schema。
+## 測試與 regression review
 
----
+執行 `node tests/v1140_smoke.cjs`。Baseline 21 sources / 405 unique functions / 62 checks；本版23 sources / 417 unique functions / **97 checks PASS**。保留原 suite 名稱並擴充，沒有第二套大量重複測試。
 
-## v1.10.10 Version Boundary
+涵蓋14 routes、payload、每個 migrated JSON task 的 valid/malformed/missing/type/enum（適用時）/extra/length/provider failure、既有 business validators；工具 allowlist、scope、JSON/enum/limit/day/URL/ID、bounded output、no-write、缺表/例外；單/多工具、一次 continuation、再請求工具停止、資料/編碼耗時、late response、thinking/privacy；Search production fixture、配對metadata、來源安全/去重/上限、simple image與multimodal research。
 
-v1.10.10 是 Version History Maintenance Edition。
+既有 regression 保留：人工指令 routing、清理二段確認與 conversation 刪除隔離、兩種封存實際 schema 寫入、Pending 研究網址不收件、群組 quiet、natural quote、legacy image、Pending delivery transport/lock/acknowledge、NewsUrlQueue retry、WebTask pending fields、X Display Title、分類 audit、header writer、PTT、httpStatus=0、webhook batch deadline、週編輯台 conflict repair/cache/coverage。GAS 全域函式與 top-level const/let/var 名稱無重複。
 
-本版只做版本文字與版本紀錄顯示維護：
+這是靜態／VM mock 驗證。**未能本機執行 GAS**，沒有真實 LINE、DeepSeek 或 Sheet 呼叫；v1.14.4 搜尋 production 成功是維護者提供的 baseline，並非本版重新實測。
 
-1. 更新 `#版本` 顯示的小浣目前版本文字。
-2. 在內建版本紀錄最前方加入 v1.10.10。
-3. `#版本紀錄` 只顯示最近 6 筆，避免回覆隨版本增加而過長。
-4. 保留完整歷史以 `99_changelog.md` 為準的提醒。
-5. 小幅同步 README、CURRENT_VERSION 與 changelog。
+## Architecture improvements / deviations
 
-本版不新增指令、不修改 LINE webhook 主流程，也不修改 Reader Layer、NewsInbox、WebTaskQueue 或 Google Sheet schema。
+| 原構想 | 本次決定與理由 | 相容性、成本與風險 |
+| --- | --- | --- |
+| capability model 可自由設計 | 使用字串能力集合與明確 adapter switch；舊旗標由 resolver 推導 | 無 class/DI/framework，保留 caller 入口 |
+| schema 靠近 validator 或獨立層 | 新增13_AiSchemas，重用兩個既有 builders | 不把 business schema 塞入 Profiles；保留 business rules |
+| tool continuation opaque state | 使用 provider closure，而不是可序列化 raw state object | 無永久 state，也不需要新的 cache/schema |
+| 優先重用讀取 helper | 發現 ensureSheet 副作用；工具使用不建表讀取，WeeklySummary 增 readOnly 參數 | 缺表回空；不會模型觸發建表／補欄 |
+| Responses 可選 client tools | 所有研究 client tools 與 Search 使用 Anthropic；Responses 專供 schema | 避免維護第二套工具續接，支援未來 adapter 映射，無 unused Responses tool engine |
+| raw_html_extraction 可選遷移 | 明確保留 legacy 28k，待長文實測 | 不壓縮正文空間，不默默跳過 |
+| 可統一來源層 | service 合併已執行工具與搜尋的安全 URL | 三筆上限、獨立 bubble、不猜 final text |
+| 圖片研究可分階段 | 單一原生 Vision/Search/tools workflow；只有模型要求 internal tools 才續接 | 普通圖片仍一次；研究最多兩次，真實 latency 須驗證 |
+| README patch history | 現況優先、後段 v1.x 摘要；v1.8 缺紀錄明示 | changelog 歷史一字未刪 |
 
----
+## Removed / retained compatibility
 
-## v1.10.9 Version Boundary
+移除未使用的 Responses Web Search payload、web_search_call 成功判定與 collectDeepSeekWebSearchSources_。Responses request/result helpers 改為 active structured transport，維持 protocol guard。沒有刪除 Responses API。
 
-v1.10.9 是 Social Reader Edition。
+保留公開/manual/compatibility wrappers：callDeepSeekWithWebReading、callDeepSeekWithMemory、callDeepSeekWithMemoryPayload、callDeepSeekDirect、callGeminiWebLazySummary、callGeminiWebExtractor、buildSystemPrompt、resolveLegacyAiTask_ 及 archive parsers。保留 getRecentWeeklySummaryText 舊三參數與 analyzeLineImage_ 字串回傳；後者可選 reply metadata 供來源 bubble，不破壞其他 callers。
 
-本版只做社群網址 reader 分流調整：
+## 部署清單
 
-1. X / Twitter 單篇 `/status/{id}` 貼文改用 FxTwitter API 讀取。
-2. FxTwitter API 回傳會被整理成 Reader Layer 統一 webResult 格式，讓後續 NewsInbox、#懶人包、#節目話題分析 沿用既有流程。
-3. Facebook、fb.watch、Threads.com、Threads.net 不再於入隊前被視為未支援平台，改先交給 Jina Reader 嘗試讀取。
-4. 若 Jina Reader 失敗，仍保留 legacy raw HTML + Gemini extractor fallback。
-5. FxTwitter API endpoint 放在 `00_Config.gs`。
-6. v1.10.9 的社群 reader 已正式併回 `16_ReaderLayer.gs`。
-7. v1.10.9 的版本文字與非 status 社群網址提示已併回 `12_ResponseTexts.gs`。
+先由維護者 review 工作樹，再自行 commit / push / PR / merge。本版沒有代為執行。保留 v1.14.4 GAS version 供回復；先同步全部檔案再切換 deployment，避免混用契約。
 
----
+需要手動同步的 `.gs`：
 
-## Documentation Update After v1.10.9
+- `01_Main.gs`
+- `02_LineCommands.gs`
+- `03_ResponseTexts.gs`
+- `05_Storage.gs`
+- `07_LineImages.gs`
+- `10_AiService.gs`
+- `11_AiProfiles.gs`
+- `12_Prompts.gs`
+- **新增** `13_AiSchemas.gs`
+- **新增** `14_AiTools.gs`
+- `15_DeepSeekProvider.gs`
+- `16_GeminiProvider.gs`
+- `20_ReaderLayer.gs`
 
-v1.10.9 合併後，新增 `AGENTS.md` 作為本機 Codex / AI coding agent 工作規則。
+其餘10個 `.gs` 保留 baseline。GAS 共23檔；Markdown 與 tests 不部署。Sheet migration：**none**。Trigger change：**none**。新 Script Property：**none**。首次安裝才需原 setup / install 函式；v1.14.4 升級不重跑。
 
-此文件更新不改變小浣 runtime 行為。
+### 部署後 manual smoke checklist
 
-它不包含：
+1. 私訊兩輪普通聊天、群組 #小浣；記憶接續正確。
+2. 「幫我查最近 Anthropic 出的 Detecting and countering misuse of AI: September 2026，大綱是在說明什麼？有什麼值得注意的地方？」仍 forced Search、正常摘要、獨立來源、無 DSML。
+3. 「你好／幫我想五個標題」不需要工具；模型是否真的避免 Search/Sheet 要用實際 tool metadata 確認。
+4. 同聊天室收集新聞後問「我們這週有沒有收過 Anthropic 的新聞？」；其他聊天室同名資料不得出現。比對 Sheet 行數／資料沒有工具造成的寫入。
+5. 問上週記憶、新聞封存與人工重點；測 topic/news、空資料與讀取失敗。
+6. 私訊引用普通圖片自然提問，群組引用 + #小浣，以及舊 #小浣 看圖；普通圖片仍 simple route。
+7. 私訊引用圖片問「這張圖是真的假的？幫我查最新進度」，群組引用問「#小浣 幫我查這張圖」；確認真正 Search、回答與來源。
+8. 圖片加舊資料查詢觸發工具；確認原生 thinking/image/Search/client-tools 組合能完成一次續接，最後一輪不再要求工具。
+9. 測至少一個來源達三筆／重複URL／沒有可靠URL；長回答仍4+1 bubble，來源不進 memory。
+10. 每個遷移 task 至少跑一次；尤其 NewsInbox分類、#懶人包、兩種封存、#本週新聞、#新聞補充。檢查形狀與 business rules、Sheet欄位一致。
+11. 測網址比對觸發 read_url + news；Reader失敗不走 nested AI、不把研究網址入庫；已有 Pending Reply 時先交付並提示重問，普通網址仍收件。
+12. 測 HTTP/429/timeout/second-tool-round failure；不保存半回答、不退回舊知識；原 Pending Reply 失敗仍留存。
+13. 檢查 Cache、ConversationLog、WeeklySummary、NewsInbox、TopicHighlights、PendingReplies、console：無原圖/base64、raw tool data、thinking、query 或 continuation。
+14. 確認 #版本 / #版本紀錄 / #help；現有兩個 Queue Trigger不重建、不重複，原LINE deployment URL不變。
 
-* `.gs` 程式變更
-* LINE Bot 行為變更
-* Google Sheet schema 變更
-* GAS 部署需求
+### Known limitations / merge and rollout gates
 
----
+靜態與 mock 檢查無已知未修正 blocker。production rollout 前必須完成上述 live 組合驗證，尤其 Responses 六個 schema、Search+tools+image、最終 tool_choice none 與真正30秒延遲。若維護者把 live acceptance 設為 merge gate，這些尚未實測項目就是 pending gate；本文件不宣稱可略過。
 
-## Reader Layer Scope
+工具是有界字面查詢，不是全歷史語意搜尋；資料會因尾端掃描視窗而漏掉較舊紀錄。只允許一個工具批次，不能用第一次讀取結果再動態開第二批工具。final turn 不新增網路搜尋。成功答案可保存其摘要，沒有保留完整工具 evidence 供後續重播。Global ScriptLock 與實際 Google服務延遲仍限制並行性，無exactly-once保證。
 
-v1.10.9 的 reader 分流：
+## Deferred to v1.15.1 — Context & Cost Optimization
 
-* 一般網站：Jina Reader。
-* PTT：GAS 原生 `UrlFetchApp` + `over18=1` cookie，並在現行 `20_ReaderLayer.gs` 內保留 v1.10.6 的 over18 gate 誤判修正。
-* X / Twitter 單篇 status：現行 `20_ReaderLayer.gs` 透過 FxTwitter API 讀取。
-* X / Twitter 非單篇 status 網址：不自動讀取，避免把個人頁、搜尋頁或登入頁誤當正文。
-* Facebook / fb.watch / Threads.com / Threads.net：先走 Jina Reader，不再入隊前攔截。
-* Jina Reader 失敗時：嘗試 legacy raw HTML + Gemini extractor fallback。
-
----
-
-## Existing Cleanup Command Scope
-
-v1.10.9 沒有修改 v1.10.4 的清理功能。
-
-清理指令與資料表對應仍如下：
-
-* `#清空紀錄`：`ConversationLog`，並清除短期記憶。
-* `#清空重點`：`TopicHighlights`。
-* `#清空快讀`：`WebSummary`、`WebTaskQueue`。
-* `#清空封存`：`WeeklySummary`。
-* `#清空新聞`：`NewsInbox`、`NewsUrlQueue`。
-* `#清空待回覆`：`PendingReplies`。
-
-所有清理都只限目前聊天室的 `conversationId`。
-
----
-
-## Explicitly Not Included in v1.13.1
-
-以下項目不屬於 source layout 維護版本：
-
-* 新功能、Prompt 修改或 AI task route/profile/model/provider 改動
-* 函式／global const／Trigger handler 改名，或函式跨檔搬移
-* 拆分／合併 `05_Storage.gs`、`30_NewsInbox.gs`、`45_TopicFeatures.gs` 或其他 runtime 檔案
-* Reader priority/error handling、Queue retry/backoff/deadline/PendingReplies 行為調整
-* Sheet schema、欄序、Script Properties、setup、migration 或 cleanup 行為調整
-* LINE 指令、router、help 功能內容或 reply format 調整
-* compatibility wrapper 移除、新 provider、provider fallback 或新的外部 Reader
-* `WEEKLY_EDITORIAL_CACHE_VERSION` 更新
-
-以上應在後續獨立 feature/refactor/hotfix 版本處理。
-
----
-
-## Explicitly Not Included in v1.13.0 (Previous Version Boundary)
-
-以下功能不是本版內容，不要在讀取本版時誤判為已實作：
-
-* Apify actor 整合
-* ByCrawl 整合
-* Node.js / npm / 自架伺服器架構
-* NewsInbox 或其他 Sheet schema / migration
-* 新 Trigger 或新 Script Properties
-* 永久故事線資料表或將週編輯台聚類回寫 NewsInbox
-* 背景週編輯 queue 或拆成兩次同步模型呼叫
-* OpenAI / GPT-5.6 Luna API 串接
-* xAI / Grok API 串接
-* 新 Gemini 模型啟用或 Gemini 自動 fallback
-* 使用者透過 LINE 指令切換模型
-* 多模態圖片、PDF、影片分析
-* DeepSeek Pro 或其他未確認模型
-* 新 AI Log Sheet
-* WeeklySummary schema 或封存資料結構調整
-* 重新導入 `#本週新聞 24小時` 或 `#本週新聞 24小時 診斷`
-* X / Twitter 個人頁、搜尋頁、列表頁自動擷取
-* Facebook 私人貼文、登入牆內容或留言串完整擷取保證
-* Threads 登入牆內容擷取保證
-* PDF / 圖片 / 影片內容讀取
-* `#資料狀態`
-* 跨聊天室全域清理
-* 自動排程清理
-* 清理前自動備份 Sheet
-* 刪除 NewsUrlQueue 或 PendingReplies
-* Reader Layer 大規模重構
-* NewsInbox 既有欄位重排、改名或破壞性 migration
-* WeeklySummary schema 調整
-* 群組貼網址靜默收件流程調整
-* 刪除 `#統整話題`、`#節目話題分析`、`#懶人包` 或 `#畫重點`
-* `#統整話題` 素材來源調整
-* 全面重新編號 `.gs` 檔案
-* 拆分 `13_NewsInbox.gs` 或 `16_ReaderLayer.gs` 大型檔案
-* 自動跨 provider fallback、dependency injection、class hierarchy 或 plugin framework
-
-上述功能若要實作，應另開後續 feature branch。
-
----
-
-## Google Apps Script Rule
-
-本專案目前不是 Node.js 專案。
-
-請勿預設本專案需要 Node.js、npm、package.json、node_modules、npm install 或 npm start。
-
-除非維護者明確表示要導入 `clasp` 或將專案改為本機 / 自架伺服器執行，否則請一律視為 Google Apps Script 專案。
-
-GitHub 只作為版本管理來源。正式部署到 Google Apps Script 由維護者手動處理。
-
-數字檔號不是 runtime load order。GAS 同一專案的 `.gs` 共享全域命名空間；初始化必須由明確函式入口執行，不得依賴 top-level executable side effect 或檔案排序。
-
-v1.13.1 rollout 必須直接 Rename 既有檔案，不可新增新檔後暫時保留舊檔。完成後建立新 Apps Script version，讓既有 Web App deployment 指向新 version；Trigger handler 與 deployment URL 均維持不變。
-
----
-
-## Historical Smoke Tests for v1.13.2 X Post Weekly Display
-
-以下保留 v1.13.2 當時的檢查紀錄；v1.14.2 部署請以本文件上方及 README 第 10 節為準，尤其是 21 檔與全部 HIGH。
-
-本版只修改週新聞 presentation 與 Diagnostic title duplicate decision，不修改 Sheet、Reader、AI、cache payload、router 或 Trigger contract，也不需要 migration、setup、新 Trigger 或新增 Script Properties。
-
-部署前先確認 GAS 正好有 20 個 `.gs`，並手動同步 `03_ResponseTexts.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`；函式選單與 Trigger 仍應保留原 handler。
-
-將本版修改的 `.gs` 檔手動同步至 Apps Script 後，在 LINE 測試：
-
-* `#版本`、`#版本紀錄`、`#help`。
-* 準備一般網站 Title 與不同 Brief，確認所有週新聞 presentation 仍顯示 Title，不改成 Brief。
-* 準備 `x.com`、`twitter.com`、`mobile.twitter.com`、`fxtwitter.com`、`fixupx.com` 的有效 `/status/{numeric id}` 舊資料，確認 Brief 存在時顯示 `X｜Brief`，且 whitespace / newline 會收斂、異常長文字會安全裁切。
-* 準備 X status 缺 Brief 的資料，確認依有效既有 StoryKey → raw Title → `未取得標題` 回退，不會顯示空的 `X｜`。
-* 準備 X 個人頁、搜尋頁、list、無有效 numeric status ID，以及一般網站的 `/status/`，確認都不套 X Display Title。
-* 在 Weekly Editorial success、模型失敗 fallback、cache hit、高潛力、分類與詳細模式確認 X 使用同一套 Display Title；診斷畫面仍顯示 raw Title。
-* 準備同帳號、相同 synthetic Title、不同 status URL 的兩筆 X 資料，確認不報 title duplicate；完全相同 status URL 仍報同 URL 重複；一般新聞相同 Title 仍照常診斷。
-* 準備多筆長 X Brief，確認 formatter 的實際 block 長度會進入既有 LINE fitter，protected block、最多 5 則 message、單則長度、omission count 與 rendered coverage 都保持正確。
-* 在私訊與群組 `#小浣` 進行至少兩輪一般聊天，確認 general_chat 為 non-thinking，且短期/長期記憶仍可接續。
-* 群組直接貼一個一般新聞網址，確認群組不會收到 Brief 回覆。
-* 確認該網址進入 NewsUrlQueue，背景 trigger 處理後寫入 NewsInbox。
-* 個人聊天室直接貼一個一般新聞網址，確認仍可同步回覆自然 Brief 並寫入 NewsInbox。
-* 模擬 Reader 已耗時、Jina 失敗後先做 legacy extraction，以及剩餘 AI 預算不足，確認直接網址改進既有 NewsUrlQueue，不等待完整 profile timeout。
-* PTT 文章、X / Twitter 單篇 status、Facebook / Threads 公開網址。
-* 準備一個 Jina 成功網址，確認不呼叫 raw_html_extraction；再模擬 Jina 失敗，確認依序進入 `legacy_raw_html_ai` 且正文 validator 生效。
-* 一次貼兩個以上網址，確認多筆靜默進 NewsUrlQueue。
-* Reader 失敗、登入牆或不支援網址，確認 PendingReplies 會在下次訊息交付錯誤。
-* 已有 Pending Reply 時再貼新網址，確認先交付舊結果，新網址仍靜默進背景 queue。
-* 執行 `#狀態回報`，確認顯示最近 7 天收件、入庫、佇列與失敗統計。
-* 執行 `#本週新聞` 與 `#本週新聞 精簡`，確認啟用一次週編輯台；多篇同事件合併、同實體不同事件不合併、全部單篇時不顯示焦點故事線。
-* 測試漏 ID、同 cluster 重複、跨 cluster 重複、未知 ID、cluster / ungrouped 衝突、空標題與單篇 cluster，確認 partition coverage 仍讓每則原始新聞恰好位於一處。
-* 測試 ConversationLog 指令、純網址、短回覆、重複與標題轉貼排除；「評論＋網址」要保留評論，沒有有效對話時不顯示群組話題。
-* 測試 DeepSeek 非 2xx、空回覆、非法 JSON、缺欄、截斷 JSON 與 `finish_reason=length`，確認 typed error、Queue retry/fallback 與資料保護符合 task 規則。
-* 模擬缺 `DEEPSEEK_API_KEY`、401/403、400、timeout、429、5xx，確認 legacy Reader 到 NewsUrlQueue 的 `errorType/retryable/httpStatus` 不遺失，且永久錯誤不重試。
-* 確認 X / Twitter 非 `/status/{id}` 網址即使繞過入隊前檢查，也不會進入 Queue retry。
-* 新聞超過 30 則時，確認分類保留、潛力/StoryKey/時間選取規則可重現，未送模型新聞仍進其他新聞。
-* 對話超過 60 則或 6000 字時，確認裁切與匿名代號正確。
-* 準備超長輸出，確認先減少群組話題、再省略完整低順位新聞 block；保留 URL 不被切開，rendered 與 omitted 不重複，省略數準確。
-* 相同查詢確認 10 分鐘 cache hit；新增新聞或有效對話後確認 cache miss。
-* 執行高潛力、分類、詳細與診斷，確認不啟用週編輯台；詳細不顯示 StoryKey，診斷保留。
-* 測試診斷、詳細與精簡同時出現，確認 `diagnostic > detailed > compact`。
-* 執行 `#新聞問答 這週有哪些 AI 公司相關新聞？`，確認回答依據 NewsInbox 並附完整原文網址。
-* 執行 `#新聞問答 高潛力 有哪些適合做節目的社群平台新聞？`，確認只根據高潛力素材回答。
-* 執行 `#新聞問答 分類 科技與 AI 這週有什麼可追蹤？`，確認只根據指定分類素材回答。
-* 執行 `#新聞問答` 不加問題，確認會提示輸入問題範例。
-* 執行 `#help`，確認只顯示核心功能。
-* 執行 `#help 進階`，確認顯示詳細新聞檢視、精簡、分類、診斷模式、懶人包、節目話題分析、統整話題、畫重點與封存本週話題，且不再列出 24 小時模式。
-* 執行 `#封存本週新聞`，確認 WeeklySummary 新增 `ArchiveType=news` 的新聞封存。
-* 檢查 `#封存本週新聞` 的摘要是否像週報索引，並能利用 StoryKey / SpecialTopic / MatchedEntities 保留代表性事件、人物、公司、平台、政策、作品名稱與主要脈絡。
-* 再執行 `#本週新聞 詳細`，確認若有新聞封存且未使用高潛力或分類篩選，會嘗試補充過去脈絡；預設精簡、高潛力、分類與診斷模式只顯示當次查詢結果。
-* 執行舊指令 `#本週新聞 24小時` 與 `#本週新聞 24小時 診斷`，確認會回覆 v1.12.3 已移除 24 小時檢視，不會改查最近一天素材。
-* 執行 `#封存本週話題`，確認 WeeklySummary 新增 `ArchiveType=topic`，且來源只計算 ConversationLog 使用者訊息。
-* 執行 `#統整話題`，確認 AI task 會收到 NewsInbox Outline。
-* 準備一筆沒有 Outline 的舊 NewsInbox 資料，確認 `#統整話題` 會退回 Brief。
-* 執行 `#畫重點`，確認 TopicHighlights 可寫入，後續統整仍可讀取。
-* 對任一清理指令只執行第一階段，確認顯示影響範圍與二段式警告；不要輸入「確認」。
-* 回歸 `#懶人包`、網址版 `#節目話題分析`、`#新聞補充`、`#版本`、`#版本紀錄`。
-* 在 GAS 手動執行 `processWebTaskQueue` / `processNewsUrlQueue`，並確認既有 time-driven trigger handler 名稱未改變。
-* 等待下一輪 Queue Trigger，確認排程可正常再執行且沒有 duplicate function／const 載入錯誤。
-* 移除 `GEMINI_API_KEY` 後回歸全部正常功能，確認 Gemini dormant provider 不影響啟動或 runtime。
-* 對照部署前快照，確認所有 Sheet headers、欄序與 Script Properties 名稱／值均未變。
-* 檢查 `AI_CALL_METADATA` 包含 task/provider/model/profile/thinking/reasoning effort/token/finish reason/errorType/resultScope/businessValidation；thinking_high 成功時確認 reasoning tokens 可觀察，且 log 不含完整 Prompt、聊天、正文、response text 或 secret。
-
-本版修改了 `.gs` runtime，因此需要由維護者手動同步至 Google Apps Script。
-
----
-
-## Last Confirmed
-
-Last Confirmed Version at this Git ref: `v1.14.4 Search Transport Correction Hotfix`
-Previous stable baseline described in this file: `v1.14.3 Search Reliability Hotfix`
-Last Confirmed Date: `2026-09-13`
-Last Documentation Note: production probe-backed Anthropic Messages Search transport and 62 local mock checks are implemented; manual GAS deployment and live post-deploy Search smoke tests remain required.
+依實際 usage/latency 再評估：減少常駐工具定義與長期記憶成本、相關性選取／壓縮上下文、分 task token budget 調整、避免重複 evidence、聊天室資料讀取索引、窄化 global memory lock。不要現在新增框架或新 storage。Write agent、Gemini production rollout、多圖／圖片保存、新 backend/provider fallback 不屬於本次或必然屬於 v1.15.1。

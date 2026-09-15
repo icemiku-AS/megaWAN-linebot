@@ -90,10 +90,10 @@ Codex 不需要把 CURRENT_VERSION.md 當成操作規則；操作規則以本 AG
 
 ### 現行 `.gs` 導航與建議閱讀順序
 
-目前 v1.14.4 有 21 個 active runtime source，依領域區段排列：
+目前 v1.15.0 Unified Research & Capability Edition 有 23 個 active runtime source，依領域區段排列：
 
 1. Core／LINE transport／Shared foundation：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs`
-2. AI configuration／orchestration／providers：`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`
+2. AI configuration／orchestration／schemas／read-only tools／providers：`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`
 3. Reader／Web workflows／background jobs：`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`
 4. News／Editorial：`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`
 5. Topic／material workflows：`40_TopicHighlights.gs`、`45_TopicFeatures.gs`
@@ -118,6 +118,10 @@ Codex 不需要把 CURRENT_VERSION.md 當成操作規則；操作規則以本 AG
 * 不要為了完美插入順序任意重編整個專案。
 * DeepSeek／Gemini vendor adapters 的 active 檔名是 `15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`；正式 service 層是 `10_AiService.gs`。
 * Provider 檔名調整不授權修改既有 provider function、compatibility wrapper 或 dispatch contract。
+
+AI 工作先追 `10_AiService.gs` → `11_AiProfiles.gs` → `13_AiSchemas.gs` / `14_AiTools.gs` → 對應 Provider。Feature 只描述能力需求，不建立 vendor payload；不支援的能力必須在 HTTP 前明確失敗。Schema 不取代既有 business validator。
+
+Internal tools 僅可讀目前 conversationId；scope 由 trusted code 注入，不接受模型指定。禁止 write tool、ensureSheet 副作用、任意 GAS function dispatch 與 read_url 巢狀 AI。工具、圖片、reasoning 和 provider continuation 不得永久保存或寫原文 log；同步最多一次 continuation，沿用共同 absolute deadline。Gemini 保持 dormant，沒有自動 provider fallback。
 
 ---
 

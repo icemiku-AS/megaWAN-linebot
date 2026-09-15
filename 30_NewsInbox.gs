@@ -1,26 +1,17 @@
 // ======================================================
 // 30_NewsInbox.gs
-// News／Editorial：新聞素材池、靜默網址收件、NewsInbox AI 契約、狀態回報與新聞封存脈絡。
-// 小浣 LINE Bot v1.14.2 Natural Search & Vision Edition
+// 用途：News／Editorial：新聞收件、素材池、分類、週報與新聞問答。
 //
-// 維護重點：
-// 1. v1.12.0 起，群組直接貼網址會靜默進 NewsUrlQueue，不再回覆 Brief；私訊與明確指令保留同步回覆路徑。
-// 2. 多網址、Reader 過慢、同步 API 失敗或結果不足時，退回 NewsUrlQueue；time-driven trigger 每次最多處理 2 筆。
-// 3. 自動網址入庫會先透過 20_ReaderLayer.gs 取得 mainText，再交給 AI news_analysis task 整理。
-// 4. v1.10.9 起，X / Twitter 非單篇 status 網址會在入隊前直接攔截；Facebook / Threads 先交給 Jina Reader。
-// 5. v1.10.7 起，背景處理若遇到永久性錯誤，會直接 failed 並建立 PendingReplies，不再無效重試三次。
-// 6. NewsInbox / 新聞問答 / 新聞補充 / memory bridge 都只透過 provider-neutral AiService task。
-// 7. v1.10.8 修正 #新聞補充 的 JSON parser 名稱錯誤，讓 DeepSeek 解析結果真的能被使用，而不是每次靜默 fallback。
-// 8. v1.10.1 起，#本週新聞 改由程式端固定排版，確保 LINE 內換行穩定。
-// 8.1 v1.12.1 起，#本週新聞 支援高潛力、詳細、精簡與分類篩選模式。
-// 8.2 v1.12.2 起，NewsInbox 分離主要分類與特殊主題，並追加分類稽核欄位供診斷。
-// 8.3 v1.12.3 起，移除 24 小時檢視，並新增 #新聞問答 以近期 NewsInbox 回答素材問題。
-// 8.4 v1.12.4 起，NewsInbox 追加 StoryKey，#本週新聞 預設改按故事線精簡聚合。
-// 8.5 v1.12.5 起，預設與精簡模式改由本週編輯台批次聚類；StoryKey 保留為候選提示。
-// 9. 本檔不擁有 25_WebTaskQueue.gs 的快讀 contract，避免新聞收件變更影響 #懶人包 / #節目話題分析。
-// 10. NewsInbox 在既有欄位最右側新增 Outline；舊資料若沒有 Outline，#統整話題會退回 Brief。
-// 11. NewsInbox / NewsUrlQueue Sheet schema、欄序、Queue 次數與公開 processNewsUrlQueue() 名稱都是相容性邊界。
-// 12. webhook execution context 讓 Reader、legacy extraction 與 news_analysis 共用期限；背景 Queue 仍用完整 profile。
+// 職責與協作：
+// 1. 管理 NewsInbox／NewsUrlQueue、新聞分析與補充契約、狀態回報及新聞封存脈絡。
+// 2. 一般網址經 Reader 取得正文後分析；群組靜默收件，私訊與明確指令保留同步及 Queue fallback。
+// 3. 週報模式由本檔協調，預設／精簡編輯台交由 35_WeeklyEditorialDigest.gs；AI 工作透過 AiService。
+//
+// 維護注意：
+// 1. Sheet 欄位、公開 processNewsUrlQueue()、重試次數及批次上限皆為相容性邊界。
+// 2. 已知不支援網址在入隊前攔截；永久失敗建立 Pending Reply，不做無效重試。
+// 3. Title、Brief、Outline、StoryKey 保持資料語意；展示標題不能回寫原始資料，缺 Outline 可退回 Brief。
+// 4. Reader 與同步 AI 共用 webhook deadline；背景 Queue 使用其既有預算。
 // ======================================================
 
 const NEWS_INBOX_CATEGORIES = ['科技與 AI', '社群輿論', 'ACG娛樂', '商業財經', '國際政治', '生活文化', '馬斯克', '川普', '待分類'];
@@ -40,7 +31,7 @@ const MAX_WEEKLY_NEWS_DISPLAY_TITLE_LENGTH = 100;
 
 // NewsUrlQueue 永久性錯誤清單。
 //
-// 維護說明：
+// 維護注意：
 // 1. 這些錯誤不是暫時性網路錯誤，重試通常不會成功。
 // 2. 例如 unsupported_social_platform 代表平台目前尚未導入 Apify / ByCrawl / 官方 API。
 // 3. 這類錯誤應立即 failed 並通知使用者，不應浪費 3 次 trigger 重試。
@@ -335,9 +326,7 @@ function enqueueNewsUrlTasks(event, conversationId, userText) {
   const partitionedUrls = partitionNewsUrlsForQueue_(urls);
 
   // X / Twitter 非單篇 status 網址目前明確不支援自動擷取。
-  // v1.10.5 的 Reader Layer 已能偵測 unsupported_social_platform，但若等到背景 trigger 才判斷，
-  // 使用者會先收到「已收進素材池」，接著 queue 又無效重試三次，體驗與維護都很差。
-  // 因此 v1.10.7 將「已知未支援平台」提前到入隊前攔截。
+  // 入隊前先攔截，避免先回報收件成功，再由背景任務判定不支援並無效重試。
   if (!partitionedUrls.supportedUrls.length) {
     return {
       ok: false,
@@ -509,10 +498,8 @@ function processSingleNewsUrlTask_(task) {
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'failed');
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'FinishedAt', now);
 
-    // v1.10.7 修正：
-    // 舊版誤呼叫不存在的 createPendingReply()，導致 queue 已 failed 但 PendingReplies 沒有建立。
-    // 這裡復用 25_WebTaskQueue.gs 既有的 createPendingReplyFromTask()，
-    // 讓下一次同 conversationId 有訊息進來時，01_Main.gs 可透過 deliverPendingReply_() 安全交付錯誤通知。
+    // failed 後仍需透過 createPendingReplyFromTask() 建立通知，不能只更新 Queue 狀態。
+    // 下一次同 conversationId 有訊息時，由主流程 deliverPendingReply_() 安全交付。
     createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, errorText), 'news_url_failed');
   }
 }
@@ -772,7 +759,7 @@ function isWeakAutoNewsClassification_(classification, url) {
   const angle = String(classification.angle || '').trim();
   const outline = String(classification.outline || '').trim();
 
-  // v1.12.2 起，category=待分類 但內容完整時允許入庫，並交由 ClassificationWarning / 診斷檢查。
+  // category=待分類 但內容完整時允許入庫，並交由 ClassificationWarning / 診斷檢查。
   // 這避免有效新聞只因模型分類不確定，就在 NewsUrlQueue 反覆重試到 failed。
   if (!title || !brief || !outline) return true;
   if (!isAllowedNewsCategory_(category)) return true;
@@ -1217,7 +1204,7 @@ function handleNewsQuestion_(event, conversationId, userPrompt, aiExecutionConte
   }
 
   const prompt = buildNewsQuestionPrompt_(conversationId, filteredItems, queryOptions);
-  // 本版不另建問題複雜度分類器；跨多筆 NewsInbox 問答固定走 thinking_high 文字 task。
+  // 跨多筆 NewsInbox 問答固定走 thinking_high 文字 task。
   const answerText = String(requireAiText_(runAiTextTask(
     'news_question',
     prompt,
@@ -2278,7 +2265,7 @@ function handleManualNewsSupplement_(event, conversationId, userText, aiExecutio
 function parseManualNewsSupplement_(userText, aiExecutionContext) {
   const prompt = buildManualNewsSupplementPrompt_(userText);
   try {
-    // v1.10.8 的 parser hotfix 歷史仍保留；v1.13.0 改由 AiService JSON 基礎檢查，
+    // AiService 先檢查 JSON 與 schema，
     // 功能 normalizer 繼續留在 NewsInbox，失敗仍走既有人工 fallback。
     const result = requireAiJson_(runAiJsonTask(
       'manual_news_supplement',

@@ -1,14 +1,14 @@
 // ======================================================
 // 02_LineCommands.gs
-// LINE transport：處理指令解析、Help、Reply API 與長文字分段。
+// 用途：LINE transport：指令解析、Help、Reply API 與長文字分段。
 //
-// 小浣 LINE Bot v1.14.3 Search Reliability Hotfix
+// 職責與協作：
+// 1. 01_Main.gs 使用本檔解析指令、顯示 Help、傳送回覆及處理 Pending 交付時的新網址。
+// 2. 固定回覆由 03_ResponseTexts.gs 提供；AI、Reader、News 與 Sheet 流程交由各功能檔負責。
 //
-// 維護原則：
-// 1. 主要 caller 是 01_Main.gs；本檔只做 transport/router，不擁有 AI、Reader、News 或 Sheet contract。
-// 2. 不經過 LLM 的固定回覆與版本文字集中於 03_ResponseTexts.gs。
-// 3. #help 聚焦核心新聞入口，低頻功能放在 #help 進階；指令名稱與回覆格式是相容性邊界。
-// 4. LINE 長回覆在單次 Reply API payload 內最多拆成 5 則；splitter 與 reply token 行為不可因檔案整理改變。
+// 維護注意：
+// 1. 指令名稱、參數解析、Help 分層與 reply token 使用方式須保持相容。
+// 2. 單次 Reply API 最多五則訊息；有來源時保留最後一格，主回答沿用既有 splitter。
 // ======================================================
 
 function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
@@ -24,7 +24,7 @@ function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userTe
     return enqueueWebTask(event, conversationId, userText, TASK_TYPE_WEB_LAZY_SUMMARY);
   }
 
-  // 一般貼網址在 v1.12.0 起以靜默新聞收件為主。
+  // Pending 交付時的一般網址以靜默新聞收件處理；圖片／研究問題由主流程先排除。
   // 若此訊息同時觸發 pending reply 交付，新網址仍會入 NewsUrlQueue；
   // 不支援或入隊失敗的網址則另建 PendingReplies，避免錯誤直接洗版。
   return handleSilentNewsUrlMessage_(event, conversationId, userText);
@@ -377,6 +377,8 @@ function getHelpText() {
     '',
     '常用功能：',
     '・私訊可直接傳圖片或回覆圖片提問；群組請回覆圖片並用 #小浣 <問題>。舊 #小浣 看圖 仍可使用。',
+    '・引用圖片可問「幫我查最新進度」；一般聊天也可問「我們收過這則新聞嗎？」或「之前畫過哪些重點？」。',
+    '・研究工具只讀目前聊天室資料；新增、封存、清理仍使用明確指令。',
     '・看圖支援 JPEG/PNG、每張最多 4 MiB；不永久保存原圖，逾時請重送。',
     '・一般聊天需要最新資訊時，小浣可自行使用網路搜尋；有搜尋會另附來源訊息。',
     '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
