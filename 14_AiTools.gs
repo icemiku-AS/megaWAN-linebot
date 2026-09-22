@@ -31,8 +31,9 @@ function getAiReadOnlyToolDefinitions_() {
   return [
     { name: 'search_news_inbox', description: '查目前聊天室近期已收集的新聞；query 是文字子字串，非任意查詢語法。',
       parameters: { type: 'object', properties: { query: query, days: days, limit: limit }, additionalProperties: false } },
-    { name: 'search_conversation_log', description: '查目前聊天室近期使用者說過的文字；排除當次提問與 assistant，query 是文字子字串。',
-      parameters: { type: 'object', properties: { query: query, days: days, limit: limit }, additionalProperties: false } },
+    { name: 'search_conversation_log', description: '查目前聊天室近期使用者文字與 AI 從圖片辨識的短語意；回傳 provenance 區分來源，圖片描述不是使用者說過的話。',
+      parameters: { type: 'object', properties: { query: query, days: days, limit: limit,
+        provenance: { type: 'string', enum: ['user_text', 'image_derived'] } }, additionalProperties: false } },
     { name: 'get_topic_highlights', description: '查目前聊天室人工畫過的重點；保留人工觀點，不改寫資料。',
       parameters: { type: 'object', properties: { query: query, days: days, limit: limit }, additionalProperties: false } },
     { name: 'get_weekly_memory', description: '讀目前聊天室過去封存的週記憶；不是當前新聞事實。',
@@ -81,9 +82,11 @@ function createAiToolError_(errorType) {
 function getAiRequiredResearch_(question) {
   const text = redactAiMediaText_(String(question || '')).slice(0, 2000);
   const required = [];
+  const imageRecall = /(?:之前|以前|過去|上次|曾經).{0,20}(?:圖|圖片|截圖|照片)|(?:貼過|傳過|分享過).{0,20}(?:圖|圖片|截圖|照片)|(?:圖|圖片|截圖|照片).{0,20}(?:貼過|傳過|分享過)/.test(text);
   const selections = [
     ['search_news_inbox', /收過|收集|收錄|新聞庫|收件匣|(?:之前|以前|過去|我們|聊天室|舊).{0,20}新聞/, /(?:收過|收集|收錄)\s*([^，。？！\n,!?]*)/],
-    ['search_conversation_log', /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog/i, /(?:聊過|討論過)\s*([^，。？！\n,!?]*)/],
+    ['search_conversation_log', imageRecall ? /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog|貼過|傳過|分享過/i
+      : /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog/i, /(?:聊過|討論過|貼過|傳過|分享過)\s*([^，。？！\n,!?]*)/],
     ['get_topic_highlights', /畫(?:過)?(?:的)?重點|人工重點|(?:之前|以前|過去|我們|聊天室|保存|儲存).{0,20}重點/, null],
     ['get_weekly_memory', /週記憶|封存|上週|前週/, null]
   ];
@@ -95,8 +98,17 @@ function getAiRequiredResearch_(question) {
     const query = match ? match[1].split(/或|以及|另外|順便|也看看|並且/)[0]
       .replace(/^[「『"`\s]+|[」』"`\s]+$/g, '').replace(/(?:的)?新聞$/, '').trim() : '';
     if (query && !/這|那|相關|什麼|哪些|有沒有|嗎|呢/.test(query) && query.length <= 200) args.query = query;
+    if (selection[0] === 'search_conversation_log' && imageRecall) {
+      args.provenance = 'image_derived';
+      const latin = text.match(/[A-Za-z][A-Za-z0-9-]{2,}/);
+      args.query = latin ? latin[0] : (query.replace(/^(?:一張|那張|這張)\s*/, '').replace(/(?:那張|這張)?(?:梗圖|圖片|截圖|照片|圖)$/, '').trim() || undefined);
+      if (!args.query) delete args.query;
+    }
     required.push({ name: selection[0], arguments: args });
   });
+  if (imageRecall && !required.some(function(item) { return item.name === 'search_conversation_log'; })) {
+    required.push({ name: 'search_conversation_log', arguments: { days: 30, limit: 5, provenance: 'image_derived' } });
+  }
   const urls = extractUrls(text);
   if (urls.length || /https?:\/\/|網址|連結/i.test(text)) {
     required.push({ name: 'read_url', arguments: { url: urls.length === 1 ? urls[0] : '' } });
@@ -135,13 +147,17 @@ function runAiReadOnlyTool_(call, trustedContext) {
           if (!isFinite(time) || time < cutoff || time > Date.now()) continue;
           if (conversation) {
             // 當次問題已先寫入 Sheet；不能把提問本身或 assistant 回答當成「以前聊過」。
-            if (row.Role !== 'user' || (trustedContext.excludeMessageId && row.MessageId === trustedContext.excludeMessageId) ||
+            if (!((row.Role === 'user' && row.Mode !== 'image_input') || (row.Role === 'derived' && row.Mode === 'image_semantic')) ||
+              (args.provenance === 'image_derived' && row.Role !== 'derived') ||
+              (args.provenance === 'user_text' && row.Role !== 'user') ||
+              (trustedContext.excludeMessageId && row.MessageId === trustedContext.excludeMessageId) ||
               (trustedContext.beforeTimestampMs && time >= trustedContext.beforeTimestampMs)) continue;
           } else if (news ? row.Status !== 'ok' : (row.Status && row.Status !== 'active')) continue;
           const text = conversation ? String(row.Text || '') : news ? [row.Title, row.Brief, row.Outline, row.StoryKey].join(' ') : String(row.HighlightText || '');
           if (!text.trim() || (query && text.toLowerCase().indexOf(query) < 0)) continue;
           const record = conversation ? {
-            role: 'user', timestamp: new Date(time).toISOString(),
+            role: row.Role, provenance: row.Role === 'derived' ? 'image_derived' : 'user_text',
+            timestamp: new Date(time).toISOString(),
             text: aiToolText_(text.slice(Math.max(0, query ? text.toLowerCase().indexOf(query) - 160 : 0)), 800)
           } : news ? {
             title: aiToolText_(row.Title, 200), brief: aiToolText_(row.Brief, 400), outline: aiToolText_(row.Outline, 800),
@@ -193,7 +209,7 @@ function readAiScopedSheetRows_(sheetName, conversationId, maxRows) {
   if (!sheet || sheet.getLastRow() <= 1) return [];
   const headers = getHeaderMap_(sheet);
   if (!Object.prototype.hasOwnProperty.call(headers, 'ConversationId')) throw createAiToolError_('ai_tool_data_unavailable');
-  const requiredHeaders = sheetName === SHEET_NAME ? ['Timestamp', 'Role', 'MessageId', 'Text']
+  const requiredHeaders = sheetName === SHEET_NAME ? ['Timestamp', 'Role', 'Mode', 'MessageId', 'Text']
     : sheetName === NEWS_INBOX_SHEET_NAME ? ['CreatedAt', 'Status', 'Title'] : ['CreatedAt', 'HighlightText'];
   if (requiredHeaders.some(function(key) {
     return !Object.prototype.hasOwnProperty.call(headers, key);
@@ -204,7 +220,7 @@ function readAiScopedSheetRows_(sheetName, conversationId, maxRows) {
     const record = {};
     // 僅使用既有欄名，沒有模型可指定的 Sheet、range 或 column。
     ['CreatedAt', 'Status', 'Title', 'Brief', 'Outline', 'StoryKey', 'Category', 'Url', 'HighlightText', 'Tags',
-      'Timestamp', 'Role', 'MessageId', 'Text'].forEach(function(key) {
+      'Timestamp', 'Role', 'Mode', 'MessageId', 'Text'].forEach(function(key) {
       record[key] = getRowValueByHeader_(row, headers, key);
     });
     return record;

@@ -536,7 +536,7 @@ function fetchReadablePageWithJina_(url, executionContext, pttArticle) {
 
     const normalized = normalizeJinaReaderText_(url, bodyText);
 
-    if (!isReadableTextUsable_(normalized.mainText, MIN_READER_MAIN_TEXT_LENGTH)) {
+    if (!isReadableTextUsable_(normalized.mainText, MIN_READER_MAIN_TEXT_LENGTH, normalized.title)) {
       return buildReaderLayerErrorResult_(
         url,
         WEB_READER_ROUTE_JINA,
@@ -1003,32 +1003,24 @@ function applyReaderFetchTimeoutForExecutionContext_(options, executionContext) 
   return safeOptions;
 }
 
-function isReadableTextUsable_(text, minLength) {
+function isReadableTextUsable_(text, minLength, title) {
   const mainText = String(text || '').trim();
 
   if (mainText.length < Number(minLength || MIN_READER_MAIN_TEXT_LENGTH)) {
     return false;
   }
 
-  const badSignals = [
-    '請開啟 JavaScript',
-    'Enable JavaScript',
-    'Access Denied',
-    '403 Forbidden',
-    'Just a moment',
-    'Cloudflare',
-    '請先登入',
-    '登入後繼續',
-    '我同意，我已年滿十八歲'
-  ];
+  return !isGenericReaderErrorPage_(title, mainText);
+}
 
-  for (let i = 0; i < badSignals.length; i++) {
-    if (mainText.indexOf(badSignals[i]) >= 0) {
-      return false;
-    }
-  }
-
-  return true;
+/** 只採用頁首／標題的錯誤頁訊號；正文討論 Cloudflare 等詞不代表頁面失敗。 */
+function isGenericReaderErrorPage_(title, text) {
+  const heading = String(title || '').replace(/^#+\s*/, '').trim();
+  const errorHeading = /^(?:access denied|403 forbidden|http error 403|just a moment\.{0,3}|(?:please )?enable javascript|javascript is required|please enable javascript and cookies to continue|checking if the site connection is secure|請開啟 javascript|請先登入|登入後繼續|我同意，我已年滿十八歲|cloudflare (?:security check|challenge)|attention required!\s*\|\s*cloudflare)$/i;
+  if (errorHeading.test(heading) || errorHeading.test(heading.replace(/\s*\|\s*cloudflare$/i, ''))) return true;
+  const body = String(text || '').trim();
+  const firstLine = body.split('\n').map(function(line) { return line.trim().replace(/^#+\s*/, ''); }).filter(Boolean)[0] || '';
+  return body.length <= 2000 && errorHeading.test(firstLine);
 }
 
 function inferTitleFromReadableText_(text) {

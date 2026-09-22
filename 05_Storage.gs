@@ -299,14 +299,15 @@ function logMessageToSheet(data) {
       source.roomId || '',
       data.role || '',
       data.mode || '',
-      message.id || '',
+      // 圖片的 message ID 不形成永久原圖索引；derived row 也不保存引用關係。
+      data.mode === 'image_input' || data.mode === 'image_semantic' ? '' : (message.id || ''),
       truncateForSheet(data.text || '')
     ];
 
     sheet.appendRow(row);
 
   } catch (error) {
-    console.error('logMessageToSheet error:', error);
+    console.error('logMessageToSheet error');
   }
 }
 
@@ -413,6 +414,11 @@ function getRecentConversationItems(conversationId, limit, includeAssistant) {
     }
 
     if (!text) {
+      continue;
+    }
+
+    // 圖片 placeholder 是系統產生的佔位文字；封存／話題讀取不當成使用者發言。
+    if (role === 'user' && mode === 'image_input') {
       continue;
     }
 

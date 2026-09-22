@@ -339,6 +339,8 @@ Secret value 應由維護者放在 Apps Script Script Properties。
 * 是否需要新增欄位
 * 是否需要 migration / setup 函式
 
+ConversationLog 的 `Role=derived`、`Mode=image_semantic` 是 AI 從圖片產生的有界文字，不是使用者親口內容，也不是外部事實。修改研究、封存、清理或 Prompt 時，必須保留這個來源區隔、同聊天室隔離與圖片原檔不持久化的邊界。
+
 未經明確要求，不要做跨聊天室全域清理。
 
 ---

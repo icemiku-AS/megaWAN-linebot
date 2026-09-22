@@ -1,3 +1,14 @@
+2026-09-23
+v1.15.4 Context & Semantic Memory Edition
+- 以前一正式版本 v1.15.3 為 lineage；新增圖片衍生文字記憶、context 成本量測與有證據的局部優化，修正 generic Reader 正文關鍵字誤判。Git 版本與 GAS deployment 由維護者分別確認。
+- 私訊直接圖、自然引用與群組明確引用的已分析圖片沿用同一次 Vision inference 取得可選語意 sidecar；AiService 將隱藏摘要從主回答拆出，sidecar 缺失不影響正常回答。群組直接貼圖維持不回 LINE；每聊天室使用 15 分鐘 best-effort 限頻嘗試 non-thinking 短 caption，6 秒下載／8 秒模型 cap，無持久圖片 Queue。
+- ConversationLog 沿用既有欄位，以 Role=derived、Mode=image_semantic、明確 prefix 及最多240字文字表示圖片辨識。圖片與衍生列的 MessageId 留空；清理移除 data URL、長編碼、URL、電子郵件、長識別碼及常見憑證值。不保存原圖、Base64、image cache 或永久圖片配對。
+- search_conversation_log 可在同聊天室近期有界視窗查 user_text 與 image_derived，回傳 provenance；圖片回顧意圖可限定 derived。Prompt 將圖片摘要當不可信 evidence，不能說成使用者親口內容或當成新聞事實。#封存本週話題仍只收 user 文字；#清空紀錄按 conversationId 清除所有角色並清短期 Cache。
+- 一般聊天與圖片 memory task 按問題預載 WeeklySummary，明確封存問題沿用 required tool 讀一次；短期 history 六輪維持。相同 user 文字若已在短期 history，required ConversationLog evidence 只留時間／provenance／引用標記。固定 system／tool 規則排在動態週記憶與 evidence 前，有利 DeepSeek 自動 prefix cache；不宣稱未量到的實際 hit rate。
+- 安全 AI_CALL_METADATA 新增 modelCalls、requiredEvidenceReads、clientToolCalls、continuationCount、contextTextChars、toolDefinitionChars，與既有 usage／elapsed／Search metadata 一起供比較；不記 Prompt、圖片摘要、tool data、thinking 或 URL 正文。正式聊天／Search／複雜 JSON 維持 HIGH，Search max_uses=3 不變；只有群組短 caption 使用 non-thinking。
+- generic Jina／legacy extraction 以 title 或短頁頁首辨識 challenge／Access Denied／JS required；正常文章正文提到 Cloudflare、403 Forbidden 等不再直接失敗。PTT v1.15.2／v1.15.3 路由、結構、一次 Jina、404／410、noAi、deadline、安全與隱私契約保留。
+- 本機 `node tests/v1140_smoke.cjs` 擴充圖片語意、搜尋來源、群組靜默、清理／封存、context fixture、generic Reader 與 PTT 回歸。沒有新 runtime file、Sheet schema／migration、Trigger、Script Property、外部 DB、vector search 或 Node runtime dependency。真實 GAS／LINE／DeepSeek 行為仍需維護者部署後驗證。
+
 2026-09-22
 v1.15.3 Reader False Positive Hotfix
 - 唯一 baseline 為 GitHub main / v1.15.2 merge commit 91c4f26cc758e70876ee5f3388c5667c70f968f8。維護者 production smoke：C_Chat HTTP 樣本成功，Stock 樣本 direct／Jina 均 HTTP200 後 ptt_empty_content。

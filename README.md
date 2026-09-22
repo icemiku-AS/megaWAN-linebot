@@ -2,13 +2,14 @@
 
 Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-目前版本：**v1.15.3 Reader False Positive Hotfix**，以 main v1.15.2 為 baseline。已驗證結構的 PTT 文章不再因正文提及 Cloudflare 等文字而失敗。Git 版本不代表 GAS 已部署；現行契約與部署清單見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+本文件描述 **v1.15.4 Context & Semantic Memory Edition** 的版本契約，承接 v1.15.3。Git 版本與 GAS production deployment 可能處於不同階段，實際部署由維護者確認；詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
 - 收集群組新聞網址，整理分類、簡介、大綱與故事線，製作本週編輯台。
 - 一般聊天可搜尋最新資訊，也可查目前聊天室的近期使用者對話、新聞、人工重點與封存記憶；研究工具全部只讀。
 - 私訊傳圖或引用圖片自然提問。需要查證時，可用同一個圖片研究流程結合網路與聊天室資料，另外列出來源。
+- 小浣可把圖片理解保存為同聊天室可搜尋的短文字脈絡，不保存原圖；群組直接貼圖仍不會收到回覆。
 - 新聞分析、快讀、封存、週編輯台與人工補充使用 JSON Schema；程式仍負責分類、完整性與資料寫入驗證。
 - 保留多輪文字記憶、人工畫重點、明確封存與二段確認清理。
 
@@ -25,7 +26,7 @@ Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 
 - `#小浣 之前畫過哪些相關重點？`
 - 私訊或 `#小浣` 詢問「這篇網址跟之前收過的新聞有沒有重複？」可只讀比對，不會把研究網址自動新增為新聞。
 
-普通聊天由模型判斷是否需要搜尋；「幫我查／搜尋／上網查」會強制要求。明確問「聊過／收過／封存／畫過重點」時，程式先查指定資料，不只等待模型選工具。對話證據只取目前聊天室過去的使用者訊息，排除當次提問與 assistant 回答。查過但沒有結果、取得候選資料、尚未查詢／失敗會分開處理；候選仍需比對問題，有限視窗沒有結果不等於完整歷史不存在。來源依實際搜尋或工具取得的公開網址列出，最多三筆；來源 bubble 與主回答分開。
+普通聊天由模型判斷是否需要搜尋；「幫我查／搜尋／上網查」會強制要求。明確問「聊過／收過／封存／畫過重點」時，程式先查指定資料。對話查詢限目前聊天室的過去使用者文字與圖片衍生摘要，並標明兩者來源；圖片摘要只表示小浣當時的辨識，不代表使用者說過或圖片主張已查證。查過但沒有結果、取得候選資料、尚未查詢／失敗會分開處理。來源依實際搜尋或工具取得的公開網址列出，最多三筆；來源 bubble 與主回答分開。
 
 ### 圖片
 
@@ -33,7 +34,7 @@ Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 
 
 普通圖片問題使用簡單分析；「幫我查最新進度／查證／來源」才要求圖片加搜尋。明確要求聊過的內容、收過的新聞、封存記憶、人工重點時，同一流程先取得指定的只讀候選資料。文字中的單一網址先讀內容；網址只在圖中時先辨識，再於一次工具續接內讀取。必要來源未讀取不能當完整成功。單純要求圖片重點或問「這是真的嗎？」不強制開研究；圖片逾時、Search 失敗、指定資料未完成與一般服務異常分開提示。
 
-一次只處理一張 JPEG/PNG，原圖上限 4 MiB，完整 AI request 上限 8 MiB。私訊多圖只處理第一張；缺少有效圖片索引時提示重新選圖。沒有引用時不猜上一張圖片，不保存原圖、Base64 或圖片配對。記憶只保留文字 placeholder、問題與最後回答；重看細節須重新引用或傳圖。
+一次只處理一張 JPEG/PNG，原圖上限 4 MiB，完整 AI request 上限 8 MiB。私訊多圖只處理第一張；缺少有效圖片索引時提示重新選圖。沒有引用時不猜上一張圖片，不保存原圖、Base64 或圖片配對。已分析圖片在同一次 Vision 呼叫中可產生短語意記憶；群組直接貼圖維持靜默，每聊天室限頻產生短文字摘要。語意文字經有界與敏感字串清理，重看細節仍須重新引用或傳圖。
 
 ### 新聞與節目素材
 
@@ -66,7 +67,7 @@ Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 
 
 | 指令 | 範圍 |
 | --- | --- |
-| `#清空紀錄` | ConversationLog 與短期記憶 |
+| `#清空紀錄` | ConversationLog（含圖片衍生文字）與短期記憶 |
 | `#清空重點` | TopicHighlights |
 | `#清空快讀` | WebSummary、WebTaskQueue |
 | `#清空封存` | WeeklySummary |
@@ -100,9 +101,9 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 
 1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
 2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
-3. **首次建立環境**才執行 `setupLogSheet()` 與 `installWebTaskQueueTrigger()` 並完成必要授權。既有 v1.14.4 升級本版無需 setup、migration 或重建 Trigger。
+3. **首次建立環境**才執行 `setupLogSheet()` 與 `installWebTaskQueueTrigger()` 並完成必要授權。從 v1.15.3 升級無需 setup、migration 或重建 Trigger。
 4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。
-5. 部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。具體同步檔案與 manual smoke checklist 見 [CURRENT_VERSION.md](CURRENT_VERSION.md#部署清單)。
+5. 部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。具體同步檔案與 manual smoke checklist 見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 本機檢查：`node tests/v1140_smoke.cjs`。這只是既有開發 smoke test，使用 Node 內建模組，沒有新增 runtime dependency。測試不會呼叫真實 GAS／LINE／DeepSeek；目前結果及 live 限制見 CURRENT_VERSION。
 
@@ -123,4 +124,4 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 | v1.12 | 群組靜默收件、週新聞查詢／診斷、新聞問答、分類稽核與編輯台 |
 | v1.13 | Provider-neutral AI routing、GAS 檔案導航、X 展示標題 |
 | v1.14 | DeepSeek Flash 圖片、自然引用、Search transport 校正、SSRF 與 Pending Reply 修正 |
-| v1.15 | 能力路由、JSON Schema、只讀資料工具、圖片交叉研究 |
+| v1.15 | 能力路由、JSON Schema、只讀資料工具、圖片交叉研究、圖片語意記憶與 context 成本整理 |

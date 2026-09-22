@@ -121,7 +121,11 @@ function handleLineEvent(event, webhookStartedAtMs) {
   const conversationId = getConversationId(event);
 
   if (event.type === 'message' && event.message && event.message.type === 'image') {
-    // 群組貼圖完全靜默；需另用原生引用 + #小浣 觸發，無需保存圖片或建立配對狀態。
+    // 群組仍不回覆；有預算且通過限頻時，當次 webhook 只留下文字語意。
+    if (isGroupLike) {
+      captureSilentLineImage_(event, conversationId, aiExecutionContext);
+      return;
+    }
     if (sourceType !== 'user') return;
     const imageSet = event.message.imageSet;
     // ponytail: 私訊一次多圖只看第一張；需要跨圖分析時再擴充 request contract。
