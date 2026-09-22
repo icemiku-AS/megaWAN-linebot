@@ -2,17 +2,17 @@
 
 ## 版本與 source of truth
 
-MEGA浣 / 小浣：**v1.15.2 PTT Reader Resilience Hotfix**（2026-09-22，GitHub branch 候選已提交並推送；尚未 GAS production deployment / acceptance）。
+MEGA浣 / 小浣：**v1.15.3 Reader False Positive Hotfix**（2026-09-22，本機候選；尚未提交、推送或 GAS production deployment / acceptance）。
 
-- Stable baseline：v1.15.1 Mixed Tool Continuation Hotfix，main merge commit `795072b32ca09c450130eb7ae506d8e4872bbcdc`。
-- Working branch：`v1.15.2PTTReaderResilienceHotfix`；已 commit／push 的候選 HEAD 為 `909be59e872c4fe4bca89053429d3a1ca8b6e763`，已只讀核對 GitHub 遠端。本次 short article／文件 follow-up 是該 commit 之後尚未提交或推送的本機修改，不包含在上述候選 commit。
-- 分支起點 `63400e10d0edcd25a81c573a37458751dce60f2e` 與上述 main merge commit 的 Git tree 相同；候選相對 main ahead 1／behind 1，實際差異只有本版六檔，沒有漏掉 main runtime change。Ancestry 更新由維護者處理；本次未 rebase、merge、切 branch 或建立 PR，不宣稱 PR／merge 已完成。
-- 本文件描述 v1.15.2 的程式與部署契約；Git 版本不代表 GAS 已部署，執行環境需依部署清單手動同步。
+- 唯一 baseline：GitHub main / v1.15.2 merge commit `91c4f26cc758e70876ee5f3388c5667c70f968f8`，已核對遠端 main 並取得該 commit。
+- Working branch：`hotfix/v1153-ptt-reader-false-positive`；開始時 HEAD `401d7966af1d9f07b3f3d84f41ad15644b22a2d3` 的 Git tree 與上述 main 完全相同。本版為此工作目錄中的未提交修改，不將舊 v1.15.2 工作分支視為 baseline；沒有切 branch、rebase、merge 或建立 PR。
+- 維護者已部署 v1.15.2 並完成部分 production smoke：C_Chat HTTP 樣本成功，Stock 樣本 direct／Jina 均 HTTP200 後回 ptt_empty_content。本版修正尚待重新部署驗收。
+- 本文件描述 v1.15.3 的程式與部署契約；Git 版本不代表 GAS 已部署，執行環境需依部署清單手動同步。
 - 實際 `.gs` 優先；AI agent 工作規則見 AGENTS.md，使用方式見 README.md，完整歷史見 99_changelog.md。舊版 Search transport 記錄只代表當時版本。
 
 ## 版本邊界
 
-本版只修 PTT Web Reader：classic article routing、HTTPS canonicalization、main-content／article-meta 辨識、typed failure 與一次有條件 Jina fallback。Runtime 僅修改 `20_ReaderLayer.gs` 與 `03_ResponseTexts.gs` 版本文字；同步 smoke tests 與版本文件。沒有新產品功能、AI capability、外部 provider 或 unrelated refactor；Context & Cost Optimization 延後。
+本版只修 verified PTT article 的 Reader false positive：文章結構驗證、metadata／push／footer 移除與 trim 後，只要求正文非空，不再套用 generic 全文 badSignals。Runtime 僅修改 `20_ReaderLayer.gs` 與 `03_ResponseTexts.gs` 版本文字；同步 smoke tests 與必要版本文件。v1.15.2 routing、HTTPS canonicalization、typed failure、一次 Jina、noAi、deadline 與隱私保護保留。沒有新功能、AI routing／provider／Prompt、Sheet、Queue 或 Jina 架構變更；generic detector 全面改善與 Context & Cost Optimization 延後。
 
 以下 AI／圖片／工具架構均沿用 v1.15.1：mixed server Search／client tool continuation、Required Internal Evidence 與 ConversationLog Research、capability-driven AI architecture、JSON Schema structured output、單輪 tool continuation。PTT 以外的 caller、模型、Prompt 與預算不變。
 
@@ -200,10 +200,10 @@ sources 只來自 provider search metadata 或實際送入模型的 NewsInbox／
 
 read_url 重用既有 Reader，透過 trusted `noAi:true` 在 Jina 失敗後直接返回，不進 legacy AI extraction。PTT direct 與 Jina fallback 都只是 Reader HTTP；FxTwitter 同樣不呼叫 AI。一般新聞收件的 legacy fallback 完全保留。
 
-### v1.15.2 PTT Reader policy
+### PTT Reader policy（沿用 v1.15.2，v1.15.3 修正正文驗證）
 
 - 只將 `http(s)://ptt.cc`／`www.ptt.cc` 的 `/bbs/{board}/M.{digits}.A.{hex}.html`（無 port 或對應 scheme 預設 port）送進 classic parser。統一 `https://www.ptt.cc` 並移除 query／fragment；不改寫第三方 host、子網域、列表、非預設 port 或任意 path。term.ptt.cc 使用一般網站 Reader。既有 `isPttHostname_` 相容 helper 保留，但不再決定 article route。
-- 一次 direct、最多一次 Jina。Direct 仍使用 over18 cookie 並設定 `followRedirects:false`；不抓取回應 Location。正常頁需完整平衡的 main-content div、article-meta-tag 與至少三個 article-meta-value。巢狀 div 按深度處理；正文排除 metadata、push、發信站頁尾與其前標準分隔線。已驗證結構的正文只要求非空並通過既有品質檢查，不再以60字作硬門檻；合法短文正常成功，不因長度另發 Jina。未知200頁面仍失敗，不當成刪文。
+- 一次 direct、最多一次 Jina。Direct 仍使用 over18 cookie 並設定 `followRedirects:false`；不抓取回應 Location。正常頁需完整平衡的 main-content div、article-meta-tag 與至少三個 article-meta-value。巢狀 div 按深度處理；正文排除 metadata、push、發信站頁尾與其前標準分隔線。已驗證結構的正文經 trim 後非空即成功，不套用 generic error-page 關鍵字，也沒有60字硬門檻。Cloudflare、Access Denied、403 Forbidden、Just a moment、Enable JavaScript 可以是正常文章內容，不因這些字樣另發 Jina。未知200頁面、空白或只有 metadata／push／footer 仍失敗，不當成刪文。
 - fallback 適用：3xx、403、408／429／5xx、fetch exception、over18 gate、未知／不完整 article 結構及不可用正文。Unsafe／malformed classic URL、404／410、其他一般4xx不 fallback。direct 成功不發 Jina。
 - 重用 `fetchReadablePageWithJina_` 的 PTT 專用模式，傳 canonical URL、`X-Set-Cookie: over18=1; Domain=www.ptt.cc; Path=/` 與 `X-Respond-With: html`。不使用 target selector，避免倚賴其 title 保留行為；HTML 僅暫存在 request 內，通過同一 parser 才成功。一般網站的 Jina text normalization 不變。依 [Jina 官方 Reader 文件](https://github.com/jina-ai/reader#using-request-headers) 與 [Reader API](https://jina.ai/reader/) 查核 header 契約；未把 mock 視為線上服務驗收。
 - 保持標準 webResult。Direct route 為 `ptt_over18_cookie`，fallback route 為既有 `jina_reader`，成功 warnings 說明 direct errorType／HTTP 與 fallback。無新增 route constant 或 caller 特例。Jina 失敗回 `ptt_fallback_failed` 並保留兩次 typed error／status；任一來源暫時失敗可由既有 Queue 重試，合併 httpStatus 選可重試來源，無 HTTP response 保留0。
@@ -268,7 +268,9 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## 測試與 regression review
 
-執行 `node tests/v1140_smoke.cjs`。v1.15.1 baseline 為23 sources / 420 unique functions / 138 checks；本版含本機 follow-up 為23 sources / 424 unique functions / **151 checks PASS**（已推送候選原為149 checks）。Follow-up 新增合法短文 direct 成功且不補抓 Jina、空白／metadata／發信站與分隔線不能冒充正文的 checks，並保留 unknown 200 failure。PTT 舊整頁正文 assertion 改為 main-content 正文，routing fixture 改為真正 classic article path。新增 canonical URL／巢狀 div／metadata／HTTP failures／Jina header、成功與失敗／deadline／read_url noAi 與8秒 reserve／Queue retry／一般 Jina、term、X、legacy 回歸；保留 SSRF 測試，沒有第二套框架。兩輪 review 分別核對功能回歸與安全／版本邊界。
+執行 `node tests/v1140_smoke.cjs`。GitHub main v1.15.2 baseline 為23 sources / 424 unique functions / 151 checks；本版 **159 checks PASS**，sources／functions 數不變。新增8 checks：五種正常正文關鍵字各自 direct success 且僅1 request、無 article structure 的錯誤頁仍失敗、direct403→Jina 正常 HTML 同樣成功，以及 generic heuristic 保持原狀。原測試把 verified article 的 Access Denied 當失敗的 assertion 已校正，未放寬空白、metadata、push 或 footer-only 保護。原碼先由新測試重現 false positive，修正後全數通過。
+
+兩輪 review：第一輪 PTT functional regression，涵蓋 canonicalization、短文、關鍵字、未知／不完整結構、over18、404／410、一次 Jina 與空正文；第二輪 Reader safety／false-positive／privacy regression，確認 SSRF、redirect、noAi、原 deadline／reserve、Queue retry 與無正文／cookie log，generic helper 未改。沿用一般 Jina、term、X、legacy 及 v1.15.2 既有測試；沒有第二套框架。
 
 以下為沿用 v1.15.1 的測試範圍：
 
@@ -306,13 +308,13 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## 部署清單
 
-完整建立／重建 GAS source 時，上方列出的 **23 個 active `.gs` 應一致採用 v1.15.2 內容**。
+完整建立／重建 GAS source 時，上方列出的 **23 個 active `.gs` 應一致採用 v1.15.3 內容**。
 
-從完整 v1.15.1 升級，**至少同步 `20_ReaderLayer.gs`（PTT hotfix）與 `03_ResponseTexts.gs`（版本文字）**；其餘21個 `.gs` 未修改。完成後建立 GAS version 並切換既有 deployment，保留先前 GAS version 供回復。沒有執行部署或 production acceptance。
+從完整 v1.15.2（或 v1.15.1）升級，**至少同步 `20_ReaderLayer.gs`（PTT false-positive 修正）與 `03_ResponseTexts.gs`（v1.15.3 版本文字）**；其餘21個 `.gs` 未修改。完成後建立 GAS version 並切換既有 deployment，保留先前 GAS version 供回復。本版沒有執行部署或 production acceptance。
 
-若從 v1.15.0 升級，需同步 v1.15.1 的8檔 `01_Main.gs`、`03_ResponseTexts.gs`、`05_Storage.gs`、`07_LineImages.gs`、`10_AiService.gs`、`12_Prompts.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`，另加本版 `20_ReaderLayer.gs`，共9檔，全部採 v1.15.2 內容。
+若從 v1.15.0 升級，需同步 v1.15.1 的8檔 `01_Main.gs`、`03_ResponseTexts.gs`、`05_Storage.gs`、`07_LineImages.gs`、`10_AiService.gs`、`12_Prompts.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`，另加本版 `20_ReaderLayer.gs`，共9檔，全部採 v1.15.3 內容。
 
-若從 v1.14.4 直接升級至 v1.15.2，下列 **13 個 runtime-changing `.gs` 是至少必須同步的累計清單**，全部取 v1.15.2 內容，涵蓋程式邏輯、Prompt、Help 與版本文字變更：
+若從 v1.14.4 直接升級至 v1.15.3，下列 **13 個 runtime-changing `.gs` 是至少必須同步的累計清單**，全部取 v1.15.3 內容，涵蓋程式邏輯、Prompt、Help 與版本文字變更：
 
 - `01_Main.gs`
 - `02_LineCommands.gs`
@@ -328,17 +330,17 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 - `16_GeminiProvider.gs`
 - `20_ReaderLayer.gs`
 
-相對 v1.14.4 baseline，其餘10個 `.gs` 只有註解整理，沒有 runtime behavior change，因此不列入最低升級清單；若要讓 GAS source 與 v1.15.2 repository 完整一致，可一併同步。累計最低清單包含 v1.15.0 新增的兩檔，升級後 GAS 仍應具備全部23個 active sources。
+相對 v1.14.4 baseline，其餘10個 `.gs` 只有註解整理，沒有 runtime behavior change，因此不列入最低升級清單；若要讓 GAS source 與 v1.15.3 repository 完整一致，可一併同步。累計最低清單包含 v1.15.0 新增的兩檔，升級後 GAS 仍應具備全部23個 active sources。
 
 Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**none**。新 Script Property：**none**。首次安裝才需原 setup / install 函式；v1.14.4 升級不重跑。Git merge 不等於 GAS deployment。
 
 ### 部署後 manual smoke checklist
 
-**v1.15.2 PTT acceptance：以下均待目標 GAS／LINE 實測，不是已通過記錄。**
+**v1.15.3 PTT acceptance：以下待重新部署至目標 GAS／LINE 驗收，不能用本機 mock 取代。**
 
-先確認 `#版本`／`#版本紀錄` 為 v1.15.2，再依 B → A → C → D → E → F → G 測試，優先隔離 HTTPS 正文問題與 HTTP canonicalization。
+先確認 `#版本`／`#版本紀錄` 為 v1.15.3，再依 C → A → B → D → E → F → G 測試。C（Stock）是本次必要重測：正文包含「Jev發布僅3天，便獲Vercel、Cloudflare及LangChain等主流平台整合」，預期不再因 Cloudflare 回 ptt_empty_content。若 direct HTTP200 且文章結構完整、正文非空，應 direct success、不啟動 Jina；若 direct403，仍最多一次 Jina，成功 HTML 套相同正文契約。A 是維護者回報 v1.15.2 已成功的 HTTP canonicalization 樣本，本版仍回歸。
 
-Short article follow-up：另外測一篇結構合法、正文約10～30字的文章，預期 direct success 且不因長度觸發 Jina；正文實際為空或僅 metadata／發信站內容仍須 failure。原 A–G acceptance 與同步清單不變，仍待 production 驗證。
+另外測一篇結構合法、正文約10～30字的文章，以及正文討論 Access Denied／403 Forbidden／Just a moment／Enable JavaScript 的文章，均應正常成功。沒有文章結構的錯誤頁、空正文、metadata／push／footer-only 仍 failure；後者以 deterministic fixtures 驗證，production 遇到時只核對安全分類，不保存全文。原 A–G URL 清單保留。
 
 | 案例 | URL／操作 | 預期 |
 | --- | --- | --- |
@@ -384,6 +386,10 @@ Short article follow-up：另外測一篇結構合法、正文約10～30字的�
 靜態與 mock 檢查不能取代目標 GAS 環境的 live 驗證。文字 Search、普通 Vision、image Search 的 production 成功是維護者回報；Required Internal Evidence／ConversationLog 的新部署仍需上述 sentinel 驗收。多資料源增加 input 與同步 Sheet 延遲；無法保證兩個 HIGH calls 都能完成。Pending Search、來源呈現、未知圖片 URL／精查與失敗 UX 也需 live regression。六個 schema 沿用 v1.15.0，本輪沒有改動 Structured Output。
 
 工具是有界字面查詢，不是全歷史語意搜尋；資料會因尾端掃描視窗而漏掉較舊紀錄。只允許一個 client 工具批次，不能用第一次讀取結果再動態開第二批工具；pending Search 可以在 final request 完成，但不為 pause_turn 或仍未完成的 Search 增加第三次 request。成功答案可保存其摘要，沒有保留完整工具 evidence 供後續重播。Global ScriptLock 與實際 Google服務延遲仍限制並行性，無exactly-once保證。
+
+## Deferred — generic Reader error-page detector
+
+`isReadableTextUsable_()` 仍對一般 Reader 全文使用 substring badSignals；正常文章討論 Cloudflare、Access Denied、403 Forbidden、Just a moment 等文字時可能 false positive。本版只解除 verified PTT article 對該 helper 的依賴，沒有只刪 Cloudflare 或宣稱一般網站問題已解決。全面 detector 改善需另以真實文章／錯誤頁 corpus 設計並驗證，保留後續版本。
 
 ## Deferred to 後續版本 — Context & Cost Optimization
 

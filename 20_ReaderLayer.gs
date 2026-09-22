@@ -31,9 +31,8 @@ const WEB_READER_ROUTE_LEGACY_GEMINI = 'legacy_raw_html_gemini';
 const WEB_READER_ROUTE_FXTWITTER_API = 'fxtwitter_api';
 
 // Reader 可用性門檻。
-// 一般文章保留長度門檻；PTT 已先驗證文章結構，只要求非空正文及既有品質檢查。
+// 一般文章保留長度門檻；PTT 在專用 parser 驗證結構後，只要求清理後正文非空。
 const MIN_READER_MAIN_TEXT_LENGTH = 120;
-const MIN_PTT_MAIN_TEXT_LENGTH = 1;
 
 // ======================================================
 // 統一 reader 入口
@@ -745,8 +744,9 @@ function parsePttArticleResponse_(url, statusCode, contentType, html, route) {
   }
   // 一併移除發信站前的標準分隔線，避免沒有正文時只剩「--」仍被當成可用文章。
   const mainText = htmlToReadableText_(article.bodyHtml).replace(/(?:^|\n)(?:--[ \t]*\n\s*)?※ 發信站[:：][\s\S]*$/, '').trim();
-  if (!isReadableTextUsable_(mainText, MIN_PTT_MAIN_TEXT_LENGTH)) {
-    return buildReaderLayerErrorResult_(url, route, 'ptt_empty_content', 'PTT 文章結構存在，但實際正文為空或品質不可用。', { retryable: false, httpStatus: statusCode });
+  // 結構已驗證且正文已 trim；文章可能討論 Cloudflare 等錯誤文字，不套 generic 關鍵字 heuristic。
+  if (!mainText) {
+    return buildReaderLayerErrorResult_(url, route, 'ptt_empty_content', 'PTT 文章結構存在，但移除 metadata、推文與頁尾後正文為空。', { retryable: false, httpStatus: statusCode });
   }
   return buildReaderLayerSuccessResult_({
     url: url, statusCode: statusCode, contentType: contentType, siteName: 'PTT',

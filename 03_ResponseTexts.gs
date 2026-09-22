@@ -12,11 +12,21 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.15.2 PTT Reader Resilience Hotfix';
+const BOT_CURRENT_VERSION = 'v1.15.3 Reader False Positive Hotfix';
 const BOT_CURRENT_VERSION_DATE = '2026-09-22';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.15.3 Reader False Positive Hotfix',
+    date: '2026-09-22',
+    summary: '修正正常 PTT 文章提及 Cloudflare 等文字時被誤判為錯誤頁。',
+    changes: [
+      'PTT 結構驗證成功後，只檢查清理後正文是否非空，不再套用一般 Reader 關鍵字判斷。',
+      '保留空正文、未知頁面、over18、網址安全、一次 Jina fallback 與原執行期限。',
+      '無新增 AI 呼叫、憑證、資料表或 Trigger；一般 Reader detector 改善延後。'
+    ]
+  },
   {
     version: 'v1.15.2 PTT Reader Resilience Hotfix',
     date: '2026-09-22',

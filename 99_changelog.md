@@ -1,4 +1,11 @@
 2026-09-22
+v1.15.3 Reader False Positive Hotfix
+- 唯一 baseline 為 GitHub main / v1.15.2 merge commit 91c4f26cc758e70876ee5f3388c5667c70f968f8。維護者 production smoke：C_Chat HTTP 樣本成功，Stock 樣本 direct／Jina 均 HTTP200 後 ptt_empty_content。
+- 根因為已驗證 PTT article 仍套 generic 全文 badSignals，正常正文提及 Cloudflare 即失敗。PTT parser 改為結構驗證、清除 metadata／push／footer 後只要求 trim 正文非空；同時修正 Access Denied、403 Forbidden、Just a moment、Enable JavaScript 等正文誤判。
+- 保留 URL／redirect／over18／未知頁面／空正文保護、最多一次 Jina、noAi、absolute deadline 與隱私契約；一般 Reader detector 未修改，其全文關鍵字 false-positive 風險列 deferred。
+- 補 deterministic regression 與部署後 smoke 清單。無 Sheet migration、Trigger、新 Script Property、provider、Prompt 或 AI routing 變更；GAS 驗收仍由維護者執行。
+
+2026-09-22
 v1.15.2 PTT Reader Resilience Hotfix
 - 以 v1.15.1 / main merge 795072b32ca09c450130eb7ae506d8e4872bbcdc 為 baseline；classic PTT article 限可信 host/path，HTTP 與裸網域先正規化為 https://www.ptt.cc，不自動跟隨 redirect。
 - direct 與既有 Jina fallback 共用 main-content／article-meta 結構驗證，按 div 深度抽取正文；不以導覽、metadata、推文或錯誤頁墊高正文長度，不把未知 200 頁面推定為刪文。
