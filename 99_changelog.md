@@ -1,3 +1,11 @@
+2026-09-22
+v1.15.2 PTT Reader Resilience Hotfix
+- 以 v1.15.1 / main merge 795072b32ca09c450130eb7ae506d8e4872bbcdc 為 baseline；classic PTT article 限可信 host/path，HTTP 與裸網域先正規化為 https://www.ptt.cc，不自動跟隨 redirect。
+- direct 與既有 Jina fallback 共用 main-content／article-meta 結構驗證，按 div 深度抽取正文；不以導覽、metadata、推文或錯誤頁墊高正文長度，不把未知 200 頁面推定為刪文。
+- 合適失敗最多一次 Jina，使用既有 Reader 的 X-Set-Cookie 與 HTML 回傳模式；404／410 不 fallback。沿用 typed retry／httpStatus=0、absolute deadline 與 noAi，無 legacy AI extraction 或 retry loop。
+- 安全診斷只含狀態、分類、route、fallback 與長度；不記 HTML、正文、cookie 或原始 exception。補 deterministic tests 與 production smoke checklist，GAS／LINE 仍待部署後驗收。
+- Sheet schema／migration／Trigger／新 Script Property／新 provider／新 AI capability 均 none。Context & Cost Optimization 延後，未混入本版。
+
 2026-09-16
 v1.15.1 Mixed Tool Continuation Hotfix
 - 以 v1.15.0 Unified Research & Capability Edition / 30353cb99d73f4fff9af26e5742b0ee4b75c73d5 為 baseline，修正 Anthropic-compatible server Search 與 client tools 混用時，首輪尚未收到 Search result 就提前 ai_web_search_failed 的 regression。
