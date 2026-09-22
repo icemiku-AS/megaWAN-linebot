@@ -94,7 +94,7 @@ function getAiRequiredResearch_(question) {
     if (!selection[1].test(text)) return;
     const args = selection[0] === 'get_weekly_memory' ? { limit: 5 } : { days: 30, limit: 5 };
     const match = selection[2] && text.match(selection[2]);
-    // ponytail: 只取明確的字面主題；指圖／相關資料改讀 bounded candidates，語意索引留待 v1.15.2。
+    // ponytail: 只取明確的字面主題；指圖／相關資料改讀 bounded candidates，不做向量語意索引。
     const query = match ? match[1].split(/或|以及|另外|順便|也看看|並且/)[0]
       .replace(/^[「『"`\s]+|[」』"`\s]+$/g, '').replace(/(?:的)?新聞$/, '').trim() : '';
     if (query && !/這|那|相關|什麼|哪些|有沒有|嗎|呢/.test(query) && query.length <= 200) args.query = query;
