@@ -1,4 +1,4 @@
-// v1.15.2 PTT resilience、v1.15.1 mixed continuation 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.15.3 PTT false positive、v1.15.2 resilience 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -214,7 +214,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.15.2'));
+  assert(replies.at(-1).text.includes('v1.15.3'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -852,11 +852,52 @@ check('PTT verified short articles succeed directly without extra Jina requests'
 
 check('PTT whitespace, metadata and footer alone cannot supply usable body', () => {
   for (const body of ['', ' \n\t<br>&nbsp;　', '※ 發信站: 批踢踢實業坊' + '來源網址'.repeat(40),
-    '--\n※ 發信站: 批踢踢實業坊', ' \n--\n\n※ 發信站: 批踢踢實業坊', 'Access Denied']) {
+    '--\n※ 發信站: 批踢踢實業坊', ' \n--\n\n※ 發信站: 批踢踢實業坊']) {
     fetchImpl = () => response(200, pttHtml(body));
     const result = context.fetchPttPageWithOver18Cookie_(pttUrl);
     assert.equal(result.errorType, 'ptt_empty_content'); assert.equal(result.httpStatus, 200);
   }
+});
+
+const pttArticleSignals = ['Vercel、Cloudflare及LangChain', 'Access Denied', '403 Forbidden', 'Just a moment', 'Enable JavaScript'];
+for (const signal of pttArticleSignals) check('verified PTT body mentioning ' + signal + ' succeeds with one direct request', () => {
+  const body = signal.startsWith('Vercel') ? 'Jev發布僅3天，便獲Vercel、Cloudflare及LangChain等主流平台整合' : '這篇文章討論 ' + signal + ' 的使用情境。';
+  fetchImpl = url => { assert.equal(url, pttUrl); return response(200, pttHtml(body)); };
+  const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+  assert(result.ok, JSON.stringify(result)); assert.equal(result.mainText, body);
+  assert.equal(result.readerRoute, 'ptt_over18_cookie'); assert.equal(calls.length, 1);
+  assert.equal(JSON.parse(logs.at(-1).slice('PTT_READER '.length)).fallback, 'not_attempted');
+  assert(!logs.join(' ').includes(body)); assert(!logs.join(' ').includes('over18=1'));
+  assert.equal(rows.length, 0); assert.equal(cache.size, 0);
+});
+
+check('PTT error-page keywords without article structure still fail for direct and Jina', () => {
+  for (const html of ['Access Denied', '403 Forbidden', '<html><h1>Just a moment</h1>Cloudflare challenge</html>']) {
+    calls.length = 0; fetchImpl = () => response(200, html);
+    assert.equal(context.fetchPttPageWithOver18Cookie_(pttUrl).errorType, 'ptt_unexpected_page');
+    calls.length = 0;
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert.equal(result.errorType, 'ptt_fallback_failed'); assert.equal(calls.length, 2);
+    assert(result.error.includes('ptt_unexpected_page'));
+  }
+});
+
+check('PTT direct 403 to verified Jina HTML uses the same nonempty body contract', () => {
+  for (const body of pttArticleSignals) {
+    calls.length = 0;
+    fetchImpl = url => url === pttUrl ? response(403, 'blocked') : response(200, pttHtml(body));
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl, { noAi: true, deadlineAtMs: now + 5000 });
+    assert(result.ok, JSON.stringify(result)); assert.equal(result.mainText, body);
+    assert.equal(result.readerRoute, 'jina_reader'); assert.equal(calls.length, 2);
+    assert.equal(calls[1].url, 'https://r.jina.ai/' + pttUrl);
+    assert(calls.every(call => call.options.followRedirects === false));
+  }
+  assert(!logs.join(' ').includes('over18=1')); assert.equal(rows.length, 0); assert.equal(cache.size, 0);
+});
+
+check('generic Reader keyword heuristic remains unchanged and is deferred', () => {
+  for (const signal of pttArticleSignals) assert.equal(context.isReadableTextUsable_('普通文章內容'.repeat(30) + signal, 120), false);
+  assert(context.isReadableTextUsable_('普通文章內容'.repeat(30), 120));
 });
 
 check('PTT gate, unexpected 200, truncated structure and empty actual body are distinct', () => {
