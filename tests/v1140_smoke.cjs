@@ -1,4 +1,4 @@
-// v1.15.1 mixed continuation、v1.15.0 能力／研究與 v1.14.x 回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.15.2 PTT resilience、v1.15.1 mixed continuation 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -214,7 +214,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.15.1'));
+  assert(replies.at(-1).text.includes('v1.15.2'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -786,26 +786,231 @@ check('URL safety, X status routing and weekly display share existing hostname s
   for (const route of ['/user', '/search?q=a', '/i/lists/12345', '/user/status/1234', '/user/status/12345x']) assert.equal(context.detectWebReaderRoute_('https://x.com' + route), 'unsupported_social_platform');
   for (const host of ['eviltwitter.com', 'twitter.com.evil.org']) assert(!context.isTwitterLikeHostname_(host));
   assert.equal(context.detectWebReaderRoute_('https://example.org/status/12345'), 'jina_reader');
-  assert.equal(context.detectWebReaderRoute_('https://www.ptt.cc/bbs/C_Chat/M.123.html'), 'ptt_over18_cookie');
+  assert.equal(context.detectWebReaderRoute_('https://www.ptt.cc/bbs/C_Chat/M.123.A.031.html'), 'ptt_over18_cookie');
 });
 
-check('PTT explicit title, inferred title, over18 gate and short text keep their outcomes', () => {
-  const body = '<div id="main-content">正文第一行<br>' + '有效文章內容'.repeat(30) + '</div>';
-  for (const [html, title] of [[body, '正文第一行'], ['<title>測試標題 - 看板 C_Chat</title>' + body, '測試標題']]) {
-    fetchImpl = () => response(200, html, { 'Content-Type': 'text/html' });
-    const result = context.fetchPttPageWithOver18Cookie_('https://www.ptt.cc/bbs/C_Chat/M.123.html');
-    assert(result.ok); assert.equal(result.title, title);
-    assert.equal(result.mainText, context.htmlToReadableText_(html));
-    assert.equal(calls.at(-1).options.headers.Cookie, 'over18=1');
-    assert.equal(calls.at(-1).options.followRedirects, false);
+const pttUrl = 'https://www.ptt.cc/bbs/C_Chat/M.1789634041.A.031.html';
+const pttBody = '正文第一行<br>' + '有效文章內容'.repeat(30) + '<div>巢狀<div>內層</div>後半正文</div>結尾正文';
+const pttMeta = ['testuser (作者)', 'C_Chat', '[Vtub] 測試標題', 'Thu Sep 17 15:14:01 2026'].map((text, i) =>
+  '<div class="article-metaline"><span class="article-meta-tag">' + ['作者', '看板', '標題', '時間'][i] +
+  '</span><span class="article-meta-value">' + text + '</span></div>').join('');
+function pttHtml(body = pttBody, meta = pttMeta) {
+  return '<html><head><title>網頁標題 - 看板 C_Chat</title></head><body><div>外部導覽</div>' +
+    '<div id="main-content" class="bbs-screen bbs-content">' + meta + body +
+    '<div class="push"><span>推文不冒充正文</span><div>nested push</div></div></div><div>外部頁尾</div></body></html>';
+}
+
+check('PTT canonicalizes only classic article hosts and paths before direct fetch', () => {
+  for (const input of [pttUrl.replace('https:', 'http:'), pttUrl.replace('https://www.', 'http://'), pttUrl,
+    pttUrl.replace('www.ptt.cc', 'ptt.cc'), pttUrl.replace('www.ptt.cc', 'www.ptt.cc:443'), pttUrl + '?x=1#x']) {
+    fetchImpl = () => response(200, pttHtml());
+    assert.equal(context.canonicalizePttArticleUrl_(input), pttUrl);
+    const result = context.fetchAndExtractWebPageByReaderLayer_(input);
+    assert(result.ok); assert.equal(result.url, pttUrl); assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, pttUrl); assert.equal(calls[0].options.followRedirects, false);
+    const diagnostic = JSON.parse(logs.at(-1).slice('PTT_READER '.length));
+    assert.equal(diagnostic.canonicalized, input !== pttUrl); assert.equal(diagnostic.fallback, 'not_attempted');
+    assert.equal(calls[0].options.headers.Cookie, 'over18=1'); calls.length = 0;
   }
-  fetchImpl = () => response(200, '我同意，我已年滿十八歲');
-  assert.equal(context.fetchPttPageWithOver18Cookie_('https://ptt.cc').errorType, 'ptt_over18_failed');
-  fetchImpl = () => response(200, '<div id="main-content">短</div>');
-  assert.equal(context.fetchPttPageWithOver18Cookie_('https://ptt.cc').errorType, 'ptt_empty_content');
+  for (const input of [pttUrl.replace('www.', 'term.'), pttUrl.replace('www.', 'other.'), 'https://ptt.cc',
+    'https://www.ptt.cc/bbs/C_Chat/index.html', pttUrl.replace('.A.031', ''), pttUrl.replace('ptt.cc', 'ptt.cc.evil.org'),
+    pttUrl.replace('ptt.cc', 'ptt.cc:8443'), pttUrl.replace('/bbs/', '/x/../bbs/'), pttUrl.replace('/bbs/', '/%62bs/')]) {
+    assert.equal(context.canonicalizePttArticleUrl_(input), '', input);
+    assert.equal(context.detectWebReaderRoute_(input), 'jina_reader', input);
+  }
+});
+
+check('PTT main-content extraction preserves nested body and metadata, excludes navigation and pushes', () => {
+  for (const html of [pttHtml(), pttHtml().replaceAll('"', "'"),
+    pttHtml().replace('id="main-content"', 'data-note="a > b" id = "main-content"'),
+    '<script>"<div id=\"main-content\">fake</div>"</script><!-- <div> -->' + pttHtml(),
+    '<div data-id="main-content">fake</div>' + pttHtml(),
+    '<div data-note=" id=\'main-content\'">fake</div>' + pttHtml()]) {
+    fetchImpl = () => response(200, html);
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert(result.ok); assert.equal(result.title, '[Vtub] 測試標題'); assert.equal(result.author, 'testuser (作者)');
+    assert.equal(result.publishedAt, 'Thu Sep 17 15:14:01 2026'); assert.equal(result.siteName, 'PTT');
+    assert.equal(result.mainText, context.htmlToReadableText_(pttBody));
+    assert(!/導覽|頁尾|推文|nested push|article-meta/.test(result.mainText));
+  }
+  assert.equal(context.extractPttTitle_('<title>網頁標題 - 看板 C_Chat</title>'), '網頁標題');
+  fetchImpl = () => response(200, pttHtml(pttBody, pttMeta.replace('[Vtub] 測試標題', '')).replace(/<title>.*?<\/title>/, ''));
+  assert.equal(context.fetchAndExtractWebPageByReaderLayer_(pttUrl).title, '正文第一行');
+});
+
+check('PTT verified short articles succeed directly without extra Jina requests', () => {
+  for (const body of ['短', '這是一篇只有十幾個字的合法短文。', '今天活動已經取消，詳細安排請等候主辦單位後續公告。']) {
+    calls.length = 0;
+    fetchImpl = url => { assert.equal(url, pttUrl); return response(200, pttHtml(body)); };
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert(result.ok); assert.equal(result.mainText, body); assert.equal(result.readerRoute, 'ptt_over18_cookie');
+    assert.equal(calls.length, 1);
+    const fallback = context.parsePttArticleResponse_(pttUrl, 200, 'text/html', pttHtml(body), 'jina_reader');
+    assert(fallback.ok); assert.equal(fallback.mainText, body);
+  }
+});
+
+check('PTT whitespace, metadata and footer alone cannot supply usable body', () => {
+  for (const body of ['', ' \n\t<br>&nbsp;　', '※ 發信站: 批踢踢實業坊' + '來源網址'.repeat(40),
+    '--\n※ 發信站: 批踢踢實業坊', ' \n--\n\n※ 發信站: 批踢踢實業坊', 'Access Denied']) {
+    fetchImpl = () => response(200, pttHtml(body));
+    const result = context.fetchPttPageWithOver18Cookie_(pttUrl);
+    assert.equal(result.errorType, 'ptt_empty_content'); assert.equal(result.httpStatus, 200);
+  }
+});
+
+check('PTT gate, unexpected 200, truncated structure and empty actual body are distinct', () => {
+  for (const [html, type] of [
+    ['<form method="post" action="/ask/over18">我同意，我已年滿十八歲</form>', 'ptt_over18_failed'],
+    ['<div id="main-content">我同意，我已年滿十八歲</div>', 'ptt_over18_failed'],
+    ['<html>存取限制頁'.repeat(100), 'ptt_unexpected_page'],
+    ['<div id="main-content">' + pttBody + '</div>', 'ptt_unexpected_page'],
+    ['<div id="main-content">' + pttMeta + pttBody, 'ptt_unexpected_page'],
+    [pttHtml(''), 'ptt_empty_content'],
+    [pttHtml('<br>※ 發信站: 批踢踢實業坊' + '網址與來源'.repeat(40)), 'ptt_empty_content']]) {
+    fetchImpl = () => response(200, html);
+    const direct = context.fetchPttPageWithOver18Cookie_(pttUrl);
+    assert(!direct.ok); assert.equal(direct.errorType, type); assert.equal(direct.httpStatus, 200);
+    assert(!/刪除|刪文/.test(direct.error));
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert.equal(result.errorType, 'ptt_fallback_failed'); assert(result.error.includes(type));
+  }
+  assert(!context.looksLikePttOver18Gate_(pttHtml(pttBody + '我同意，我已年滿十八歲 /ask/over18')));
+});
+
+check('PTT 404 and 410 are terminal; 403, 408, 429 and 5xx retain typed retry semantics', () => {
+  for (const status of [301, 403, 404, 410, 408, 429, 500, 503]) {
+    calls.length = 0; fetchImpl = () => response(status, 'PRIVATE_ERROR_BODY');
+    const direct = context.fetchPttPageWithOver18Cookie_(pttUrl);
+    assert.equal(direct.httpStatus, status); assert.equal(direct.retryable, [408, 429, 500, 503].includes(status));
+    assert.equal(direct.errorType, status === 301 ? 'ptt_unexpected_redirect' : status === 403 ? 'ptt_access_blocked' :
+      [404, 410].includes(status) ? 'ptt_not_found' : 'ptt_fetch_failed');
+    calls.length = 0;
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert.equal(calls.length, [404, 410].includes(status) ? 1 : 2);
+    assert.equal(result.retryable, [408, 429, 500, 503].includes(status));
+    const error = context.createNewsUrlReaderError_(result);
+    assert.equal(context.shouldRetryNewsUrlError_(error.errorType, error.message, error.retryable, error.httpStatus), result.retryable);
+    assert(!JSON.stringify(result).includes('PRIVATE_ERROR_BODY'));
+  }
+});
+
+check('PTT redirects never fetch Location and Jina fallback uses canonical URL without auto redirects', () => {
+  for (const location of ['http://127.0.0.1/', 'http://localhost/', 'http://169.254.169.254/', 'http://metadata.google.internal/', 'http://10.1.2.3/']) {
+    calls.length = 0;
+    fetchImpl = url => url.startsWith('https://r.jina.ai/') ? response(200, pttHtml()) : response(302, '', { Location: location });
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl.replace('https:', 'http:'));
+    assert(result.ok); assert.equal(result.readerRoute, 'jina_reader'); assert.equal(calls.length, 2);
+    assert.equal(calls[0].url, pttUrl); assert.equal(calls[1].url, 'https://r.jina.ai/' + pttUrl);
+    assert(calls.every(call => call.options.followRedirects === false));
+    assert.equal(calls[1].options.headers['X-Set-Cookie'], 'over18=1; Domain=www.ptt.cc; Path=/');
+    assert.equal(calls[1].options.headers['X-Respond-With'], 'html');
+    assert(result.warnings.some(warning => warning.includes('fallback')));
+    assert.equal(result.title, '[Vtub] 測試標題'); assert.equal(result.mainText, context.htmlToReadableText_(pttBody));
+    for (const key of ['ok', 'url', 'statusCode', 'contentType', 'title', 'siteName', 'author', 'publishedAt', 'mainText', 'extractionConfidence', 'warnings', 'readerRoute']) assert(key in result);
+  }
+});
+
+check('PTT fallback failures are bounded, preserve transient status and do not leak responses or exceptions', () => {
+  for (const [directStatus, jinaStatus, retryable, httpStatus] of [[403, 503, true, 503], [503, 404, true, 503], [403, 403, false, 403]]) {
+    calls.length = 0;
+    fetchImpl = url => response(url.startsWith('https://r.jina.ai/') ? jinaStatus : directStatus, 'PRIVATE_ERROR_BODY over18=1');
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert.equal(calls.length, 2); assert.equal(result.errorType, 'ptt_fallback_failed');
+    assert.equal(result.retryable, retryable); assert.equal(result.httpStatus, httpStatus);
+    assert(!JSON.stringify(result).includes('PRIVATE_ERROR_BODY'));
+  }
+  calls.length = 0; fetchImpl = () => { throw Error('PRIVATE_EXCEPTION over18=1'); };
+  const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+  assert.equal(calls.length, 2); assert(result.retryable); assert.equal(result.httpStatus, 0);
+  assert(result.error.includes('ptt_fetch_exception')); assert(result.error.includes('jina_fetch_exception'));
+  assert(!/PRIVATE|over18=1|有效文章內容/.test(logs.join(' ') + JSON.stringify(result)));
+});
+
+check('PTT fallback rejects long Jina error pages and gate pages instead of accepting text length', () => {
+  for (const html of ['<h1>Forbidden</h1>'.repeat(100), '我同意，我已年滿十八歲'.repeat(100), pttHtml('')]) {
+    calls.length = 0; fetchImpl = url => url.startsWith('https://r.jina.ai/') ? response(200, html) : response(403, 'blocked');
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert.equal(result.errorType, 'ptt_fallback_failed'); assert.equal(calls.length, 2);
+  }
+});
+
+check('PTT unsafe and malformed direct inputs issue no requests or cookie forwarding', () => {
+  for (const url of ['http://127.0.0.1/', 'https://user@www.ptt.cc/bbs/X/M.123.A.AAA.html', 'https://ptt.cc',
+    pttUrl.replace('/bbs/', '/bbs/../'), pttUrl.replace('www.', 'term.'), pttUrl + '\\evil']) {
+    calls.length = 0; assert(!context.fetchPttPageWithOver18Cookie_(url).ok);
+    assert(!context.fetchReadablePageWithJina_(url, null, true).ok); assert.equal(calls.length, 0);
+  }
+});
+
+check('PTT direct consumes original deadline; insufficient budget skips Jina and late results fail', () => {
+  for (const elapsed of [2000, 4500, 5000]) {
+    calls.length = 0; const deadline = now + 5000;
+    fetchImpl = url => {
+      if (!url.startsWith('https://r.jina.ai/')) { now += elapsed; return response(403, 'blocked'); }
+      return response(200, pttHtml());
+    };
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl, { deadlineAtMs: deadline, readerTimeoutCapSeconds: 5, noAi: true });
+    assert.equal(calls[0].options.timeoutSeconds, 5);
+    if (elapsed === 2000) { assert(result.ok); assert.equal(calls.length, 2); assert.equal(calls[1].options.timeoutSeconds, 3); }
+    else { assert.equal(result.errorType, 'reader_sync_budget_exhausted'); assert.equal(result.httpStatus, 0); assert(result.retryable); assert.equal(calls.length, 1); }
+  }
+  calls.length = 0; const deadline = now + 5000;
+  fetchImpl = () => { now += 5000; return response(200, pttHtml()); };
+  assert.equal(context.fetchAndExtractWebPageByReaderLayer_(pttUrl, { deadlineAtMs: deadline }).errorType, 'reader_sync_budget_exhausted');
+  assert.equal(calls.length, 1);
+  calls.length = 0; const lateDeadline = now + 5000;
+  fetchImpl = url => {
+    if (!url.startsWith('https://r.jina.ai/')) return response(403, 'blocked');
+    now += 6000; return response(200, pttHtml());
+  };
+  assert.equal(context.fetchAndExtractWebPageByReaderLayer_(pttUrl, { deadlineAtMs: lateDeadline }).errorType, 'reader_sync_budget_exhausted');
+  assert.equal(calls.length, 2);
+});
+
+check('legacy raw HTML continues refusing unchecked redirects', () => {
   fetchImpl = () => response(302, '', { Location: 'http://127.0.0.1/' });
   assert.equal(context.fetchRawWebPage('https://example.org/redirect').errorType, 'raw_html_fetch_failed');
   assert.equal(calls.at(-1).options.followRedirects, false);
+});
+
+check('PTT internal read_url permits HTTP fallback without AI and preserves final answer reserve', () => {
+  let legacyCalls = 0;
+  withStubs({ fetchAndExtractWebPageLegacy_: () => { legacyCalls++; throw Error('nested AI'); } }, () => {
+    for (const success of [true, false]) {
+      calls.length = 0;
+      fetchImpl = url => url.startsWith('https://r.jina.ai/') ? response(success ? 200 : 503, success ? pttHtml() : 'PRIVATE_ERROR_BODY') : response(403, 'blocked');
+      const result = executeTool('read_url', { url: pttUrl });
+      assert.equal(calls.length, 2); assert(calls.every(call => call.options.timeoutSeconds <= 5));
+      if (success) assert(result.data.ok); else assert.equal(result.data.errorCode, 'tool_read_failed');
+    }
+    calls.length = 0; const deadline = now + 10000;
+    fetchImpl = () => { now += 2000; return response(403, 'blocked'); };
+    const result = context.runAiReadOnlyTool_(validatedTools([toolCall('read_url', { url: pttUrl })])[0], { conversationId: 'group:a', deadlineAtMs: deadline });
+    assert.equal(result.data.errorCode, 'tool_read_failed'); assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.timeoutSeconds, 2); assert.equal(deadline - now, 8000);
+  });
+  assert.equal(legacyCalls, 0); assert.equal(rows.length, 0); assert.equal(cache.size, 0);
+  assert(!/PRIVATE_ERROR_BODY|over18=1|有效文章內容/.test(logs.join(' ')));
+});
+
+check('ordinary Jina, term.ptt.cc, FxTwitter and legacy fallback retain their original routes', () => {
+  for (const url of ['https://example.org/news', 'https://term.ptt.cc/']) {
+    fetchImpl = () => response(200, 'Title: 普通頁面\nAuthor: 作者\nPublished Time: 2026-09-22\nMarkdown Content:\n' + '普通網站內容'.repeat(30));
+    const result = context.fetchAndExtractWebPageByReaderLayer_(url);
+    assert(result.ok); assert.equal(result.readerRoute, 'jina_reader'); assert.equal(result.title, '普通頁面');
+    assert.equal(result.author, '作者'); assert.equal(result.publishedAt, '2026-09-22');
+    assert(!calls.at(-1).options.headers['X-Set-Cookie']); assert(!calls.at(-1).options.headers['X-Respond-With']);
+  }
+  fetchImpl = () => response(200, { code: 200, tweet: { text: '貼文內容'.repeat(30), author: { name: '作者', screen_name: 'user' } } });
+  assert.equal(context.fetchAndExtractWebPageByReaderLayer_('https://x.com/user/status/123456').readerRoute, 'fxtwitter_api');
+  let legacyCalls = 0;
+  withStubs({ fetchAndExtractWebPageLegacy_: () => { legacyCalls++; return { ok: true, mainText: 'legacy content', warnings: [] }; } }, () => {
+    fetchImpl = () => response(503, 'unavailable');
+    const result = context.fetchAndExtractWebPageByReaderLayer_('https://example.org/news');
+    assert(result.ok); assert.equal(result.readerRoute, 'legacy_raw_html_ai'); assert.equal(legacyCalls, 1);
+    context.fetchAndExtractWebPageByReaderLayer_(pttUrl); assert.equal(legacyCalls, 1);
+  });
 });
 
 check('Reader error metadata keeps explicit zero and retry decisions', () => {

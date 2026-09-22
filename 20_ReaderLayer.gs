@@ -31,9 +31,9 @@ const WEB_READER_ROUTE_LEGACY_GEMINI = 'legacy_raw_html_gemini';
 const WEB_READER_ROUTE_FXTWITTER_API = 'fxtwitter_api';
 
 // Reader 可用性門檻。
-// 一般文章太短通常代表只讀到導覽列、錯誤頁或空殼頁；PTT 短文較常見，所以門檻略低。
+// 一般文章保留長度門檻；PTT 已先驗證文章結構，只要求非空正文及既有品質檢查。
 const MIN_READER_MAIN_TEXT_LENGTH = 120;
-const MIN_PTT_MAIN_TEXT_LENGTH = 60;
+const MIN_PTT_MAIN_TEXT_LENGTH = 1;
 
 // ======================================================
 // 統一 reader 入口
@@ -66,7 +66,7 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
   }
 
   if (route === WEB_READER_ROUTE_PTT_OVER18) {
-    return fetchPttPageWithOver18Cookie_(safeUrl, executionContext);
+    return fetchPttArticleWithFallback_(safeUrl, executionContext);
   }
 
   const jinaResult = fetchReadablePageWithJina_(safeUrl, executionContext);
@@ -127,7 +127,7 @@ function detectWebReaderRoute_(url) {
     return WEB_READER_ROUTE_JINA;
   }
 
-  if (isPttHostname_(hostname)) {
+  if (canonicalizePttArticleUrl_(url)) {
     return WEB_READER_ROUTE_PTT_OVER18;
   }
 
@@ -170,6 +170,14 @@ function getReaderLayerHostname_(url) {
 function isPttHostname_(hostname) {
   const host = String(hostname || '').toLowerCase();
   return host === 'ptt.cc' || host.endsWith('.ptt.cc');
+}
+
+// 只正規化 classic Web article；不改寫子網域、非預設 port、列表或任意 path。
+function canonicalizePttArticleUrl_(url) {
+  const text = String(url || '').trim();
+  const match = text.match(/^(https?):\/\/(?:www\.)?ptt\.cc(?::(80|443))?(\/bbs\/[A-Za-z0-9_-]+\/M\.\d+\.A\.[A-Fa-f0-9]+\.html)(?:[?#][^\s\\]*)?$/i);
+  if (!match || (match[2] && match[2] !== (match[1].toLowerCase() === 'https' ? '443' : '80'))) return '';
+  return 'https://www.ptt.cc' + match[3];
 }
 
 // 舊函式名稱保留給相容與排查用。
@@ -481,19 +489,28 @@ function normalizeFxTwitterString_(value) {
 // Jina Reader provider
 // ======================================================
 
-function fetchReadablePageWithJina_(url, executionContext) {
+function fetchReadablePageWithJina_(url, executionContext, pttArticle) {
+  // PTT 專用模式只接受已正規化的可信文章 URL，不接受任意 cookie / header 注入。
+  if (pttArticle && (!isSafePublicUrl(url) || canonicalizePttArticleUrl_(url) !== url)) {
+    return buildReaderLayerErrorResult_(url, WEB_READER_ROUTE_JINA, 'unsafe_url', 'PTT article 網址安全檢查未通過。', { retryable: false, httpStatus: 0 });
+  }
   const readerUrl = buildJinaReaderUrl_(url);
 
   const options = {
     method: 'get',
     muteHttpExceptions: true,
-    followRedirects: !(executionContext && executionContext.noAi),
+    followRedirects: !pttArticle && !(executionContext && executionContext.noAi),
     headers: {
       // 明確要求文字輸出；Jina Reader 通常會回 Markdown / text。
       'Accept': 'text/plain',
       'User-Agent': 'Mozilla/5.0 (compatible; MEGAHuanBot/1.10.9; Jina Reader Layer)'
     }
   };
+  if (pttArticle) {
+    options.headers['X-Set-Cookie'] = 'over18=1; Domain=www.ptt.cc; Path=/';
+    // 暫存 HTML 重用 PTT 結構驗證，保留 metadata；不依賴 selector 的 title 保留行為。
+    options.headers['X-Respond-With'] = 'html';
+  }
   if (!applyReaderFetchTimeoutForExecutionContext_(options, executionContext)) {
     return buildReaderExecutionBudgetFailure_(url, WEB_READER_ROUTE_JINA);
   }
@@ -510,10 +527,13 @@ function fetchReadablePageWithJina_(url, executionContext) {
         url,
         WEB_READER_ROUTE_JINA,
         'jina_fetch_failed',
-        'Jina Reader 讀取失敗，HTTP 狀態碼：' + statusCode + '；回應預覽：' + String(bodyText || '').slice(0, 500),
+        'Jina Reader 讀取失敗，HTTP 狀態碼：' + statusCode +
+          (pttArticle ? '' : '；回應預覽：' + String(bodyText || '').slice(0, 500)),
         buildReaderHttpFailureMetadata_(statusCode)
       );
     }
+
+    if (pttArticle) return parsePttArticleResponse_(url, statusCode, contentType, bodyText, WEB_READER_ROUTE_JINA);
 
     const normalized = normalizeJinaReaderText_(url, bodyText);
 
@@ -545,7 +565,8 @@ function fetchReadablePageWithJina_(url, executionContext) {
       url,
       WEB_READER_ROUTE_JINA,
       'jina_fetch_exception',
-      '呼叫 Jina Reader 時發生錯誤：' + String(error && error.message ? error.message : error)
+      pttArticle ? '呼叫 PTT Jina fallback 時發生 fetch exception。' : '呼叫 Jina Reader 時發生錯誤：' + String(error && error.message ? error.message : error),
+      pttArticle ? { retryable: true, httpStatus: 0 } : undefined
     );
   }
 }
@@ -630,6 +651,10 @@ function normalizeJinaReaderText_(url, readerText) {
 // ======================================================
 
 function fetchPttPageWithOver18Cookie_(url, executionContext) {
+  const canonicalUrl = canonicalizePttArticleUrl_(url);
+  if (!isSafePublicUrl(url) || !canonicalUrl) {
+    return buildReaderLayerErrorResult_(url, WEB_READER_ROUTE_PTT_OVER18, 'unsafe_url', 'PTT article 網址安全檢查未通過。', { retryable: false, httpStatus: 0 });
+  }
   const options = {
     method: 'get',
     muteHttpExceptions: true,
@@ -647,65 +672,124 @@ function fetchPttPageWithOver18Cookie_(url, executionContext) {
   }
 
   try {
-    const response = UrlFetchApp.fetch(url, options);
+    const response = UrlFetchApp.fetch(canonicalUrl, options);
     const statusCode = response.getResponseCode();
     const headers = response.getHeaders();
     const contentType = headers['Content-Type'] || headers['content-type'] || 'text/html';
     const html = response.getContentText();
 
-    if (statusCode < 200 || statusCode >= 300) {
-      return buildReaderLayerErrorResult_(
-        url,
-        WEB_READER_ROUTE_PTT_OVER18,
-        'ptt_fetch_failed',
-        'PTT 讀取失敗，HTTP 狀態碼：' + statusCode,
-        buildReaderHttpFailureMetadata_(statusCode)
-      );
-    }
-
-    if (looksLikePttOver18Gate_(html)) {
-      return buildReaderLayerErrorResult_(
-        url,
-        WEB_READER_ROUTE_PTT_OVER18,
-        'ptt_over18_failed',
-        '已帶 over18=1 cookie，但仍讀到 PTT 滿 18 歲確認頁。'
-      );
-    }
-
-    const mainText = htmlToReadableText_(html);
-    const title = extractPttTitle_(html) || inferTitleFromReadableText_(mainText);
-
-    if (!isReadableTextUsable_(mainText, MIN_PTT_MAIN_TEXT_LENGTH)) {
-      return buildReaderLayerErrorResult_(
-        url,
-        WEB_READER_ROUTE_PTT_OVER18,
-        'ptt_empty_content',
-        'PTT 有回應，但轉換後正文過短，可能文章已刪除、頁面格式異常，或只讀到列表 / 錯誤頁。'
-      );
-    }
-
-    return buildReaderLayerSuccessResult_({
-      url: url,
-      statusCode: statusCode,
-      contentType: contentType,
-      title: title,
-      siteName: 'PTT',
-      author: extractPttAuthor_(html),
-      publishedAt: extractPttPublishedAt_(html),
-      mainText: mainText,
-      extractionConfidence: 0.8,
-      warnings: ['PTT 使用 GAS UrlFetchApp 並帶 over18=1 cookie 讀取。'],
-      readerRoute: WEB_READER_ROUTE_PTT_OVER18
-    });
+    return parsePttArticleResponse_(canonicalUrl, statusCode, contentType, html, WEB_READER_ROUTE_PTT_OVER18);
 
   } catch (error) {
     return buildReaderLayerErrorResult_(
       url,
       WEB_READER_ROUTE_PTT_OVER18,
       'ptt_fetch_exception',
-      '讀取 PTT 時發生錯誤：' + String(error && error.message ? error.message : error)
+      '讀取 PTT 時發生 fetch exception。',
+      { retryable: true, httpStatus: 0 }
     );
   }
+}
+
+// 一次 direct + 最多一次既有 Jina；永不進入 legacy AI，不重設 caller deadline。
+function fetchPttArticleWithFallback_(url, executionContext) {
+  const canonicalUrl = canonicalizePttArticleUrl_(url);
+  const direct = fetchPttPageWithOver18Cookie_(url, executionContext);
+  const status = getReaderFailureHttpStatus_(direct);
+  const eligible = !direct.ok && (direct.errorType === 'ptt_fetch_exception' ||
+    direct.errorType === 'ptt_over18_failed' || direct.errorType === 'ptt_unexpected_page' ||
+    direct.errorType === 'ptt_empty_content' || (status >= 300 && status < 400) ||
+    status === 403 || isReaderHttpStatusRetryable_(status));
+  let result = direct;
+  let fallback = 'not_attempted';
+  if (eligible) {
+    const jina = fetchReadablePageWithJina_(canonicalUrl, executionContext, true);
+    fallback = jina.errorType === 'reader_sync_budget_exhausted' ? 'budget_skipped' : (jina.ok ? 'success' : 'failed');
+    if (jina.ok || jina.errorType === 'reader_sync_budget_exhausted') {
+      result = jina;
+      if (jina.ok) result.warnings.push('PTT direct 未取得可用文章，已使用 Jina fallback；direct=' + direct.errorType + '，HTTP=' + status + '。');
+    } else {
+      const retryable = resolveReaderFailureRetryable_(direct) || resolveReaderFailureRetryable_(jina);
+      result = buildReaderLayerErrorResult_(canonicalUrl, WEB_READER_ROUTE_JINA, 'ptt_fallback_failed',
+        'PTT direct 失敗（' + direct.errorType + '，HTTP ' + status + '）；Jina fallback 失敗（' + jina.errorType + '，HTTP ' + getReaderFailureHttpStatus_(jina) + '）。',
+        { retryable: retryable, httpStatus: resolveCombinedReaderFailureHttpStatus_(direct, jina, retryable) });
+    }
+  }
+  // 外部 fetch 可能晚於 timeout 返回；拒絕超過共同 deadline 的結果，不延長 AI reserve。
+  if (executionContext && Number(executionContext.deadlineAtMs) > 0 && Date.now() >= Number(executionContext.deadlineAtMs)) {
+    result = buildReaderLayerErrorResult_(canonicalUrl, result.readerRoute, 'reader_sync_budget_exhausted',
+      'Reader 已耗盡共同執行預算，未繼續處理。', { retryable: true, httpStatus: 0 });
+  }
+  console.log('PTT_READER ' + JSON.stringify({
+    directHttpStatus: status, directPageClassification: direct.ok ? 'article' : direct.errorType,
+    canonicalized: canonicalUrl !== String(url || '').trim(), redirectObserved: status >= 300 && status < 400,
+    fallback: fallback, finalReaderRoute: result.readerRoute, errorType: result.errorType || '',
+    mainTextLength: result.ok ? result.mainText.length : 0
+  }));
+  return result;
+}
+
+function parsePttArticleResponse_(url, statusCode, contentType, html, route) {
+  if (statusCode < 200 || statusCode >= 300) {
+    const type = statusCode === 404 || statusCode === 410 ? 'ptt_not_found' :
+      statusCode === 403 ? 'ptt_access_blocked' :
+      statusCode >= 300 && statusCode < 400 ? 'ptt_unexpected_redirect' : 'ptt_fetch_failed';
+    return buildReaderLayerErrorResult_(url, route, type, 'PTT 讀取失敗，HTTP 狀態碼：' + statusCode, buildReaderHttpFailureMetadata_(statusCode));
+  }
+  const article = extractPttMainContent_(html);
+  if (looksLikePttOver18Gate_(html)) {
+    return buildReaderLayerErrorResult_(url, route, 'ptt_over18_failed', 'PTT 仍回傳年齡確認頁，未取得文章。', { retryable: false, httpStatus: statusCode });
+  }
+  if (!article || extractPttArticleMetaValues_(article.html).length < 3 || !/\barticle-meta-tag\b/.test(article.html)) {
+    return buildReaderLayerErrorResult_(url, route, 'ptt_unexpected_page', 'PTT 回應不是已知的完整文章結構，無法確認正文。', { retryable: false, httpStatus: statusCode });
+  }
+  // 一併移除發信站前的標準分隔線，避免沒有正文時只剩「--」仍被當成可用文章。
+  const mainText = htmlToReadableText_(article.bodyHtml).replace(/(?:^|\n)(?:--[ \t]*\n\s*)?※ 發信站[:：][\s\S]*$/, '').trim();
+  if (!isReadableTextUsable_(mainText, MIN_PTT_MAIN_TEXT_LENGTH)) {
+    return buildReaderLayerErrorResult_(url, route, 'ptt_empty_content', 'PTT 文章結構存在，但實際正文為空或品質不可用。', { retryable: false, httpStatus: statusCode });
+  }
+  return buildReaderLayerSuccessResult_({
+    url: url, statusCode: statusCode, contentType: contentType, siteName: 'PTT',
+    title: extractPttTitle_(article.html) || extractPttTitle_(html) || inferTitleFromReadableText_(mainText),
+    author: extractPttAuthor_(article.html), publishedAt: extractPttPublishedAt_(article.html),
+    mainText: mainText, extractionConfidence: 0.8, readerRoute: route,
+    warnings: [route === WEB_READER_ROUTE_JINA ? 'PTT 經 Jina 取得 HTML 並通過文章結構驗證。' : 'PTT direct 文章結構驗證通過。']
+  });
+}
+
+// ponytail: 僅支援 classic PTT div 結構；若版型改變，先新增 fixture 再擴充，不猜測整頁正文。
+// 逐個 div 計算深度，避免 push / metadata 的第一個 </div> 提前截斷文章。
+function extractPttMainContent_(html) {
+  const text = String(html || '').replace(/<!--[\s\S]*?-->|<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
+  const tags = /<\/?div\b(?:"[^"]*"|'[^']*'|[^'">])*>/gi;
+  let match, start = -1, cursor = 0, depth = 0, skipDepth = 0, body = '';
+  while ((match = tags.exec(text)) !== null) {
+    const closing = /^<\//.test(match[0]);
+    // 逐個讀取 quoted attributes，避免 data-id 或屬性值內的 id 字樣冒充 main-content。
+    const attributes = {};
+    const attributePattern = /\s([\w:-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+    let attribute;
+    while ((attribute = attributePattern.exec(match[0])) !== null) {
+      attributes[attribute[1].toLowerCase()] = attribute[2] === undefined ? attribute[3] : attribute[2];
+    }
+    if (start < 0) {
+      if (!closing && attributes.id === 'main-content') {
+        start = tags.lastIndex; cursor = start; depth = 1;
+      }
+      continue;
+    }
+    if (!closing) {
+      depth++;
+      if (!skipDepth && /(?:^|\s)(?:article-metaline(?:-right)?|push)(?:\s|$)/.test(attributes.class || '')) {
+        body += text.slice(cursor, match.index); skipDepth = depth;
+      }
+    } else {
+      if (skipDepth === depth) { cursor = tags.lastIndex; skipDepth = 0; }
+      depth--;
+      if (depth === 0) return { html: text.slice(start, match.index), bodyHtml: body + text.slice(cursor, match.index) };
+    }
+  }
+  return null;
 }
 
 function looksLikePttOver18Gate_(html) {
@@ -714,10 +798,8 @@ function looksLikePttOver18Gate_(html) {
   // PTT 正常文章頁會包含 main-content 與 article-meta 結構。
   // 實測 C_Chat 成人看板文章可正常讀回 200，但頁面內仍可能殘留 ask/over18 字樣；
   // 因此只要已經看到文章結構，就應優先視為正式文章頁，而不是 over18 確認頁。
-  const hasArticleStructure =
-    text.indexOf('id="main-content"') >= 0 ||
-    text.indexOf('class="article-meta-tag"') >= 0 ||
-    text.indexOf('class="article-meta-value"') >= 0;
+  const article = extractPttMainContent_(text);
+  const hasArticleStructure = article && extractPttArticleMetaValues_(article.html).length >= 3 && /\barticle-meta-tag\b/.test(article.html);
 
   if (hasArticleStructure) {
     return false;
@@ -766,11 +848,11 @@ function extractPttPublishedAt_(html) {
 
 function extractPttArticleMetaValues_(html) {
   const values = [];
-  const regex = /<span\s+class="article-meta-value"[^>]*>([\s\S]*?)<\/span>/gi;
+  const regex = /<span\b[^>]*\sclass\s*=\s*(["'])(?:[^"']*\s)?article-meta-value(?:\s[^"']*)?\1[^>]*>([\s\S]*?)<\/span>/gi;
   let match = null;
 
   while ((match = regex.exec(String(html || ''))) !== null) {
-    values.push(decodeHtmlEntities_(stripHtmlTags_(match[1])).trim());
+    values.push(decodeHtmlEntities_(stripHtmlTags_(match[2])).trim());
   }
 
   return values;

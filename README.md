@@ -2,7 +2,7 @@
 
 Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-目前版本：**v1.15.1 Mixed Tool Continuation Hotfix**，以 v1.15.0 為 baseline。Git 版本不代表 GAS 已部署；現行契約與部署清單見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+目前版本：**v1.15.2 PTT Reader Resilience Hotfix**，以 v1.15.1 為 baseline。Git 版本不代表 GAS 已部署；現行契約與部署清單見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
@@ -92,7 +92,7 @@ Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 
 
 DeepSeek 依能力選擇 Chat Completions（普通文字／Vision／legacy extraction）、Responses（JSON Schema）或 Anthropic Messages（Search／只讀工具／圖片研究）。Gemini 保持 dormant，沒有自動 provider fallback。業務層不建立 vendor payload。
 
-Reader：一般網站先 Jina、PTT 使用 over18 cookie、X 單篇 status 使用 FxTwitter；X 個人頁等不支援。Facebook／Threads 只嘗試公開可讀內容。一般收件保留 legacy AI extraction fallback；工具 `read_url` 禁止 AI fallback，讀不到便安全回報。
+Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁等不支援。Classic PTT article 限 `ptt.cc`／`www.ptt.cc`，先正規化 HTTPS，以 over18 cookie 直接讀取並驗證 main-content／article-meta；符合條件的失敗最多使用一次既有 Jina，共用原 deadline。PTT 不進 AI extraction，404／410 不 fallback；term.ptt.cc 走一般網站流程。Facebook／Threads 只嘗試公開可讀內容。一般收件保留 legacy AI extraction fallback；工具 `read_url` 禁止 AI fallback，讀不到便安全回報。
 
 資料表：ConversationLog、TopicHighlights、WeeklySummary、WebTaskQueue、WebSummary、NewsUrlQueue、NewsInbox、PendingReplies。Pending Reply 在 LINE Reply 成功後才刪除；失敗保留，仍可能在 acknowledge 失敗後重送，不承諾 exactly-once。
 

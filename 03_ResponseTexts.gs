@@ -12,11 +12,22 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.15.1 Mixed Tool Continuation Hotfix';
-const BOT_CURRENT_VERSION_DATE = '2026-09-16';
+const BOT_CURRENT_VERSION = 'v1.15.2 PTT Reader Resilience Hotfix';
+const BOT_CURRENT_VERSION_DATE = '2026-09-22';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.15.2 PTT Reader Resilience Hotfix',
+    date: '2026-09-22',
+    summary: '修正 PTT 文章網址轉址與正文辨識，加入有界 Reader fallback。',
+    changes: [
+      'Classic PTT 文章先正規化為 HTTPS，再直接讀取並驗證文章結構。',
+      '符合條件的讀取失敗最多使用一次既有 Jina fallback，共用原執行期限。',
+      '年齡確認、存取受限、找不到文章與未知頁面分開處理，不把短正文推定為刪文。',
+      '不新增 AI 呼叫、憑證、資料表或 Trigger；部署後仍需 GAS / LINE 驗證。'
+    ]
+  },
   {
     version: 'v1.15.1 Mixed Tool Continuation Hotfix',
     date: '2026-09-16',
