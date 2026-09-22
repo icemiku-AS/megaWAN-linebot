@@ -2,10 +2,11 @@
 
 ## 版本與 source of truth
 
-MEGA浣 / 小浣：**v1.15.2 PTT Reader Resilience Hotfix**（2026-09-22，本機候選，尚待 GAS 部署驗收）。
+MEGA浣 / 小浣：**v1.15.2 PTT Reader Resilience Hotfix**（2026-09-22，GitHub branch 候選已提交並推送；尚未 GAS production deployment / acceptance）。
 
 - Stable baseline：v1.15.1 Mixed Tool Continuation Hotfix，main merge commit `795072b32ca09c450130eb7ae506d8e4872bbcdc`。
-- Working branch：`v1.15.2PTTReaderResilienceHotfix`；開始時 HEAD `63400e10d0edcd25a81c573a37458751dce60f2e` 與上述 merge commit 的 Git tree 相同。未切換／更新本機 main，未 commit、push、merge 或建立 PR。
+- Working branch：`v1.15.2PTTReaderResilienceHotfix`；已 commit／push 的候選 HEAD 為 `909be59e872c4fe4bca89053429d3a1ca8b6e763`，已只讀核對 GitHub 遠端。本次 short article／文件 follow-up 是該 commit 之後尚未提交或推送的本機修改，不包含在上述候選 commit。
+- 分支起點 `63400e10d0edcd25a81c573a37458751dce60f2e` 與上述 main merge commit 的 Git tree 相同；候選相對 main ahead 1／behind 1，實際差異只有本版六檔，沒有漏掉 main runtime change。Ancestry 更新由維護者處理；本次未 rebase、merge、切 branch 或建立 PR，不宣稱 PR／merge 已完成。
 - 本文件描述 v1.15.2 的程式與部署契約；Git 版本不代表 GAS 已部署，執行環境需依部署清單手動同步。
 - 實際 `.gs` 優先；AI agent 工作規則見 AGENTS.md，使用方式見 README.md，完整歷史見 99_changelog.md。舊版 Search transport 記錄只代表當時版本。
 
@@ -202,7 +203,7 @@ read_url 重用既有 Reader，透過 trusted `noAi:true` 在 Jina 失敗後直�
 ### v1.15.2 PTT Reader policy
 
 - 只將 `http(s)://ptt.cc`／`www.ptt.cc` 的 `/bbs/{board}/M.{digits}.A.{hex}.html`（無 port 或對應 scheme 預設 port）送進 classic parser。統一 `https://www.ptt.cc` 並移除 query／fragment；不改寫第三方 host、子網域、列表、非預設 port 或任意 path。term.ptt.cc 使用一般網站 Reader。既有 `isPttHostname_` 相容 helper 保留，但不再決定 article route。
-- 一次 direct、最多一次 Jina。Direct 仍使用 over18 cookie 並設定 `followRedirects:false`；不抓取回應 Location。正常頁需完整平衡的 main-content div、article-meta-tag 與至少三個 article-meta-value。巢狀 div 按深度處理；正文排除 metadata、push 與發信站頁尾，沿用60字門檻。未知200頁面不當成刪文。
+- 一次 direct、最多一次 Jina。Direct 仍使用 over18 cookie 並設定 `followRedirects:false`；不抓取回應 Location。正常頁需完整平衡的 main-content div、article-meta-tag 與至少三個 article-meta-value。巢狀 div 按深度處理；正文排除 metadata、push、發信站頁尾與其前標準分隔線。已驗證結構的正文只要求非空並通過既有品質檢查，不再以60字作硬門檻；合法短文正常成功，不因長度另發 Jina。未知200頁面仍失敗，不當成刪文。
 - fallback 適用：3xx、403、408／429／5xx、fetch exception、over18 gate、未知／不完整 article 結構及不可用正文。Unsafe／malformed classic URL、404／410、其他一般4xx不 fallback。direct 成功不發 Jina。
 - 重用 `fetchReadablePageWithJina_` 的 PTT 專用模式，傳 canonical URL、`X-Set-Cookie: over18=1; Domain=www.ptt.cc; Path=/` 與 `X-Respond-With: html`。不使用 target selector，避免倚賴其 title 保留行為；HTML 僅暫存在 request 內，通過同一 parser 才成功。一般網站的 Jina text normalization 不變。依 [Jina 官方 Reader 文件](https://github.com/jina-ai/reader#using-request-headers) 與 [Reader API](https://jina.ai/reader/) 查核 header 契約；未把 mock 視為線上服務驗收。
 - 保持標準 webResult。Direct route 為 `ptt_over18_cookie`，fallback route 為既有 `jina_reader`，成功 warnings 說明 direct errorType／HTTP 與 fallback。無新增 route constant 或 caller 特例。Jina 失敗回 `ptt_fallback_failed` 並保留兩次 typed error／status；任一來源暫時失敗可由既有 Queue 重試，合併 httpStatus 選可重試來源，無 HTTP response 保留0。
@@ -267,7 +268,7 @@ Interactions 的 optional server state / storage 不可直接套入本專案 pri
 
 ## 測試與 regression review
 
-執行 `node tests/v1140_smoke.cjs`。v1.15.1 baseline 為23 sources / 420 unique functions / 138 checks；本版23 sources / 424 unique functions / **149 checks PASS**。PTT 舊整頁正文 assertion 改為 main-content 正文，routing fixture 改為真正 classic article path。新增 canonical URL／巢狀 div／metadata／HTTP failures／Jina header、成功與失敗／deadline／read_url noAi 與8秒 reserve／Queue retry／一般 Jina、term、X、legacy 回歸；保留 SSRF 測試，沒有第二套框架。兩輪 review 分別核對功能回歸與安全／版本邊界。
+執行 `node tests/v1140_smoke.cjs`。v1.15.1 baseline 為23 sources / 420 unique functions / 138 checks；本版含本機 follow-up 為23 sources / 424 unique functions / **151 checks PASS**（已推送候選原為149 checks）。Follow-up 新增合法短文 direct 成功且不補抓 Jina、空白／metadata／發信站與分隔線不能冒充正文的 checks，並保留 unknown 200 failure。PTT 舊整頁正文 assertion 改為 main-content 正文，routing fixture 改為真正 classic article path。新增 canonical URL／巢狀 div／metadata／HTTP failures／Jina header、成功與失敗／deadline／read_url noAi 與8秒 reserve／Queue retry／一般 Jina、term、X、legacy 回歸；保留 SSRF 測試，沒有第二套框架。兩輪 review 分別核對功能回歸與安全／版本邊界。
 
 以下為沿用 v1.15.1 的測試範圍：
 
@@ -336,6 +337,8 @@ Markdown／tests 不部署。Sheet migration：**none**。Trigger change：**non
 **v1.15.2 PTT acceptance：以下均待目標 GAS／LINE 實測，不是已通過記錄。**
 
 先確認 `#版本`／`#版本紀錄` 為 v1.15.2，再依 B → A → C → D → E → F → G 測試，優先隔離 HTTPS 正文問題與 HTTP canonicalization。
+
+Short article follow-up：另外測一篇結構合法、正文約10～30字的文章，預期 direct success 且不因長度觸發 Jina；正文實際為空或僅 metadata／發信站內容仍須 failure。原 A–G acceptance 與同步清單不變，仍待 production 驗證。
 
 | 案例 | URL／操作 | 預期 |
 | --- | --- | --- |

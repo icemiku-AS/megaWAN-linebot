@@ -838,6 +838,27 @@ check('PTT main-content extraction preserves nested body and metadata, excludes 
   assert.equal(context.fetchAndExtractWebPageByReaderLayer_(pttUrl).title, '正文第一行');
 });
 
+check('PTT verified short articles succeed directly without extra Jina requests', () => {
+  for (const body of ['短', '這是一篇只有十幾個字的合法短文。', '今天活動已經取消，詳細安排請等候主辦單位後續公告。']) {
+    calls.length = 0;
+    fetchImpl = url => { assert.equal(url, pttUrl); return response(200, pttHtml(body)); };
+    const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
+    assert(result.ok); assert.equal(result.mainText, body); assert.equal(result.readerRoute, 'ptt_over18_cookie');
+    assert.equal(calls.length, 1);
+    const fallback = context.parsePttArticleResponse_(pttUrl, 200, 'text/html', pttHtml(body), 'jina_reader');
+    assert(fallback.ok); assert.equal(fallback.mainText, body);
+  }
+});
+
+check('PTT whitespace, metadata and footer alone cannot supply usable body', () => {
+  for (const body of ['', ' \n\t<br>&nbsp;　', '※ 發信站: 批踢踢實業坊' + '來源網址'.repeat(40),
+    '--\n※ 發信站: 批踢踢實業坊', ' \n--\n\n※ 發信站: 批踢踢實業坊', 'Access Denied']) {
+    fetchImpl = () => response(200, pttHtml(body));
+    const result = context.fetchPttPageWithOver18Cookie_(pttUrl);
+    assert.equal(result.errorType, 'ptt_empty_content'); assert.equal(result.httpStatus, 200);
+  }
+});
+
 check('PTT gate, unexpected 200, truncated structure and empty actual body are distinct', () => {
   for (const [html, type] of [
     ['<form method="post" action="/ask/over18">我同意，我已年滿十八歲</form>', 'ptt_over18_failed'],
@@ -845,8 +866,8 @@ check('PTT gate, unexpected 200, truncated structure and empty actual body are d
     ['<html>存取限制頁'.repeat(100), 'ptt_unexpected_page'],
     ['<div id="main-content">' + pttBody + '</div>', 'ptt_unexpected_page'],
     ['<div id="main-content">' + pttMeta + pttBody, 'ptt_unexpected_page'],
-    [pttHtml('短'), 'ptt_empty_content'],
-    [pttHtml('短<br>※ 發信站: 批踢踢實業坊' + '網址與來源'.repeat(40)), 'ptt_empty_content']]) {
+    [pttHtml(''), 'ptt_empty_content'],
+    [pttHtml('<br>※ 發信站: 批踢踢實業坊' + '網址與來源'.repeat(40)), 'ptt_empty_content']]) {
     fetchImpl = () => response(200, html);
     const direct = context.fetchPttPageWithOver18Cookie_(pttUrl);
     assert(!direct.ok); assert.equal(direct.errorType, type); assert.equal(direct.httpStatus, 200);
@@ -907,7 +928,7 @@ check('PTT fallback failures are bounded, preserve transient status and do not l
 });
 
 check('PTT fallback rejects long Jina error pages and gate pages instead of accepting text length', () => {
-  for (const html of ['<h1>Forbidden</h1>'.repeat(100), '我同意，我已年滿十八歲'.repeat(100), pttHtml('短')]) {
+  for (const html of ['<h1>Forbidden</h1>'.repeat(100), '我同意，我已年滿十八歲'.repeat(100), pttHtml('')]) {
     calls.length = 0; fetchImpl = url => url.startsWith('https://r.jina.ai/') ? response(200, html) : response(403, 'blocked');
     const result = context.fetchAndExtractWebPageByReaderLayer_(pttUrl);
     assert.equal(result.errorType, 'ptt_fallback_failed'); assert.equal(calls.length, 2);
