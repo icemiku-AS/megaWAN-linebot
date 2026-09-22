@@ -88,6 +88,11 @@ const AI_EXECUTION_PROFILES = {
     timeoutSeconds: 120,
     requiredFinishReason: 'stop',
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
+  },
+  image_caption_fast: {
+    thinking: { type: 'disabled' }, allowSampling: false, outputMode: 'text',
+    maxOutputTokens: 320, timeoutSeconds: 10, requiredFinishReason: 'stop',
+    retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   }
 };
 
@@ -171,6 +176,10 @@ const AI_TASK_ROUTES = {
   image_analysis: {
     provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
     maxOutputTokens: 8000, timeoutSeconds: 60, capabilities: ['vision']
+  },
+  image_semantic_caption: {
+    provider: 'deepseek', model: 'deepseek_flash', profile: 'image_caption_fast', expectedThinking: 'disabled',
+    capabilities: ['vision']
   }
 };
 

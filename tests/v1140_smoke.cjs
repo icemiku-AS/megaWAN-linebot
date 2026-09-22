@@ -1,4 +1,4 @@
-// v1.15.3 PTT false positive、v1.15.2 resilience 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.15.4 圖片語意、context、Reader 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -118,7 +118,7 @@ const budgets = {
   general_chat: [4800, 45], news_analysis: [8000, 60], web_lazy_summary: [8000, 60],
   raw_html_extraction: [28000, 90], news_question: [7000, 90], program_topic_analysis: [8000, 120],
   integrate_topics: [9000, 120], archive_topics: [6000, 60], archive_news: [7000, 60],
-  weekly_editorial_digest: [10000, 60], manual_news_supplement: [5000, 60], news_memory_bridge: [5000, 90], image_analysis: [8000, 60], multimodal_research: [8000, 60]
+  weekly_editorial_digest: [10000, 60], manual_news_supplement: [5000, 60], news_memory_bridge: [5000, 90], image_analysis: [8000, 60], multimodal_research: [8000, 60], image_semantic_caption: [320, 10]
 };
 assert.deepEqual(Object.keys(json('AI_TASK_ROUTES')).sort(), Object.keys(budgets).sort());
 for (const [task, [tokens, timeout]] of Object.entries(budgets)) check('route/payload ' + task, () => {
@@ -152,7 +152,10 @@ for (const [task, [tokens, timeout]] of Object.entries(budgets)) check('route/pa
     assert.deepEqual(JSON.parse(JSON.stringify(result.json)), schemaExample(schema));
   } else {
     assert.equal(config.allowsWebSearch, false); assert(calls[0].url.endsWith('/chat/completions'));
-    assert.equal(payload.thinking.type, 'enabled'); assert.equal(payload.reasoning_effort, 'high'); assert.equal(payload.max_tokens, tokens);
+    assert.equal(payload.thinking.type, task === 'image_semantic_caption' ? 'disabled' : 'enabled');
+    if (task === 'image_semantic_caption') assert(!('reasoning_effort' in payload));
+    else assert.equal(payload.reasoning_effort, 'high');
+    assert.equal(payload.max_tokens, tokens);
     assert(!('tools' in payload)); assert(!('tool_choice' in payload)); assert.equal(result.transport, 'chat_completions');
     if (config.outputMode === 'json') { assert.equal(payload.response_format.type, 'json_object'); assert.equal(result.json.ok, true); }
   }
@@ -172,7 +175,7 @@ check('text-only chat and conversation isolation', () => {
   context.handleLineEvent(event('text', 'user', { text: '繼續' }), now);
   const payload = JSON.parse(calls[1].options.payload);
   assert(payload.messages.every(msg => typeof msg.content === 'string'));
-  assert(payload.system.includes('長期週摘要')); assert(!payload.messages.some(msg => msg.role === 'system'));
+  assert(!payload.system.includes('長期週摘要')); assert(!payload.messages.some(msg => msg.role === 'system'));
   assert(payload.messages.some(msg => msg.role === 'assistant'));
   assert.equal(payload.messages.at(-1).role, 'user'); assert.equal(payload.messages.at(-1).content, '繼續');
   assert.equal(context.getConversationHistory('user:user1').length, 4);
@@ -192,17 +195,57 @@ check('image payload and text-only persistence', () => {
   assert(persisted.includes('[使用者提供圖片]')); assert(persisted.includes('看見可辨識'));
   assert.equal(rows.length, 2);
 });
+check('private and quoted Vision reuse one inference for bounded derived memory', () => {
+  const visual = '三格 Duolingo 迷因，綠色 Duo 貓頭鷹與りんご。';
+  fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png)
+    : completion('這是一張迷因。\n<MEGAHUAN_IMAGE_CONTEXT>' + visual + '</MEGAHUAN_IMAGE_CONTEXT>');
+  context.handleLineEvent(event(), now);
+  assert.equal(calls.length, 2); assert.equal(replies[0].text, '這是一張迷因。');
+  assert.equal(rows[1][6], 'derived'); assert.equal(rows[1][7], 'image_semantic');
+  assert(rows[1][9].includes('Duolingo')); assert.equal(rows[0][8], ''); assert.equal(rows[1][8], '');
+  assert(!JSON.stringify([rows, replies, ...cache.values()]).includes('MEGAHUAN_IMAGE_CONTEXT'));
+  context.handleLineEvent(event('text', 'user', { text: '這張圖講什麼？', quotedMessageId: '99999' }), now);
+  assert.equal(calls.length, 4); assert.equal(replies[1].text, '這是一張迷因。');
+  assert.equal(rows.at(-2)[7], 'image_semantic'); assert.equal(rows.at(-2)[8], '');
+});
+check('sidecar absence or unsafe text does not break the primary image answer', () => {
+  fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : completion('正常回答');
+  context.handleLineEvent(event(), now);
+  assert.equal(replies[0].text, '正常回答'); assert(!rows.some(row => row[7] === 'image_semantic'));
+  assert.equal(context.sanitizeImageSemanticContext_('密碼: abc123 https://example.org/?token=secret ' + 'A'.repeat(300)).includes('abc123'), false);
+});
 check('group and room images stay silent, explicit quote carries question', () => {
   for (const sourceType of ['group', 'room']) context.handleLineEvent(event('image', sourceType), now);
-  assert.equal(calls.length, 0); assert.equal(rows.length, 0); assert.equal(replies.length, 0);
+  assert.equal(calls.length, 4); assert.equal(rows.length, 2); assert.equal(replies.length, 0);
+  assert(rows.every(row => row[6] === 'derived' && row[7] === 'image_semantic' && !row[8]));
   context.handleLineEvent(event('text', 'group', { text: '#小浣 看圖 哪裡出錯？', quotedMessageId: '99999' }), now);
-  assert(calls[0].url.endsWith('/99999/content'));
-  assert.equal(JSON.parse(calls[1].options.payload).messages.at(-1).content[0].text, '哪裡出錯？');
+  assert(calls[4].url.endsWith('/99999/content'));
+  assert.equal(JSON.parse(calls[5].options.payload).messages.at(-1).content[0].text, '哪裡出錯？');
   assert.equal(replies.length, 1);
   context.handleLineEvent(event('text', 'room', { text: '#小浣 這張圖在講什麼？', quotedMessageId: '88888' }), now);
-  assert(calls[2].url.endsWith('/88888/content'));
-  assert.equal(JSON.parse(calls[3].options.payload).messages.at(-1).content[0].text, '這張圖在講什麼？');
+  assert(calls[6].url.endsWith('/88888/content'));
+  assert.equal(JSON.parse(calls[7].options.payload).messages.at(-1).content[0].text, '這張圖在講什麼？');
   assert.equal(replies.length, 2);
+});
+check('silent image capture is rate gated, low cost and never replies', () => {
+  context.handleLineEvent(event('image', 'group'), now);
+  context.handleLineEvent(event('image', 'group', { id: '987654321' }), now);
+  assert.equal(calls.length, 2); assert.equal(replies.length, 0);
+  assert.equal(rows.length, 1); assert.equal(rows[0][6], 'derived');
+  const payload = JSON.parse(calls[1].options.payload);
+  assert.equal(payload.thinking.type, 'disabled'); assert.equal(payload.max_tokens, 320);
+  assert.equal(calls[0].options.timeoutSeconds, 6); assert.equal(calls[1].options.timeoutSeconds, 8);
+  assert(!JSON.stringify([rows, logs, ...cache.values()]).includes(Buffer.from(png).toString('base64')));
+});
+check('silent capture infrastructure or model failure never changes group UX', () => {
+  const originalCache = context.CacheService;
+  context.CacheService = { getScriptCache: () => { throw Error('SECRET'); } };
+  try { context.handleLineEvent(event('image', 'group'), now); } finally { context.CacheService = originalCache; }
+  assert.equal(calls.length, 0); assert.equal(rows.length, 0); assert.equal(replies.length, 0);
+  fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : response(500, 'SECRET');
+  context.handleLineEvent(event('image', 'group'), now);
+  assert.equal(replies.length, 0); assert.equal(rows.length, 0);
+  assert(!logs.join('').includes('SECRET'));
 });
 check('private quoted image accepts natural text and never guesses without quote', () => {
   context.handleLineEvent(event('text', 'user', { text: '這是什麼？', quotedMessageId: '77777' }), now);
@@ -214,7 +257,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.15.3'));
+  assert(replies.at(-1).text.includes('v1.15.4'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -895,9 +938,20 @@ check('PTT direct 403 to verified Jina HTML uses the same nonempty body contract
   assert(!logs.join(' ').includes('over18=1')); assert.equal(rows.length, 0); assert.equal(cache.size, 0);
 });
 
-check('generic Reader keyword heuristic remains unchanged and is deferred', () => {
-  for (const signal of pttArticleSignals) assert.equal(context.isReadableTextUsable_('普通文章內容'.repeat(30) + signal, 120), false);
-  assert(context.isReadableTextUsable_('普通文章內容'.repeat(30), 120));
+check('generic Reader accepts article-body error terms but rejects error-page headings', () => {
+  for (const signal of ['Cloudflare', 'Access Denied', '403 Forbidden', 'Just a moment', 'Enable JavaScript']) {
+    const body = '正常文章先說明背景與時間。'.repeat(40) + signal + '只是正文引用。';
+    assert(context.isReadableTextUsable_(body, 120, '正常文章'));
+    assert(context.isExtractedWebPageUsable({ title: '正常文章', mainText: body, extractionConfidence: 0.85 }));
+  }
+  for (const heading of ['Access Denied', '403 Forbidden', 'Just a moment...', 'Just a moment... | Cloudflare', 'Enable JavaScript',
+    'Attention Required! | Cloudflare', 'Checking if the site connection is secure']) {
+    const challenge = heading + '\n請完成安全檢查。'.repeat(40);
+    assert(!context.isReadableTextUsable_(challenge, 120, heading));
+    assert(!context.isExtractedWebPageUsable({ title: heading, mainText: challenge, extractionConfidence: 0.85 }));
+  }
+  assert(!context.isReadableTextUsable_('短頁', 120));
+  assert(!context.isExtractedWebPageUsable({ title: '正常', mainText: '', extractionConfidence: 0.85 }));
 });
 
 check('PTT gate, unexpected 200, truncated structure and empty actual body are distinct', () => {
@@ -1483,7 +1537,7 @@ check('tool workflow errors, repeated rounds and insufficient final deadline sto
   assert.equal(calls.length, 1); assert.equal(cache.size, 0);
   reset();
   let reads = 0;
-  withStubs({ getRecentWeeklySummaryText: () => { if (++reads > 1) now += 24000; return ''; } }, () => {
+  withStubs({ getRecentWeeklySummaryText: () => { if (++reads >= 1) now += 24000; return ''; } }, () => {
     fetchImpl = () => anthropicToolTurn([toolCall('get_weekly_memory')]);
     assert.equal(context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi').errorType, 'ai_timeout');
     assert.equal(calls.length, 1);
@@ -1578,7 +1632,7 @@ check('archive features persist validated structured output only after explicit 
 });
 check('orchestration elapsed metadata includes both model turns and tool time', () => {
   let reads = 0;
-  withStubs({ getRecentWeeklySummaryText: () => { if (++reads > 1) now += 1000; return ''; } }, () => {
+  withStubs({ getRecentWeeklySummaryText: () => { if (++reads >= 1) now += 1000; return ''; } }, () => {
     fetchImpl = () => { now += 2000; return calls.length === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')]) : anthropicCompletion('final'); };
     const result = context.runAiMemoryTask('general_chat', 'group:a', 'hi', 'hi');
     assert(result.ok); assert.equal(result.elapsedMs, 5000);
@@ -1630,7 +1684,7 @@ check('Search metadata duplicates and malformed blocks cannot claim success', ()
 });
 check('tool read errors continue as safe data without provider-specific is_error', () => {
   let reads = 0;
-  withStubs({ getRecentWeeklySummaryText: () => { if (++reads > 1) throw Error('SECRET'); return ''; } }, () => {
+  withStubs({ getRecentWeeklySummaryText: () => { if (++reads >= 1) throw Error('SECRET'); return ''; } }, () => {
     fetchImpl = (_url, options) => {
       if (calls.length === 1) return anthropicToolTurn([toolCall('get_weekly_memory')]);
       const resultBlock = JSON.parse(options.payload).messages.at(-1).content[0];
@@ -1848,8 +1902,81 @@ function researchStatus(result, name) {
   return result.researchEvidence.find(item => item.source === name).status;
 }
 function chatEvidence(scope, text, extra = {}) {
-  return { ConversationId: scope, Timestamp: new Date(now - 1000), Role: 'user', MessageId: 'prior-message', Text: text, ...extra };
+  return { ConversationId: scope, Timestamp: new Date(now - 1000), Role: 'user', Mode: 'input', MessageId: 'prior-message', Text: text, ...extra };
 }
+check('image-derived ConversationLog search carries provenance and scope', () => {
+  const entries = [chatEvidence('group:a', '真人說過 Duolingo'),
+    chatEvidence('group:a', '[使用者提供圖片] Duolingo', { Mode: 'image_input', MessageId: '' }),
+    chatEvidence('group:a', '[AI-derived image context] 三格 Duolingo 迷因與 Duo 貓頭鷹', { Role: 'derived', Mode: 'image_semantic', MessageId: '' }),
+    chatEvidence('group:b', '[AI-derived image context] SECRET Duolingo', { Role: 'derived', Mode: 'image_semantic', MessageId: '' })];
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet(entries) }) }, () => {
+    const result = executeTool('search_conversation_log', { query: 'Duolingo', provenance: 'image_derived' });
+    assert.equal(result.data.executionStatus, 'SEARCHED_FOUND');
+    assert.equal(result.data.data.records.length, 1);
+    assert.equal(result.data.data.records[0].provenance, 'image_derived');
+    assert(!JSON.stringify(result).includes('SECRET'));
+    const user = executeTool('search_conversation_log', { query: 'Duolingo', provenance: 'user_text' });
+    assert.equal(user.data.data.records.length, 1);
+    assert.equal(user.data.data.records[0].provenance, 'user_text');
+  });
+  const required = JSON.parse(JSON.stringify(context.getAiRequiredResearch_('之前是不是有人貼過 Duolingo 那張圖？')));
+  assert.equal(required.find(item => item.name === 'search_conversation_log').arguments.query, 'Duolingo');
+  assert.equal(required.find(item => item.name === 'search_conversation_log').arguments.provenance, 'image_derived');
+  assert(context.buildAiSystemPrompt_('general_chat').includes('不能說成使用者親口'));
+});
+check('context fixture gates weekly memory while preserving history and stable prefix', () => {
+  const weekly = '週封存資料'.repeat(240);
+  let reads = 0;
+  withStubs({ getRecentWeeklySummaryText: () => { reads++; return weekly; } }, () => {
+    fetchImpl = () => anthropicCompletion('回覆');
+    const casual = context.runAiMemoryTask('general_chat', 'group:a', '你好', '你好');
+    assert(casual.ok); assert.equal(reads, 0);
+    const casualPayload = JSON.parse(calls.at(-1).options.payload);
+    assert(!casualPayload.system.includes(weekly));
+    reset(); reads = 0; fetchImpl = () => anthropicCompletion('回覆');
+    const memory = context.runAiMemoryTask('general_chat', 'group:a', '之前那件事呢', '之前那件事呢');
+    assert(memory.ok); assert.equal(reads, 1);
+    const memoryPayload = JSON.parse(calls.at(-1).options.payload);
+    assert(memoryPayload.system.includes(weekly));
+    assert(memoryPayload.system.indexOf('你是放在聊天群組') < memoryPayload.system.indexOf('只在問題需要時使用實際提供的工具'));
+    assert(memoryPayload.system.indexOf('只在問題需要時使用實際提供的工具') < memoryPayload.system.indexOf('以下是這個聊天室過去封存'));
+    assert(memory.measurement.contextTextChars > casual.measurement.contextTextChars + 900);
+    assert.equal(casual.measurement.modelCalls, 1); assert.equal(memory.measurement.continuationCount, 0);
+    process.stdout.write('CONTEXT_FIXTURE casual=' + casual.measurement.contextTextChars + ' memory=' + memory.measurement.contextTextChars +
+      ' toolDefinitions=' + casual.measurement.toolDefinitionChars + '\n');
+  });
+});
+check('required ConversationLog evidence references duplicate short history without repeating text', () => {
+  const prior = 'TEST_REPEAT_8844 是群組先前討論的題目';
+  context.saveConversationHistory('group:a', [{ role: 'user', content: prior }, { role: 'assistant', content: '收到。' }]);
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([chatEvidence('group:a', prior)]) }) }, () => {
+    fetchImpl = () => anthropicCompletion('有提過。');
+    const question = '有沒有聊過 TEST_REPEAT_8844';
+    const result = context.runAiMemoryTask('general_chat', 'group:a', question, question);
+    assert(result.ok); assert.equal(result.measurement.modelCalls, 1);
+    const payload = JSON.parse(calls[0].options.payload);
+    assert(payload.messages.some(item => item.content === prior));
+    const evidence = JSON.parse(payload.messages.find(item => typeof item.content === 'string' && item.content.startsWith('REQUIRED_INTERNAL_EVIDENCE')).content.split('\n').slice(1).join('\n'));
+    assert.equal(evidence[0].result.data.records[0].text, '');
+    assert.equal(evidence[0].result.data.records[0].inShortTermHistory, true);
+  });
+});
+check('archive excludes derived rows and conversation cleanup removes them together', () => {
+  const data = [['Timestamp', 'ConversationId', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'Role', 'Mode', 'MessageId', 'Text'],
+    [new Date(now), 'group:a', 'group', 'u', 'a', '', 'user', 'input', 'm1', '真人說話'],
+    [new Date(now), 'group:a', 'group', 'u', 'a', '', 'user', 'image_input', '', '[使用者提供圖片]'],
+    [new Date(now), 'group:a', 'group', 'u', 'a', '', 'derived', 'image_semantic', '', '[AI-derived image context] 一張圖'],
+    [new Date(now), 'group:b', 'group', 'u', 'b', '', 'derived', 'image_semantic', '', '其他群組圖片']];
+  const sheet = { getLastRow: () => data.length, getLastColumn: () => 10,
+    getRange: (row, column, count, columns) => ({ getValues: () => data.slice(row - 1, row - 1 + count).map(values => values.slice(column - 1, column - 1 + columns)) }),
+    deleteRow: row => data.splice(row - 1, 1) };
+  withStubs({ ensureLogSheet_: () => sheet }, () => {
+    const archive = context.getRecentConversationItems('group:a', 10, false);
+    assert.equal(archive.length, 1); assert.equal(archive[0].text, '真人說話');
+    const cleared = context.performDataCleanup_('conversation_log', 'group:a');
+    assert.equal(cleared.total, 3); assert.equal(data.length, 2); assert.equal(data[1][1], 'group:b');
+  });
+});
 function newsEvidence(scope, title) {
   return { ConversationId: scope, CreatedAt: new Date(now - 1000), Status: 'ok', Title: title, Brief: 'bounded news evidence', Url: 'https://example.org/sentinel' };
 }

@@ -449,24 +449,7 @@ function isExtractedWebPageUsable(extracted) {
     return false;
   }
 
-  const badSignals = [
-    '請開啟 JavaScript',
-    'Enable JavaScript',
-    'Access Denied',
-    '403 Forbidden',
-    'Just a moment',
-    'Cloudflare',
-    '請先登入',
-    '登入後繼續'
-  ];
-
-  for (let i = 0; i < badSignals.length; i++) {
-    if (mainText.includes(badSignals[i])) {
-      return false;
-    }
-  }
-
-  return true;
+  return !isGenericReaderErrorPage_(extracted.title, mainText);
 }
 
 // ======================================================

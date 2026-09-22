@@ -12,11 +12,21 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.15.3 Reader False Positive Hotfix';
-const BOT_CURRENT_VERSION_DATE = '2026-09-22';
+const BOT_CURRENT_VERSION = 'v1.15.4 Context & Semantic Memory Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-09-23';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.15.4 Context & Semantic Memory Edition',
+    date: '2026-09-23',
+    summary: '把圖片理解存成可搜尋的短文字脈絡，並減少不必要的長期記憶載入。',
+    changes: [
+      '已分析圖片共用同一次 Vision 產生 AI-derived 語意；群組貼圖仍不回覆，限頻時才作短摘要。',
+      '搜尋對話可區分使用者文字與圖片衍生脈絡；#清空紀錄一起清除，#封存本週話題仍只看使用者文字。',
+      '一般聊天按問題載入週封存脈絡，保留必要證據；一般 Reader 不再因正文提及錯誤頁字樣而誤判。'
+    ]
+  },
   {
     version: 'v1.15.3 Reader False Positive Hotfix',
     date: '2026-09-22',
