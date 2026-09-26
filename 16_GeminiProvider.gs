@@ -15,6 +15,18 @@
 
 const GEMINI_API_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1beta/models/';
 
+/** Dormant policy 只允許既有 text；純檢查，不能因 registry 誤宣告而靜默啟用新能力。 */
+function validateGeminiRequest_(request) {
+  if (!Array.isArray(request.capabilities || []) ||
+      (request.capabilities || []).some(function(capability) { return capability !== 'text'; }) ||
+      request.webSearchMode || request.outputSchema || (request.tools || []).length ||
+      (request.messages || []).some(function(message) { return Array.isArray(message.content); }) ||
+      request.outputMode !== 'text' || request.reasoningEffort ||
+      String(request.thinking && request.thinking.type || '') !== 'disabled') {
+    throw createAiConfigurationError_('Dormant Gemini adapter requires a reviewed text/non-thinking route.');
+  }
+}
+
 /**
  * Gemini dormant adapter 正式入口，只供 AiService provider dispatch。
  * 輸入是 provider-neutral request；只有進入此函式後才 lazy-load GEMINI_API_KEY。
@@ -22,38 +34,29 @@ const GEMINI_API_ENDPOINT_BASE = 'https://generativelanguage.googleapis.com/v1be
 function callGeminiProvider_(request) {
   const startedAt = Date.now();
   const safeRequest = request || {};
+  let modelCalls = 0;
+  let statusCode = 0;
 
   try {
-    if ((safeRequest.capabilities || []).some(function(capability) { return capability !== 'text'; }) ||
-        safeRequest.webSearchMode || safeRequest.outputSchema || (safeRequest.tools || []).length ||
-        (safeRequest.messages || []).some(function(message) { return Array.isArray(message.content); })) {
-      throw createAiConfigurationError_('Dormant Gemini adapter does not implement these capabilities.');
-    }
-    if (String(safeRequest.thinking && safeRequest.thinking.type || '') !== 'disabled') {
-      return buildGeminiProviderFailure_(
-        'ai_configuration_error',
-        'Dormant Gemini adapter requires a reviewed non-thinking route before reactivation.',
-        0,
-        false,
-        Date.now() - startedAt
-      );
-    }
-
+    validateGeminiRequest_(safeRequest);
+    const payload = JSON.stringify(buildGeminiProviderPayload_(safeRequest));
+    resolveAiRequestTimeoutSeconds_(safeRequest.timeoutSeconds, safeRequest);
     const apiKey = getRequiredScriptProperty_('GEMINI_API_KEY');
     const endpoint = GEMINI_API_ENDPOINT_BASE +
       encodeURIComponent(safeRequest.model) +
       ':generateContent?key=' +
       encodeURIComponent(apiKey);
-    const payload = buildGeminiProviderPayload_(safeRequest);
     const options = {
       method: 'post',
       contentType: 'application/json',
-      payload: JSON.stringify(payload),
+      payload: payload,
       muteHttpExceptions: true,
-      timeoutSeconds: Math.max(1, Number(safeRequest.timeoutSeconds || 60))
+      followRedirects: false,
+      timeoutSeconds: resolveAiRequestTimeoutSeconds_(safeRequest.timeoutSeconds, safeRequest)
     };
+    modelCalls = 1;
     const response = UrlFetchApp.fetch(endpoint, options);
-    const statusCode = response.getResponseCode();
+    statusCode = response.getResponseCode();
     const responseText = response.getContentText();
 
     if (statusCode < 200 || statusCode >= 300) {
@@ -73,26 +76,32 @@ function callGeminiProvider_(request) {
       );
     }
 
-    const candidate = json.candidates && json.candidates[0];
-    if (!candidate) {
+    const candidate = json && json.candidates && json.candidates[0];
+    const parts = candidate && candidate.content && candidate.content.parts;
+    const finishReason = normalizeGeminiFinishReason_(candidate && candidate.finishReason);
+    if (!candidate || typeof candidate !== 'object' || finishReason === 'error' ||
+        (parts !== undefined && (!Array.isArray(parts) || parts.some(function(part) {
+          return !part || typeof part.text !== 'string' || (part.thought !== undefined && typeof part.thought !== 'boolean');
+        })))) {
       return buildGeminiProviderFailure_(
         'ai_invalid_provider_response',
         'Gemini response is missing candidates[0].',
         statusCode,
         true,
         Date.now() - startedAt,
-        normalizeGeminiUsage_(json.usageMetadata)
+        normalizeGeminiUsage_(json && json.usageMetadata)
       );
     }
 
-    return {
+    return buildAiProviderResult_({
       ok: true,
       text: extractGeminiText(json),
-      finishReason: normalizeGeminiFinishReason_(candidate.finishReason),
+      finishReason: finishReason,
       usage: normalizeGeminiUsage_(json.usageMetadata),
       elapsedMs: Date.now() - startedAt,
-      httpStatus: statusCode
-    };
+      httpStatus: statusCode,
+      transport: 'generate_content'
+    });
 
   } catch (error) {
     const message = String(error && error.message ? error.message : error || 'Gemini request failed.');
@@ -107,14 +116,14 @@ function callGeminiProvider_(request) {
         errorType = 'ai_timeout';
       }
     }
-    return buildGeminiProviderFailure_(errorType, message, 0, retryable, Date.now() - startedAt);
+    return Object.assign(buildGeminiProviderFailure_(errorType, '', statusCode, retryable, Date.now() - startedAt), { modelCalls: modelCalls });
   }
 }
 
 /**
- * 將 OpenAI-style messages 轉為 Gemini generateContent 協議。
+ * 將 provider-neutral messages 轉為 Gemini generateContent 協議。
  * system message 合併為 systemInstruction；assistant role 轉為 model。
- * JSON mode 只處理 API mime type，業務 Prompt 與 schema 必須由功能模組提供。
+ * 既有 JSON builder 分支保留手動 helper 相容，正式 dormant adapter 不公告 JSON 能力。
  */
 function buildGeminiProviderPayload_(request) {
   const systemParts = [];
@@ -154,7 +163,9 @@ function extractGeminiText(json) {
     const candidate = json.candidates && json.candidates[0];
     const parts = candidate && candidate.content && candidate.content.parts;
     if (!parts || !Array.isArray(parts)) return '';
-    return parts.map(function(part) { return part.text || ''; }).join('').trim();
+    // thought part 不能作為正常回答；dormant adapter 也不外傳 reasoning。
+    return parts.filter(function(part) { return part && part.thought !== true && typeof part.text === 'string'; })
+      .map(function(part) { return part.text; }).join('').trim();
   } catch (error) {
     return '';
   }
@@ -166,27 +177,27 @@ function extractGeminiText(json) {
  */
 function normalizeGeminiUsage_(usageMetadata) {
   const source = usageMetadata || {};
-  const inputTokens = source.promptTokenCount;
-  const cachedTokens = source.cachedContentTokenCount;
-  const uncachedTokens = typeof inputTokens === 'number' && typeof cachedTokens === 'number'
-    ? Math.max(0, inputTokens - cachedTokens)
+  const inputTokens = normalizeAiOptionalNumber_(source.promptTokenCount);
+  const cachedTokens = normalizeAiOptionalNumber_(source.cachedContentTokenCount);
+  const uncachedTokens = inputTokens !== null && cachedTokens !== null && cachedTokens <= inputTokens
+    ? inputTokens - cachedTokens
     : null;
-  return {
+  return normalizeAiUsage_({
     inputTokens: inputTokens,
     cachedInputTokens: cachedTokens,
     uncachedInputTokens: uncachedTokens,
     outputTokens: source.candidatesTokenCount,
     reasoningTokens: source.thoughtsTokenCount,
     totalTokens: source.totalTokenCount
-  };
+  });
 }
 
 function normalizeGeminiFinishReason_(finishReason) {
   const reason = String(finishReason || '').trim().toUpperCase();
   if (reason === 'STOP') return 'stop';
   if (reason === 'MAX_TOKENS') return 'length';
-  if (reason === 'SAFETY' || reason === 'BLOCKLIST' || reason === 'PROHIBITED_CONTENT') return 'content_filter';
-  return reason.toLowerCase();
+  if (['SAFETY', 'BLOCKLIST', 'PROHIBITED_CONTENT', 'SPII', 'RECITATION', 'IMAGE_SAFETY'].indexOf(reason) >= 0) return 'content_filter';
+  return reason ? 'error' : '';
 }
 
 function classifyGeminiHttpFailure_(statusCode, responseText, elapsedMs) {
@@ -199,17 +210,12 @@ function classifyGeminiHttpFailure_(statusCode, responseText, elapsedMs) {
 }
 
 function extractGeminiErrorMessage_(responseText) {
-  const raw = String(responseText || '');
-  try {
-    const parsed = JSON.parse(raw);
-    return String(parsed && parsed.error && parsed.error.message || 'Gemini HTTP request failed.').slice(0, 500);
-  } catch (error) {
-    return ('Gemini HTTP request failed: ' + raw.slice(0, 300)).trim();
-  }
+  // 保留 helper 名稱相容；HTTP body 可能含 secret，不能直接傳給手動 caller。
+  return 'Gemini HTTP request failed.';
 }
 
 function buildGeminiProviderFailure_(errorType, errorMessage, httpStatus, retryable, elapsedMs, usage) {
-  return {
+  return buildAiProviderResult_({
     ok: false,
     text: '',
     finishReason: '',
@@ -219,8 +225,9 @@ function buildGeminiProviderFailure_(errorType, errorMessage, httpStatus, retrya
     // dormant path 也不可把 exception／HTTP body 原文交給 service 或 log。
     errorMessage: 'Gemini provider request failed (' + String(errorType || 'ai_unknown_error') + ').',
     httpStatus: Number(httpStatus || 0),
-    retryable: retryable === true
-  };
+    retryable: retryable === true,
+    transport: 'generate_content'
+  });
 }
 
 // ======================================================

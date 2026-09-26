@@ -2,7 +2,7 @@
 
 Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-本文件描述 **v1.15.4 Context & Semantic Memory Edition** 的版本契約，承接 v1.15.3。Git 版本與 GAS production deployment 可能處於不同階段，實際部署由維護者確認；詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+本文件描述 **v1.16.0 Provider Architecture Foundation** 的版本契約，承接 v1.15.4。這只是 Provider Architecture Foundation：**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，GPT-6 Luna / OpenAI 尚未接入**。Git 版本與 GAS production deployment 可能處於不同階段，實際部署由維護者確認；詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
@@ -93,6 +93,15 @@ Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 
 
 DeepSeek 依能力選擇 Chat Completions（普通文字／Vision／legacy extraction）、Responses（JSON Schema）或 Anthropic Messages（Search／只讀工具／圖片研究）。Gemini 保持 dormant，沒有自動 provider fallback。業務層不建立 vendor payload。
 
+### Provider 維護邊界
+
+- `11_AiProfiles.gs` 以 Provider Registry 註冊純 `validateRequest(request)` 與 `adapter(request)` 函式，以 Model Registry 宣告 capabilities、reasoning modes／efforts／sampling policy。Task/profile 表達是否需要推理及 effort；`high/max` 是目前 DeepSeek 已驗證的 policy，不是所有 provider 的限制。正式 task 的 HIGH、token／timeout 與 non-thinking caption 預算不變。
+- AiService 只調度 messages、能力、business schema、trusted scope、required evidence、只讀 tools 與共同 deadline；adapter 負責 endpoint、secret、payload、Search、Vision、structured output、finish／usage 及私有 continuation。能力組合先驗證；序列化、body limit 與 deadline 通過後才讀該 provider 的 Script Property，HTTP 不自動跟隨 redirect。
+- `buildAiProviderResult_()` 統一 adapter 結果欄位；callback 只在本次 service 內使用，最多一次，原始 turn／reasoning／tool data 不進 feature、history 或 Sheet。錯誤只輸出固定 typed 訊息。Gemini 僅補安全性與契約一致性，不啟用新能力。
+- `AI_CALL_METADATA` 保留安全 usage／Search／來源數與成本計數。缺少或無效 token 欄位為 `null`；多輪總數必須每輪都有該欄位才相加。`modelCalls` 計實際 HTTP 嘗試，`requiredEvidenceReads`／`clientToolCalls` 計工具執行嘗試，`continuationCount` 計續接嘗試。`contextTextChars` 計首輪文字 context；`toolDefinitionChars` 自 v1.16.0 起只計 provider-neutral client tool definitions 的 JSON 字元數，無工具為 0，不包含 built-in Search schema。Search intent 另記 `webSearchMode`，實際執行另記 `usedWebSearch`。這些不是 token、帳單或完整 wire payload 大小。
+
+未來增加 provider，工作應集中於新增 adapter、更新 Provider／Model Registry 與必要 profile／route、加入 adapter tests，驗證後才配置該 provider 的 key 與切換 route。LINE、圖片下載、ConversationLog、Reader、client tool implementations 和 business validators 不需因供應商改寫。本版沒有 OpenAI stub、OpenAI API 呼叫或必要的 `OPENAI_API_KEY`；Search `max_uses=3` 不變。
+
 Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁等不支援。Classic PTT article 限 `ptt.cc`／`www.ptt.cc`，先正規化 HTTPS，以 over18 cookie 直接讀取並驗證 main-content／article-meta；符合條件的失敗最多使用一次既有 Jina，共用原 deadline。PTT 不進 AI extraction，404／410 不 fallback；term.ptt.cc 走一般網站流程。Facebook／Threads 只嘗試公開可讀內容。一般收件保留 legacy AI extraction fallback；工具 `read_url` 禁止 AI fallback，讀不到便安全回報。
 
 資料表：ConversationLog、TopicHighlights、WeeklySummary、WebTaskQueue、WebSummary、NewsUrlQueue、NewsInbox、PendingReplies。Pending Reply 在 LINE Reply 成功後才刪除；失敗保留，仍可能在 acknowledge 失敗後重送，不承諾 exactly-once。
@@ -101,7 +110,7 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 
 1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
 2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
-3. **首次建立環境**才執行 `setupLogSheet()` 與 `installWebTaskQueueTrigger()` 並完成必要授權。從 v1.15.3 升級無需 setup、migration 或重建 Trigger。
+3. **首次建立環境**才執行 `setupLogSheet()` 與 `installWebTaskQueueTrigger()` 並完成必要授權。從 v1.15.4 升級無需 setup、migration 或重建 Trigger。
 4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。
 5. 部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。具體同步檔案與 manual smoke checklist 見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
@@ -125,3 +134,4 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 | v1.13 | Provider-neutral AI routing、GAS 檔案導航、X 展示標題 |
 | v1.14 | DeepSeek Flash 圖片、自然引用、Search transport 校正、SSRF 與 Pending Reply 修正 |
 | v1.15 | 能力路由、JSON Schema、只讀資料工具、圖片交叉研究、圖片語意記憶與 context 成本整理 |
+| v1.16 | Provider Architecture Foundation：registry dispatch、model reasoning policy、統一 adapter 契約、secret 與 metadata hardening；未接入 Luna／OpenAI |

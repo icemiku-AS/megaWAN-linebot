@@ -1,4 +1,4 @@
-// v1.15.4 圖片語意、context、Reader 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.16.0 provider foundation 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -257,7 +257,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.15.4'));
+  assert(replies.at(-1).text.includes('v1.16.0'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -335,7 +335,7 @@ check('Anthropic Search success comes only from matched server tool execution', 
   fetchImpl = () => anthropicCompletion('已搜尋但無結果', { searched: true });
   result = context.runAiTextTask('general_chat', '最近如何');
   assert(result.ok); assert.equal(result.usedWebSearch, true); assert.equal(result.sources.length, 0);
-  assert.equal(context.buildWebSearchSourcesBubble_(result.sources), '本次已使用網路搜尋，但 DeepSeek API 未提供可列出的來源連結。');
+  assert.equal(context.buildWebSearchSourcesBubble_(result.sources), '本次已使用網路搜尋，但搜尋服務未提供可列出的來源連結。');
   fetchImpl = () => anthropicCompletion('不可採用', { searched: true, searchError: 'unavailable' });
   result = context.runAiTextTask('general_chat', '最近如何');
   assert.equal(result.errorType, 'ai_web_search_failed'); assert.equal(result.text, '');
@@ -640,7 +640,7 @@ check('reasoning-only truncation and malformed provider response', () => {
     fetchImpl = () => completion(text, 'aborted');
     const interrupted = context.runAiMemoryTask('image_analysis', 'user:user1', '[圖片]', message.content);
     assert.equal(interrupted.errorType, 'ai_provider_http_error'); assert.equal(interrupted.retryable, true);
-    assert.equal(interrupted.finishReason, 'aborted'); assert.equal(interrupted.usage.reasoningTokens, 2200);
+    assert.equal(interrupted.finishReason, 'error'); assert.equal(interrupted.usage.reasoningTokens, 2200);
     assert.equal(interrupted.text, ''); assert.equal(cache.size, 0);
   }
   for (const body of ['null', '{}', 'not json', '{"choices":[{"message":{"content":[]},"finish_reason":"stop"}]}']) {
@@ -2218,4 +2218,317 @@ check('required evidence latency subtracts from first model budget without extra
     assert(result.ok); assert.equal(calls.length, 1); assert.equal(result.elapsedMs, 2000);
   });
 });
-process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed. No live GAS/LINE/DeepSeek calls.\n`);
+// v1.16.0：temporary registry entries 僅存在 VM；沒有新 production provider、route 或 credential。
+function withAiRegistry(run) {
+  const registries = ['AI_PROVIDER_REGISTRY', 'AI_MODEL_REGISTRY', 'AI_EXECUTION_PROFILES', 'AI_TASK_ROUTES'].map(value);
+  const saved = registries.map(registry => ({ ...registry }));
+  try { run(...registries); } finally {
+    registries.forEach((registry, i) => { Object.keys(registry).forEach(key => delete registry[key]); Object.assign(registry, saved[i]); });
+  }
+}
+const adapterFields = ['ok', 'text', 'finishReason', 'usage', 'elapsedMs', 'httpStatus', 'transport', 'usedWebSearch',
+  'sources', 'toolCalls', 'continueWithToolResults', 'modelCalls', 'errorType', 'errorMessage', 'retryable'].sort();
+function geminiRequest(extra = {}) {
+  return { model: 'gemini-3.1-flash-lite', thinking: { type: 'disabled' }, outputMode: 'text',
+    capabilities: ['text'], messages: [{ role: 'user', content: 'hello' }], maxOutputTokens: 320, timeoutSeconds: 10, ...extra };
+}
+function geminiCompletion(extra = {}) {
+  return response(200, { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'Gemini mock answer' }] } }], ...extra });
+}
+check('provider/model/profile mismatch fails before secrets, HTTP or evidence', () => {
+  const keyReads = [];
+  withStubs({ getRequiredScriptProperty_: name => { keyReads.push(name); return 'test-only-placeholder'; },
+    runAiReadOnlyTool_: () => { throw Error('must not read evidence'); } }, () => withAiRegistry((providers, models, profiles, routes) => {
+    const original = routes.general_chat;
+    for (const patch of [{ provider: 'missing' }, { model: 'gemini_flash_lite_dormant' }, { profile: 'missing' },
+      { expectedThinking: 'disabled' }, { expectedReasoningEffort: 'max' }, { maxOutputTokens: 0 }, { maxOutputTokens: 1.5 }, { timeoutSeconds: 0 }, { capabilities: 'webSearch' }]) {
+      routes.general_chat = { ...original, ...patch };
+      assert.equal(context.runAiTextTask('general_chat', '有沒有聊過 TEST', { conversationId: 'group:a' }).errorType, 'ai_configuration_error');
+    }
+    routes.general_chat = original;
+    const model = models.deepseek_flash;
+    for (const patch of [{ model: '' }, { capabilities: 'text' }, { reasoning: { modes: 'enabled', efforts: 'high' } }]) {
+      models.deepseek_flash = { ...model, ...patch };
+      assert.equal(context.runAiTextTask('general_chat', 'x').errorType, 'ai_configuration_error');
+    }
+    models.deepseek_flash = model;
+    assert.equal(context.runAiJsonTask('general_chat', 'x').errorType, 'ai_configuration_error');
+    providers.deepseek = { ...providers.deepseek, adapter: 'not callable' };
+    assert.equal(context.runAiTextTask('general_chat', 'x').errorType, 'ai_configuration_error');
+    assert.equal(keyReads.length, 0); assert.equal(calls.length, 0);
+  }));
+});
+check('capability preflight rejects unsupported combinations and explicit tool loss before secrets', () => {
+  const keyReads = [];
+  withStubs({ getRequiredScriptProperty_: name => { keyReads.push(name); return 'test-only-placeholder'; } }, () => {
+    for (const [task, options] of [
+      ['general_chat', { capabilities: ['clientTools'] }],
+      ['general_chat', { capabilities: ['clientTools'], conversationId: 'group:a', clientToolNames: [] }],
+      ['image_analysis', { capabilities: ['webSearch'] }], ['image_semantic_caption', { capabilities: ['thinking'] }],
+      ['archive_topics', { capabilities: ['webSearch'] }], ['general_chat', { capabilities: ['structuredOutput'] }]
+    ]) assert.equal(context.runAiMessagesTask(task, [{ role: 'user', content: 'x' }], options).errorType, 'ai_configuration_error');
+    const base = { ...context.resolveAiTaskConfig_('image_analysis'), messages: [message] };
+    for (const patch of [{ thinking: {} }, { reasoningEffort: 'low' }, { allowSampling: true },
+      { webSearchMode: 'invalid' }, { outputMode: 'json', webSearchMode: 'auto' },
+      { thinking: { type: 'disabled' }, reasoningEffort: '', outputMode: 'json', outputSchema: {} }]) {
+      const failed = context.callDeepSeekProvider_({ ...base, ...patch });
+      assert.equal(failed.errorType, 'ai_configuration_error'); assert.equal(failed.modelCalls, 0);
+    }
+    assert.equal(context.callGeminiProvider_(geminiRequest({ outputMode: 'json' })).errorType, 'ai_configuration_error');
+    assert.equal(keyReads.length, 0); assert.equal(calls.length, 0);
+  });
+});
+check('adapter validation overrides an incorrectly expanded dormant model registry', () => withAiRegistry((providers, models, profiles, routes) => {
+  models.gemini_flash_lite_dormant = { ...models.gemini_flash_lite_dormant, capabilities: ['text', 'vision'] };
+  routes.image_semantic_caption = { ...routes.image_semantic_caption, provider: 'gemini', model: 'gemini_flash_lite_dormant' };
+  withStubs({ getRequiredScriptProperty_: () => { throw Error('must not read key'); } }, () => {
+    assert.equal(context.runAiMessagesTask('image_semantic_caption', [message]).errorType, 'ai_configuration_error');
+    assert.equal(calls.length, 0);
+  });
+}));
+check('only dispatched provider reads its key; missing dormant keys never affect DeepSeek', () => {
+  const keyReads = [];
+  withStubs({ getRequiredScriptProperty_: name => { keyReads.push(name); if (name !== 'DEEPSEEK_API_KEY') throw Error('missing dormant key'); return 'test-only-placeholder'; } }, () => {
+    assert(context.runAiTextTask('general_chat', 'hello').ok);
+    assert.deepEqual(keyReads, ['DEEPSEEK_API_KEY']);
+  });
+  reset();
+  withStubs({ getRequiredScriptProperty_: () => { throw Error('Missing DEEPSEEK_API_KEY in Script Properties'); } }, () => {
+    const failed = context.runAiTextTask('general_chat', 'hello');
+    assert.equal(failed.errorType, 'ai_configuration_error'); assert.equal(failed.measurement.modelCalls, 0); assert.equal(calls.length, 0);
+  });
+});
+check('encoding, payload size and expired deadlines reject before provider keys', () => {
+  let keyReads = 0;
+  withStubs({ getRequiredScriptProperty_: () => { keyReads++; return 'test-only-placeholder'; } }, () => {
+    const base = { ...context.resolveAiTaskConfig_('image_analysis'), messages: [message], executionDeadlineAtMs: now + 10000 };
+    encodedDelay = 11000;
+    assert.equal(context.callDeepSeekProvider_(base).errorType, 'ai_timeout');
+    encodedDelay = 0;
+    assert.equal(context.callDeepSeekProvider_({ ...base, executionDeadlineAtMs: now + 10000,
+      messages: [{ role: 'user', content: '字'.repeat(3000000) }] }).errorType, 'ai_configuration_error');
+    assert.equal(context.callGeminiProvider_(geminiRequest({ executionDeadlineAtMs: now - 1 })).errorType, 'ai_timeout');
+    assert.equal(keyReads, 0); assert.equal(calls.length, 0);
+  });
+});
+check('all three DeepSeek transports and dormant Gemini return the same adapter contract', () => {
+  const request = { ...context.resolveAiTaskConfig_('image_analysis'), messages: [{ role: 'user', content: 'x' }] };
+  for (const [run, reply] of [
+    [() => context.callDeepSeekProvider_(request), completion()],
+    [() => context.callDeepSeekProvider_({ ...request, capabilities: ['text', 'thinking', 'webSearch'], webSearchMode: 'auto' }), anthropicCompletion()],
+    [() => context.callDeepSeekProvider_({ ...request, capabilities: ['text', 'thinking', 'structuredOutput'], outputMode: 'json', outputSchema: {} }), responsesCompletion('{}')],
+    [() => context.callGeminiProvider_(geminiRequest()), geminiCompletion()]
+  ]) {
+    fetchImpl = () => reply;
+    const result = run(); assert(result.ok, JSON.stringify(result));
+    assert.deepEqual(Object.keys(result).sort(), adapterFields); assert.equal(result.modelCalls, 1);
+    assert(Object.values(result.usage).every(n => n === null || Number.isSafeInteger(n)));
+    assert.equal(result.finishReason, 'stop'); assert.equal(result.continueWithToolResults, null);
+    assert.equal(calls.at(-1).options.followRedirects, false);
+    fetchImpl = () => response(503, 'DO_NOT_REFLECT_HTTP_BODY');
+    const failed = run(); assert(!failed.ok); assert.deepEqual(Object.keys(failed).sort(), adapterFields);
+    assert.equal(failed.modelCalls, 1); assert(!JSON.stringify(failed).includes('DO_NOT_REFLECT'));
+  }
+});
+check('Gemini safely rejects malformed responses and excludes thought parts', () => {
+  for (const body of [null, {}, { candidates: ['malformed'] }, { candidates: [{ finishReason: 'PRIVATE_UNKNOWN_REASON' }] },
+    { candidates: [{ finishReason: 'STOP', content: { parts: [{ text: 'PRIVATE_THOUGHT', thought: 'true' }] } }] },
+    { candidates: [{ finishReason: 'STOP', content: { parts: [{ functionCall: {} }] } }] }]) {
+    fetchImpl = () => response(200, body);
+    const failed = context.callGeminiProvider_(geminiRequest());
+    assert.equal(failed.errorType, 'ai_invalid_provider_response'); assert(!JSON.stringify(failed).includes('PRIVATE_UNKNOWN'));
+  }
+  fetchImpl = () => geminiCompletion({ candidates: [{ finishReason: 'STOP', content: { parts: [
+    { thought: true, text: 'PRIVATE_THOUGHT' }, { text: 'final only' }
+  ] } }] });
+  const result = context.callGeminiProvider_(geminiRequest());
+  assert(result.ok); assert.equal(result.text, 'final only'); assert(!JSON.stringify(result).includes('PRIVATE_THOUGHT'));
+  assert.equal(context.normalizeGeminiFinishReason_('MAX_TOKENS'), 'length');
+  assert.equal(context.normalizeGeminiFinishReason_('SAFETY'), 'content_filter');
+  assert(!context.extractGeminiErrorMessage_('{"error":{"message":"PRIVATE_BODY"}}').includes('PRIVATE_BODY'));
+});
+check('adapter HTTP errors, redirects and network exceptions have safe consistent retry metadata', () => {
+  for (const status of [302, 400, 401, 403, 408, 429, 500, 503]) {
+    fetchImpl = () => response(status, 'PRIVATE_HTTP_BODY');
+    const deepseek = context.runAiTextTask('general_chat', 'hello');
+    const gemini = context.callGeminiProvider_(geminiRequest());
+    assert.equal(gemini.errorType, deepseek.errorType); assert.equal(gemini.retryable, deepseek.retryable);
+    assert.equal(gemini.retryable, [408, 429, 500, 503].includes(status));
+    assert.equal(deepseek.measurement.modelCalls, 1); assert.equal(gemini.modelCalls, 1);
+  }
+  fetchImpl = () => { throw Error('timed out PRIVATE_HTTP_BODY'); };
+  const failed = context.runAiTextTask('general_chat', 'hello');
+  assert.equal(failed.errorType, 'ai_timeout'); assert.equal(failed.measurement.modelCalls, 1);
+  assert.equal(context.callGeminiProvider_(geminiRequest()).errorType, 'ai_timeout');
+  assert(!logs.join('').includes('PRIVATE_HTTP_BODY'));
+});
+check('unknown service exceptions cannot escape through results, caller errors or metadata', () => {
+  withStubs({ getConversationHistory: () => { throw Error('PRIVATE_SCOPE_OR_SECRET'); } }, () => {
+    const failed = context.runAiMemoryTask('general_chat', 'group:a', 'x', 'x');
+    assert(!failed.ok); assert(!JSON.stringify(failed).includes('PRIVATE_SCOPE'));
+    assert.throws(() => context.requireAiText_(failed), error => !error.message.includes('PRIVATE_SCOPE'));
+  });
+  const failed = context.buildAiFailureFromException_(null, 'general_chat', { message: 'PRIVATE_SECRET', errorType: 'PRIVATE_SECRET' }, 0);
+  assert.equal(failed.errorType, 'ai_unknown_error'); assert(!JSON.stringify(failed).includes('PRIVATE_SECRET'));
+  assert(!logs.join('').includes('PRIVATE_SCOPE'));
+});
+check('usage is optional, never coerces invalid values, and cache differences are not clamped guesses', () => {
+  const empty = Object.fromEntries(['inputTokens', 'cachedInputTokens', 'uncachedInputTokens', 'outputTokens', 'reasoningTokens', 'totalTokens'].map(k => [k, null]));
+  for (const normalizer of [context.normalizeDeepSeekUsage_, context.normalizeDeepSeekResponsesUsage_, context.normalizeDeepSeekAnthropicUsage_, context.normalizeGeminiUsage_]) {
+    assert.deepEqual(JSON.parse(JSON.stringify(normalizer())), empty);
+  }
+  for (const invalid of [true, false, [], {}, '12', -1, 0.5, NaN, Infinity]) assert.equal(context.normalizeAiOptionalNumber_(invalid), null);
+  assert.equal(context.normalizeAiOptionalNumber_(0), 0);
+  const gemini = context.normalizeGeminiUsage_({ promptTokenCount: 12, cachedContentTokenCount: 5, candidatesTokenCount: 8, thoughtsTokenCount: 3, totalTokenCount: 23 });
+  assert.deepEqual(JSON.parse(JSON.stringify(gemini)), { inputTokens: 12, cachedInputTokens: 5, uncachedInputTokens: 7, outputTokens: 8, reasoningTokens: 3, totalTokens: 23 });
+  const responses = context.normalizeDeepSeekResponsesUsage_({ input_tokens: 10, input_tokens_details: { cached_tokens: 11 } });
+  assert.equal(responses.uncachedInputTokens, null);
+  const config = context.resolveAiTaskConfig_('general_chat');
+  assert.equal(context.normalizeAiProviderResult_(config, { ok: true, httpStatus: 0 }, 0).httpStatus, 0);
+});
+check('validation, late answers and tool errors retain actual transport and consumed usage', () => {
+  fetchImpl = () => responsesCompletion('{invalid');
+  let result = context.runAiJsonTask('archive_news', 'x');
+  assert.equal(result.transport, 'responses'); assert.equal(result.usage.inputTokens, 1200); assert.equal(result.measurement.modelCalls, 1);
+  fetchImpl = () => { now += 31000; return anthropicCompletion('late answer'); };
+  result = context.runAiTextTask('general_chat', 'x');
+  assert.equal(result.errorType, 'ai_timeout'); assert.equal(result.transport, 'anthropic_messages'); assert.equal(result.usage.totalTokens, 3800);
+  reset(); fetchImpl = () => anthropicToolTurn([toolCall('forbidden_tool')]);
+  result = context.runAiMemoryTask('general_chat', 'group:a', 'x', 'x');
+  assert.equal(result.errorType, 'ai_tool_not_allowed'); assert.equal(result.usage.inputTokens, 1200); assert.equal(result.measurement.clientToolCalls, 0);
+  assert.equal(cache.size, 0);
+});
+check('continuation usage is summed on success and failure; unknown second usage stays null', () => {
+  for (const second of [anthropicCompletion('final'), anthropicCompletion('partial', { stopReason: 'max_tokens' }), anthropicToolTurn([toolCall('get_weekly_memory')]), response(503, 'private')]) {
+    reset(); fetchImpl = () => calls.length === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')]) : second;
+    const result = context.runAiMemoryTask('general_chat', 'group:a', 'x', 'x');
+    assert.equal(result.measurement.modelCalls, 2); assert.equal(result.measurement.continuationCount, 1); assert.equal(result.measurement.clientToolCalls, 1);
+    assert.equal(result.transport, 'anthropic_messages');
+    assert.equal(result.usage.inputTokens, second.getResponseCode() === 503 ? null : 2400);
+    assert.equal(result.usage.totalTokens, second.getResponseCode() === 503 ? null : 7600);
+    assert.equal(result.usage.cachedInputTokens, null); assert.equal(result.usage.reasoningTokens, null);
+    if (!result.ok) assert.equal(cache.size, 0);
+  }
+});
+check('required evidence counts attempted reads even when a later source fails', () => {
+  const execute = context.runAiReadOnlyTool_;
+  withStubs({ runAiReadOnlyTool_: (call, scope) => call.name === 'search_conversation_log'
+    ? { id: call.id, data: { ok: false }, sources: [] } : execute(call, scope) }, () => {
+    const q = '有沒有收過 TEST_NEWS，另外有沒有聊過 TEST_CHAT';
+    const result = context.runAiMemoryTask('general_chat', 'group:a', q, q);
+    assert.equal(result.errorType, 'ai_required_evidence_failed'); assert.equal(result.measurement.requiredEvidenceReads, 2);
+    assert.equal(result.measurement.modelCalls, 0); assert.equal(calls.length, 0);
+  });
+});
+check('opaque continuation is single-use and cannot extend its original deadline', () => {
+  const request = { ...context.resolveAiTaskConfig_('general_chat'), messages: [{ role: 'user', content: 'x' }],
+    tools: context.getAiReadOnlyToolDefinitions_(), webSearchMode: 'auto', executionDeadlineAtMs: now + 15000 };
+  fetchImpl = () => calls.length === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')]) : anthropicCompletion('final');
+  const first = context.callDeepSeekProvider_(request);
+  now += 1000;
+  const results = [{ id: 'tool_1', data: { ok: true } }];
+  assert(first.continueWithToolResults(results, now + 30000).ok); assert.equal(calls[1].options.timeoutSeconds, 14);
+  assert.equal(first.continueWithToolResults(results, now + 30000).errorType, 'ai_tool_round_limit'); assert.equal(calls.length, 2);
+});
+check('invalid continuation deadlines cannot reset the window', () => {
+  for (const deadline of [undefined, 0, -1, Infinity]) {
+    reset();
+    const request = { ...context.resolveAiTaskConfig_('general_chat'), messages: [{ role: 'user', content: 'x' }],
+      tools: context.getAiReadOnlyToolDefinitions_(), webSearchMode: 'auto', executionDeadlineAtMs: now + 10000 };
+    fetchImpl = () => anthropicToolTurn([toolCall('get_weekly_memory')]);
+    const first = context.callDeepSeekProvider_(request); now += 11000;
+    const failed = first.continueWithToolResults([{ id: 'tool_1', data: { ok: true } }], deadline);
+    assert.equal(failed.errorType, 'ai_timeout'); assert.equal(failed.modelCalls, 0); assert.equal(calls.length, 1);
+  }
+});
+check('completed Search metadata survives a later tool failure without persisting partial text', () => {
+  fetchImpl = () => calls.length === 1 ? anthropicToolTurn([toolCall('get_weekly_memory')], true) : response(503, 'private');
+  const result = context.runAiMemoryTask('general_chat', 'group:a', 'hello', 'hello');
+  assert(!result.ok); assert.equal(result.usedWebSearch, true); assert.equal(researchStatus(result, 'web_search'), 'COMPLETED');
+  assert.equal(result.text, ''); assert.equal(cache.size, 0);
+});
+check('continuation rejected before HTTP preserves the known first-turn usage', () => {
+  let reads = 0;
+  withStubs({ getRequiredScriptProperty_: () => { if (++reads === 2) throw Error('Missing DEEPSEEK_API_KEY in Script Properties'); return 'test-only-placeholder'; } }, () => {
+    fetchImpl = () => anthropicToolTurn([toolCall('get_weekly_memory')]);
+    const result = context.runAiMemoryTask('general_chat', 'group:a', 'hello', 'hello');
+    assert.equal(result.errorType, 'ai_configuration_error'); assert.equal(result.measurement.modelCalls, 1);
+    assert.equal(result.measurement.continuationCount, 1); assert.equal(result.usage.totalTokens, 3800); assert.equal(calls.length, 1);
+  });
+});
+check('tool definition measurement is provider-neutral; built-in Search keeps independent metadata', () => {
+  const chat = context.runAiMemoryTask('general_chat', 'group:a', 'hello', 'hello');
+  assert.equal(chat.measurement.toolDefinitionChars, JSON.stringify(context.getAiReadOnlyToolDefinitions_()).length);
+  const searchOnly = context.runAiTextTask('general_chat', 'hello');
+  assert.equal(searchOnly.measurement.toolDefinitionChars, 0); assert.equal(searchOnly.webSearchMode, 'auto');
+  fetchImpl = () => anthropicCompletion('searched', { searched: true, searchResults: [{ type: 'web_search_result', title: 'source', url: 'https://example.org/verified' }] });
+  const required = context.runAiTextTask('general_chat', '幫我查', { forceWebSearch: true });
+  const metadata = JSON.parse(logs.at(-1).slice('AI_CALL_METADATA '.length));
+  assert(required.ok); assert.equal(metadata.webSearchMode, 'required'); assert.equal(metadata.usedWebSearch, true); assert.equal(metadata.sourceCount, 1);
+  assert.equal(JSON.parse(calls.at(-1).options.payload).tools[0].max_uses, 3);
+});
+check('a registry-only test adapter with different reasoning serves existing text, JSON and Vision features', () => withAiRegistry((providers, models, profiles, routes) => {
+  models.test_model = { provider: 'test_provider', model: 'test-only-model', capabilities: ['text', 'thinking', 'vision', 'structuredOutput', 'webSearch', 'clientTools'],
+    reasoning: { modes: ['enabled', 'disabled'], efforts: ['medium'], samplingWhileThinking: true } };
+  for (const [name, profile] of Object.entries(profiles)) profiles[name] = { ...profile, reasoningEffort: profile.thinking.type === 'enabled' ? 'medium' : undefined };
+  for (const [name, route] of Object.entries(routes)) routes[name] = { ...route, provider: 'test_provider', model: 'test_model',
+    expectedReasoningEffort: route.expectedThinking === 'enabled' ? 'medium' : undefined };
+  const requests = [];
+  providers.test_provider = {
+    status: 'test-only', validateRequest: request => { assert(!('providerContinuation' in request)); },
+    adapter: request => {
+      requests.push(request);
+      assert.equal(request.reasoningEffort, request.thinking.type === 'enabled' ? 'medium' : '');
+      return context.buildAiProviderResult_({ ok: true, text: request.outputMode === 'json' ? JSON.stringify(schemaExample(request.outputSchema))
+        : 'test provider answer<MEGAHUAN_IMAGE_CONTEXT>圖中有 Duo 貓頭鷹</MEGAHUAN_IMAGE_CONTEXT>',
+        finishReason: 'stop', httpStatus: 200, transport: 'test_only', usedWebSearch: !!request.webSearchMode });
+    }
+  };
+  withStubs({ getRequiredScriptProperty_: () => { throw Error('test provider must not read production keys'); },
+    downloadLineImage_: () => ({ ok: true, image: imagePart }) }, () => {
+    assert(context.runAiMemoryTask('general_chat', 'group:a', 'hello', 'hello').ok);
+    assert(context.runAiJsonTask('archive_news', 'x').ok);
+    assert.equal(context.analyzeLineImage_(event('text'), 'group:a', '123', '這是什麼', null), 'test provider answer');
+    assert.equal(context.analyzeLineImage_(event('text'), 'group:a', '123', '幫我查最新', null), 'test provider answer');
+    context.captureSilentLineImage_(event('image', 'group'), 'group:caption', null);
+    assert.deepEqual(requests.map(r => r.task), ['general_chat', 'archive_news', 'image_analysis', 'multimodal_research', 'image_semantic_caption']);
+    assert.equal(rows.filter(row => row.includes('image_semantic')).length, 3);
+    assert.equal(calls.length, 0); assert(!JSON.stringify([rows, logs, ...cache.values()]).includes(Buffer.from(png).toString('base64')));
+  });
+}));
+check('generic adapter continuation still executes trusted tools and enforces one round', () => withAiRegistry((providers) => {
+  let executions = 0;
+  providers.deepseek = { ...providers.deepseek, adapter: () => context.buildAiProviderResult_({ ok: true, finishReason: 'tool_calls',
+    httpStatus: 200, transport: 'test_only', toolCalls: [toolCall('get_weekly_memory')],
+    continueWithToolResults: results => {
+      assert.equal(results.length, 1); assert.equal(results[0].data.ok, true);
+      return context.buildAiProviderResult_({ ok: true, httpStatus: 200, finishReason: 'tool_calls', toolCalls: [toolCall('get_weekly_memory')] });
+    } }) };
+  const execute = context.runAiReadOnlyTool_;
+  withStubs({ runAiReadOnlyTool_: (call, scope) => { executions++; assert.equal(scope.conversationId, 'group:a'); return execute(call, scope); } }, () => {
+    const result = context.runAiMemoryTask('general_chat', 'group:a', 'hello', 'hello');
+    assert.equal(result.errorType, 'ai_tool_round_limit'); assert.equal(executions, 1); assert.equal(result.measurement.continuationCount, 1);
+    assert.equal(cache.size, 0); assert(!('continueWithToolResults' in result)); assert(!('toolCalls' in result));
+  });
+}));
+check('service enforces required Search independently of adapter success prose', () => withAiRegistry((providers) => {
+  providers.deepseek = { ...providers.deepseek, adapter: () => context.buildAiProviderResult_({ ok: true,
+    text: 'I searched', finishReason: 'stop', httpStatus: 200, transport: 'test_only' }) };
+  const result = context.runAiTextTask('general_chat', '幫我查', { forceWebSearch: true });
+  assert.equal(result.errorType, 'ai_web_search_failed'); assert.equal(result.retryable, true);
+  assert.equal(result.text, ''); assert.equal(result.measurement.modelCalls, 1);
+}));
+check('protocol symbols stay inside adapters and all active routes remain DeepSeek', () => {
+  for (const file of files.filter(name => !['15_DeepSeekProvider.gs', '16_GeminiProvider.gs', '03_ResponseTexts.gs'].includes(name))) {
+    const code = fs.readFileSync(path.join(root, file), 'utf8');
+    assert(!/api\.deepseek\.com|web_search_20250305|server_tool_use|reasoning_content|input_schema|output_config|anthropic-version/.test(code), file);
+  }
+  assert(Object.values(value('AI_TASK_ROUTES')).every(route => route.provider === 'deepseek'));
+  assert.equal(value('AI_PROVIDER_REGISTRY.gemini.status'), 'dormant');
+  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 23);
+  const secretPattern = /(?:sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,})/;
+  for (const filename of [...files, 'tests/v1140_smoke.cjs', 'README.md', 'CURRENT_VERSION.md']) {
+    assert(!secretPattern.test(fs.readFileSync(path.join(root, filename), 'utf8')), filename + ' credential-shaped literal');
+  }
+});
+process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed. No live GAS/LINE/DeepSeek/Gemini/OpenAI calls.\n`);

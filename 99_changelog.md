@@ -1,3 +1,14 @@
+2026-09-26
+v1.16.0 Provider Architecture Foundation
+- 基準為 GitHub main / v1.15.4 / fc65c5b21c9e22f47155e3c85556b9d4e0b99a53，工作 branch feature/v1160-provider-architecture；本機版本候選，尚未提交、合併或部署。v1.16.0 只是 Provider Architecture Foundation。DeepSeek Flash 仍唯一 active，Gemini dormant，GPT-6 Luna / OpenAI 尚未接入，無 OpenAI stub、API 呼叫、fallback 或新必要 key。
+- Provider Registry 註冊純 validateRequest 與 adapter 函式，移除 AiService vendor switch；Model Registry 宣告 reasoning modes／efforts／sampling policy。HIGH 與各 task budget 不變，high/max 僅是本專案已驗證的 DeepSeek policy。六種 capabilities、provider/model/profile 與 adapter 組合在 HTTP 前 fail closed，明確 clientTools 要求不靜默丟棄。
+- DeepSeek 三 transport payload、Search auto/required、max_uses=3、Vision、JSON Schema、只讀 tools 與業務 validators 保留。設定、序列化、body ceiling、deadline 先驗證再讀 key；provider HTTP 不自動 redirect。Provider result 統一安全欄位與 canonical finish reason，未知 error/finish 與 exception/body 不外流。Gemini 僅補契約、安全解析、thought 排除與 deadline，未擴充或啟用能力。
+- Continuation 仍由 service 執行 trusted-scope 只讀工具，adapter closure 留存 vendor state；最多一次且不能重複消耗或延長原 deadline，第二批 tool calls fail closed。原始 evidence、圖片、reasoning、callback 不進正常 history／Sheet／console。
+- 修正失敗時 transport／usage／Search metadata 遺失、多輪失敗未累計用量、未 dispatch 卻計 modelCalls、required evidence 失敗被低估、httpStatus=0 被當 200，以及不合理 token coercion。未知 token 欄位為 null；續接任一已 dispatch 輪缺值則該累計為 null。toolDefinitionChars 只計共用 client tool definitions（無工具 0），不含 DeepSeek Search schema；新增 webSearchMode，與執行 usedWebSearch 分開，不能拿此數值直接與 v1.15.4 比較。
+- 來源缺漏／Search 錯誤提示去除 provider protocol 名稱；#版本 與最近6筆版本紀錄同步。所有 compatibility wrappers／legacy helpers 保留，repo 無正式 caller 不代表 GAS 外部手動 caller 已不存在。
+- 本機 node tests/v1140_smoke.cjs：23 GAS sources、434 unique functions、190 checks 通過，保留168項基準並新增22項 provider/secret/metadata/deadline regression；測試 VM 假 adapter 驗證不同 effort 可接既有 text/JSON/Vision 功能，無新增 production provider。另檢查 git diff --check 與非 provider 層 protocol symbols；沒有 live GAS／LINE／DeepSeek／Gemini／OpenAI／Sheet 驗證。
+- 從完整 v1.15.4 同步 02_LineCommands.gs、03_ResponseTexts.gs、10_AiService.gs、11_AiProfiles.gs、15_DeepSeekProvider.gs、16_GeminiProvider.gs；Markdown/tests 不部署。23個runtime維持，Sheet schema／migration／setup／新Trigger／新必要Script Property均 none，LINE webhook、Reader、Queue、圖片持久化政策不變。版本文件與 AGENTS adapter 維護契約同步。
+
 2026-09-23
 v1.15.4 Context & Semantic Memory Edition
 - 以前一正式版本 v1.15.3 為 lineage；新增圖片衍生文字記憶、context 成本量測與有證據的局部優化，修正 generic Reader 正文關鍵字誤判。Git 版本與 GAS deployment 由維護者分別確認。

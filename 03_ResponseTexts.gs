@@ -12,11 +12,21 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.15.4 Context & Semantic Memory Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-09-23';
+const BOT_CURRENT_VERSION = 'v1.16.0 Provider Architecture Foundation';
+const BOT_CURRENT_VERSION_DATE = '2026-09-26';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.16.0 Provider Architecture Foundation',
+    date: '2026-09-26',
+    summary: '整理 AI provider 邊界，補強能力驗證、secret 與成本 metadata。',
+    changes: [
+      '由 registry 註冊 adapter 與 model reasoning policy；Search、工具續接與圖片協議留在各 provider。',
+      '先驗證能力與期限再讀 API key，失敗時保留安全的用量與呼叫統計。',
+      'DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant；GPT-6 Luna / OpenAI 尚未接入。'
+    ]
+  },
   {
     version: 'v1.15.4 Context & Semantic Memory Edition',
     date: '2026-09-23',
@@ -597,9 +607,9 @@ function getBotTextWebSearchError_(errorType) {
     return '這次網路搜尋沒有在回覆時間內完成。我不會改用舊知識假裝查證成功，請稍後再試。';
   }
   if (errorType === 'ai_configuration_error' || errorType === 'ai_auth_error') {
-    return '目前網路搜尋服務尚未正確啟用。我不會改用舊知識假裝查證成功，請通知維護者檢查 DeepSeek Anthropic Messages 設定。';
+    return '目前網路搜尋服務尚未正確啟用。我不會改用舊知識假裝查證成功，請通知維護者檢查 AI 搜尋設定。';
   }
-  return '這次網路搜尋沒有完成，可能是 Search provider 或 Anthropic Messages API 暫時異常。我不會改用舊知識假裝查證成功，請稍後再試。';
+  return '這次網路搜尋沒有完成，可能是搜尋服務暫時異常。我不會改用舊知識假裝查證成功，請稍後再試。';
 }
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }

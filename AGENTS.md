@@ -123,6 +123,16 @@ AI 工作先追 `10_AiService.gs` → `11_AiProfiles.gs` → `13_AiSchemas.gs` /
 
 Internal tools 僅可讀目前 conversationId；scope 由 trusted code 注入，不接受模型指定。禁止 write tool、ensureSheet 副作用、任意 GAS function dispatch 與 read_url 巢狀 AI。工具、圖片、reasoning 和 provider continuation 不得永久保存或寫原文 log；同步最多一次 continuation，沿用共同 absolute deadline。Gemini 保持 dormant，沒有自動 provider fallback。
 
+### Provider adapter 維護契約
+
+* 新 provider 在 `11_AiProfiles.gs` 註冊 `validateRequest(request)` 與 `adapter(request)` 函式；AiService 不增加 vendor switch，也不組 Search／reasoning／Vision／JSON payload。
+* Model Registry 宣告 capabilities 與 reasoning modes／efforts／sampling policy；task/profile 的 thinking enabled/disabled 是能力需求，不是直接轉送的 vendor block。Provider/model 歸屬與 profile 預期先由 resolver 驗證，能力組合再由 adapter 的純 validation 拒絕。不得把某一 provider 的 effort 限制變成通用規則。
+* `validateRequest` 不讀 key、不編碼圖片、不執行 HTTP／Sheet／Reader。真正 adapter 先驗證 payload、大小和剩餘 deadline，再 lazy-load 自己的 Script Property；unused provider 缺 key 不影響 active route。HTTP 不自動跟隨 redirect，exception/body 不得原樣外傳。
+* Adapter 使用 `buildAiProviderResult_()`，回傳 `ok/text/finishReason/usage/elapsedMs/httpStatus/transport/usedWebSearch/sources/toolCalls/continueWithToolResults/modelCalls/errorType/errorMessage/retryable`。Finish reason 統一為空值、`stop/length/tool_calls/content_filter/incomplete/error`；usage 只用有效非負整數或 null，不能猜 cache／reasoning tokens。`modelCalls` 為當次 adapter 的 HTTP 嘗試數（0 或 1），不是供應商帳單推估。
+* Continuation callback 只接受共用 tool results 與 deadline，vendor state 留在 adapter closure；只能消耗一次且不可延長原 deadline。Service 執行 `runAiReadOnlyTool_()` 並拒絕第二批 calls，最後結果不得外傳 callback／原始 tool state。
+* `toolDefinitionChars` 只計共用 client tool definitions，built-in Search 以 `webSearchMode/usedWebSearch` 分別記錄意圖與執行。Metadata 不得含 prompt、URL 正文、raw evidence、reasoning、圖片或 secret；失敗仍保留可信用量與 transport，缺少任一輪用量則該累計欄位為 null。
+* 新 provider 先加 adapter tests、驗證官方契約，再由維護者切 route／配置 key。不得預建猜測性 OpenAI payload 或要求未啟用 provider 的 key。Compatibility wrappers 沒有 repo caller 仍不足以證明沒有 GAS 手動／外部 caller。
+
 ---
 
 ## 4. 工作模式判斷

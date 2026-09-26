@@ -132,6 +132,8 @@ function runAiMessagesTask(task, messages, options) {
   const startedAt = Date.now();
   let config = null;
   let researchEvidence = [];
+  let providerResult = null;
+  let webSearchMode = '';
   const measurement = { modelCalls: 0, requiredEvidenceReads: 0, clientToolCalls: 0,
     continuationCount: 0, contextTextChars: 0, toolDefinitionChars: 0 };
 
@@ -172,6 +174,7 @@ function runAiMessagesTask(task, messages, options) {
     request.webSearchMode = config.allowsWebSearch
       ? (options && options.forceWebSearch === true ? 'required' : 'auto')
       : '';
+    webSearchMode = request.webSearchMode;
     request.capabilities = config.capabilities.slice();
     if (hasImages && request.capabilities.indexOf('vision') < 0) request.capabilities.push('vision');
     if (options && options.capabilities && !Array.isArray(options.capabilities)) throw createAiConfigurationError_('Capabilities must be an array.');
@@ -195,7 +198,14 @@ function runAiMessagesTask(task, messages, options) {
       })) throw createAiConfigurationError_('Client tool selection must be a subset of the allowed tools.');
       request.tools = request.tools.filter(function(tool) { return names.indexOf(tool.name) >= 0; });
     }
-    if (!request.tools.length) request.capabilities = request.capabilities.filter(function(capability) { return capability !== 'clientTools'; });
+    if (!request.tools.length) {
+      if ((options && options.capabilities || []).indexOf('clientTools') >= 0) {
+        throw createAiConfigurationError_('Requested client tools require an allowed tool and trusted scope.');
+      }
+      request.capabilities = request.capabilities.filter(function(capability) { return capability !== 'clientTools'; });
+    }
+    // adapter 只檢查能力組合，不讀 key、不編碼圖片、不碰 Sheet；先於 required evidence 讀取。
+    config.validateProviderRequest(request);
     let stableSystemCount = request.messages[0].role === 'system' ? 1 : 0;
     if (request.tools.length) {
       request.messages.splice(stableSystemCount++, 0, { role: 'system', content: [
@@ -236,6 +246,7 @@ function runAiMessagesTask(task, messages, options) {
       let evidence;
       try {
         const call = validateAiToolCalls_([{ id: 'required_' + index, name: item.name, arguments: item.arguments }], getAiReadOnlyToolDefinitions_())[0];
+        measurement.requiredEvidenceReads++;
         evidence = runAiReadOnlyTool_(call, trustedResearchContext);
       } catch (error) {
         execution.status = 'FAILED';
@@ -292,44 +303,29 @@ function runAiMessagesTask(task, messages, options) {
         executionDeadlineAtMs: orchestrationDeadline, minimumRequestSeconds: AI_TOOL_FINAL_RESERVE_SECONDS
       });
     }
-    measurement.requiredEvidenceReads = evidenceData.length;
     measurement.contextTextChars = request.messages.reduce(function(total, message) {
       return total + (Array.isArray(message.content)
         ? message.content.reduce(function(sum, part) { return sum + (part.type === 'text' ? part.text.length : 0); }, 0)
         : String(message.content || '').length);
     }, 0);
-    measurement.toolDefinitionChars = JSON.stringify(request.tools).length + (request.webSearchMode
-      ? JSON.stringify({ type: 'web_search_20250305', name: 'web_search', max_uses: 3 }).length : 0);
+    // 只量共用 client tool definitions；vendor built-in Search schema 不屬於 service。
+    // 這不是 wire payload/token 估算；Search intent 另以 webSearchMode 記錄。
+    measurement.toolDefinitionChars = request.tools.length ? JSON.stringify(request.tools).length : 0;
     // 工具可用不代表會續接；首輪共享完整 window，真的要求工具時才檢查讀取／final 餘裕。
-    let providerResult = null;
-
-    // 明確 switch 可讓 GAS 維護者快速看出可用 provider，也避免引入 class / DI / plugin framework。
-    measurement.modelCalls++;
-    switch (config.providerAdapter) {
-      case 'deepseek':
-        providerResult = callDeepSeekProvider_(request);
-        break;
-      case 'gemini':
-        providerResult = callGeminiProvider_(request);
-        break;
-      default:
-        providerResult = {
-          ok: false,
-          errorType: 'ai_configuration_error',
-          errorMessage: 'Unknown AI provider adapter: ' + config.providerAdapter,
-          retryable: false
-        };
-    }
+    providerResult = config.providerAdapter(request);
+    measurement.modelCalls += providerResult.modelCalls;
+    const webEvidence = researchEvidence.find(function(item) { return item.source === 'web_search'; });
+    if (webEvidence && providerResult.usedWebSearch) webEvidence.status = 'COMPLETED';
 
     if (providerResult && providerResult.ok && providerResult.toolCalls && providerResult.toolCalls.length) {
       const toolCalls = validateAiToolCalls_(providerResult.toolCalls, request.tools);
-      measurement.clientToolCalls = toolCalls.length;
       if (typeof providerResult.continueWithToolResults !== 'function') throw createAiToolError_('ai_invalid_tool_call');
       const toolResults = [];
       toolCalls.forEach(function(call) {
         resolveAiRequestTimeoutSeconds_(request.timeoutSeconds, {
           executionDeadlineAtMs: orchestrationDeadline, minimumRequestSeconds: AI_TOOL_FINAL_RESERVE_SECONDS + 1
         });
+        measurement.clientToolCalls++;
         const evidence = runAiReadOnlyTool_(call, trustedResearchContext);
         toolResults.push(evidence);
         const execution = researchEvidence.find(function(item) { return item.source === call.name; });
@@ -340,22 +336,22 @@ function runAiMessagesTask(task, messages, options) {
         executionDeadlineAtMs: orchestrationDeadline, minimumRequestSeconds: AI_TOOL_FINAL_RESERVE_SECONDS
       });
       const firstResult = providerResult;
-      measurement.modelCalls++;
       measurement.continuationCount++;
       providerResult = firstResult.continueWithToolResults(toolResults.map(function(item) { return { id: item.id, data: item.data }; }), orchestrationDeadline);
+      measurement.modelCalls += providerResult.modelCalls;
+      // 第二輪失敗仍計入用量；未 dispatch 的第二輪則保留首輪已知用量。
+      providerResult.usage = providerResult.modelCalls === 0 ? firstResult.usage : sumAiUsage_(firstResult.usage, providerResult.usage);
+      providerResult.usedWebSearch = firstResult.usedWebSearch || providerResult.usedWebSearch;
+      if (webEvidence && providerResult.usedWebSearch) webEvidence.status = 'COMPLETED';
+      providerResult.sources = mergeAiEvidenceSources_([].concat(firstResult.sources || [], providerResult.sources || [],
+        toolResults.reduce(function(all, item) { return all.concat(item.sources); }, [])));
       if (providerResult && providerResult.toolCalls && providerResult.toolCalls.length) throw createAiToolError_('ai_tool_round_limit');
-      if (providerResult && providerResult.ok) {
-        providerResult.usedWebSearch = firstResult.usedWebSearch || providerResult.usedWebSearch;
-        providerResult.sources = mergeAiEvidenceSources_([].concat(firstResult.sources || [], providerResult.sources || [],
-          toolResults.reduce(function(all, item) { return all.concat(item.sources); }, [])));
-        providerResult.usage = sumAiUsage_(firstResult.usage, providerResult.usage);
-      }
     }
     if (orchestrationDeadline && Date.now() >= orchestrationDeadline) throw createAiExecutionBudgetError_();
     if (providerResult && providerResult.ok) {
-      if (request.webSearchMode === 'required' && !providerResult.usedWebSearch) throw createAiToolError_('ai_web_search_failed');
-      const webEvidence = researchEvidence.find(function(item) { return item.source === 'web_search'; });
-      if (webEvidence && providerResult.usedWebSearch) webEvidence.status = 'COMPLETED';
+      if (request.webSearchMode === 'required' && !providerResult.usedWebSearch) {
+        throw Object.assign(createAiToolError_('ai_web_search_failed'), { retryable: true });
+      }
       if (researchEvidence.some(function(item) { return item.required && item.source !== 'web_search' &&
         ['SEARCHED_FOUND', 'SEARCHED_EMPTY'].indexOf(item.status) < 0; })) throw createAiToolError_('ai_required_evidence_failed');
       providerResult.sources = mergeAiEvidenceSources_([].concat(providerResult.sources || [], prefetchedSources));
@@ -365,6 +361,7 @@ function runAiMessagesTask(task, messages, options) {
     result.elapsedMs = Date.now() - startedAt;
     result.researchEvidence = researchEvidence;
     result.measurement = measurement;
+    result.webSearchMode = webSearchMode;
     // 即使模型意外回傳編碼片段，也只讓安全文字進 LINE、Sheet 與短期 memory。
     if (result.ok) {
       result.text = redactAiMediaText_(result.text);
@@ -378,6 +375,8 @@ function runAiMessagesTask(task, messages, options) {
       logAiCallMetadata_(result, config);
       return result;
     }
+
+    const providerMetadata = { transport: result.transport, usedWebSearch: result.usedWebSearch, sources: result.sources };
 
     if (result.finishReason === 'length') {
       result = buildAiFailureResponse_(config, 'ai_finish_reason_length', 'AI output reached max tokens.', result.httpStatus, false, result.elapsedMs, result.usage, result.finishReason);
@@ -399,6 +398,8 @@ function runAiMessagesTask(task, messages, options) {
       }
     }
 
+    Object.assign(result, providerMetadata);
+    result.webSearchMode = webSearchMode;
     result.researchEvidence = researchEvidence;
     result.measurement = measurement;
     logAiCallMetadata_(result, config);
@@ -406,6 +407,11 @@ function runAiMessagesTask(task, messages, options) {
 
   } catch (error) {
     const failed = buildAiFailureFromException_(config, task, error, Date.now() - startedAt);
+    if (providerResult) {
+      const observed = normalizeAiProviderResult_(config, providerResult, failed.elapsedMs);
+      ['usage', 'transport', 'finishReason', 'httpStatus', 'usedWebSearch', 'sources'].forEach(function(key) { failed[key] = observed[key]; });
+    }
+    failed.webSearchMode = webSearchMode;
     failed.researchEvidence = researchEvidence;
     failed.measurement = measurement;
     logAiCallMetadata_(failed, config);
@@ -632,6 +638,8 @@ function normalizeAiProviderResult_(config, providerResult, elapsedMs) {
       source.finishReason
     );
     failed.transport = String(source.transport || '');
+    failed.usedWebSearch = source.usedWebSearch === true;
+    failed.sources = mergeAiEvidenceSources_(source.sources);
     return failed;
   }
 
@@ -651,13 +659,13 @@ function normalizeAiProviderResult_(config, providerResult, elapsedMs) {
     elapsedMs: Number(source.elapsedMs || elapsedMs || 0),
     errorType: '',
     errorMessage: '',
-    httpStatus: Number(source.httpStatus || 200),
+    httpStatus: Number(Object.prototype.hasOwnProperty.call(source, 'httpStatus') ? source.httpStatus : 0),
     retryable: false
   };
 }
 
 /**
- * 建立統一 failure response。errorMessage 只保存短技術訊息，不附完整 Prompt、response body 或 secret。
+ * 建立統一 failure response。保留 errorMessage 參數供舊 caller 相容，但只輸出固定 typed 訊息。
  */
 function buildAiFailureResponse_(config, errorType, errorMessage, httpStatus, retryable, elapsedMs, usage, finishReason) {
   const safeConfig = config || {};
@@ -675,8 +683,9 @@ function buildAiFailureResponse_(config, errorType, errorMessage, httpStatus, re
     finishReason: normalizeAiFinishReason_(finishReason),
     usage: normalizeAiUsage_(usage),
     elapsedMs: Number(elapsedMs || 0),
-    errorType: String(errorType || 'ai_unknown_error'),
-    errorMessage: String(errorMessage || 'Unknown AI error.'),
+    errorType: normalizeAiErrorType_(errorType),
+    // exception/body 可能反射 request 或 secret；不把原文轉交 caller 的既有 console/error paths。
+    errorMessage: 'AI task failed (' + normalizeAiErrorType_(errorType) + ').',
     httpStatus: Number(httpStatus || 0),
     retryable: retryable === true
   };
@@ -729,16 +738,40 @@ function normalizeAiUsage_(usage) {
 }
 
 function normalizeAiOptionalNumber_(value) {
-  if (value === '' || value === null || typeof value === 'undefined') return null;
-  const numberValue = Number(value);
-  return isFinite(numberValue) ? numberValue : null;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 function normalizeAiFinishReason_(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  if (raw === 'max_tokens' || raw === 'max_token' || raw === 'length') return 'length';
-  if (raw === 'stop') return 'stop';
-  return raw;
+  // Vendor 停止原因在 adapter 轉譯；未知字串不能成為 metadata／error message。
+  return ['', 'stop', 'length', 'tool_calls', 'content_filter', 'incomplete', 'error'].indexOf(value || '') >= 0 ? (value || '') : 'error';
+}
+
+function normalizeAiErrorType_(value) {
+  return AI_RETRYABLE_ERROR_TYPES.concat([
+    'ai_configuration_error', 'ai_auth_error', 'ai_validation_error', 'ai_finish_reason_length', 'ai_finish_reason_error',
+    'ai_web_search_failed', 'ai_required_evidence_failed', 'ai_tool_limit', 'ai_tool_not_allowed',
+    'ai_invalid_tool_call', 'ai_invalid_tool_arguments', 'ai_unsafe_tool_url', 'ai_tool_round_limit', 'ai_tool_data_unavailable'
+  ]).indexOf(value) >= 0 ? value : 'ai_unknown_error';
+}
+
+/** Adapter 共用結果契約。只收安全欄位；opaque callback 僅供 service，最後 normalized result 不外傳它。 */
+function buildAiProviderResult_(fields) {
+  const source = fields || {};
+  const ok = source.ok === true;
+  const errorType = ok ? '' : normalizeAiErrorType_(source.errorType);
+  return {
+    ok: ok, text: ok && typeof source.text === 'string' ? source.text : '',
+    finishReason: normalizeAiFinishReason_(source.finishReason), usage: normalizeAiUsage_(source.usage),
+    elapsedMs: normalizeAiOptionalNumber_(source.elapsedMs) || 0,
+    httpStatus: normalizeAiOptionalNumber_(source.httpStatus) || 0,
+    transport: String(source.transport || ''), usedWebSearch: source.usedWebSearch === true,
+    sources: mergeAiEvidenceSources_(source.sources), toolCalls: ok && Array.isArray(source.toolCalls) ? source.toolCalls : [],
+    continueWithToolResults: ok && typeof source.continueWithToolResults === 'function' ? source.continueWithToolResults : null,
+    // 每次 adapter 呼叫最多一次 HTTP；network exception 也算一次，驗證／缺 key 則是零。
+    modelCalls: source.modelCalls === 0 || source.modelCalls === 1 ? source.modelCalls : (source.httpStatus > 0 ? 1 : 0),
+    errorType: errorType, errorMessage: ok ? '' : 'AI provider request failed (' + errorType + ').',
+    retryable: !ok && source.retryable === true
+  };
 }
 
 /**
@@ -844,6 +877,7 @@ function logAiCallMetadata_(result, config) {
     provider: safeResult.provider || safeConfig.provider || '',
     model: safeResult.model || safeConfig.model || '',
     transport: safeResult.transport || '',
+    webSearchMode: safeResult.webSearchMode || '',
     usedWebSearch: safeResult.usedWebSearch === true,
     sourceCount: Array.isArray(safeResult.sources) ? safeResult.sources.length : 0,
     modelCalls: safeResult.measurement ? safeResult.measurement.modelCalls : 0,
