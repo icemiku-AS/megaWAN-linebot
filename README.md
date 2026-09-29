@@ -1,8 +1,8 @@
 # MEGA浣 / 小浣
 
-Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
+住在群組裡的浣熊夥伴：陪群友聊天、查資料，也協助 Podcast「現正熱潮中」整理新聞與節目素材。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-本文件描述 **v1.16.0 Provider Architecture Foundation** 的版本契約，承接 v1.15.4。這只是 Provider Architecture Foundation：**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，GPT-6 Luna / OpenAI 尚未接入**。Git 版本與 GAS production deployment 可能處於不同階段，實際部署由維護者確認；詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+本文件描述 **v1.16.1 Text Quote & Persona Edition** 的本機實作，基準 main / v1.16.0 / `f37636b` 已合併；工作分支 `feature/v1161-text-quote-persona` 尚未合併至 main 或部署 GAS，提交／推送狀態以實際 Git refs 為準。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。實際 GAS 部署由維護者確認；詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
@@ -12,6 +12,7 @@ Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 
 - 小浣可把圖片理解保存為同聊天室可搜尋的短文字脈絡，不保存原圖；群組直接貼圖仍不會收到回覆。
 - 新聞分析、快讀、封存、週編輯台與人工補充使用 JSON Schema；程式仍負責分類、完整性與資料寫入驗證。
 - 保留多輪文字記憶、人工畫重點、明確封存與二段確認清理。
+- 文字引用由程式精確查找原文並區分說話者；一般聊天不再預設延伸節目企劃。
 
 ## 使用方式
 
@@ -27,6 +28,14 @@ Podcast「現正熱潮中」的 LINE 新聞素材與節目準備助手。使用 
 - 私訊或 `#小浣` 詢問「這篇網址跟之前收過的新聞有沒有重複？」可只讀比對，不會把研究網址自動新增為新聞。
 
 普通聊天由模型判斷是否需要搜尋；「幫我查／搜尋／上網查」會強制要求。明確問「聊過／收過／封存／畫過重點」時，程式先查指定資料。對話查詢限目前聊天室的過去使用者文字與圖片衍生摘要，並標明兩者來源；圖片摘要只表示小浣當時的辨識，不代表使用者說過或圖片主張已查證。查過但沒有結果、取得候選資料、尚未查詢／失敗會分開處理。來源依實際搜尋或工具取得的公開網址列出，最多三筆；來源 bubble 與主回答分開。
+
+### 文字引用
+
+用 LINE「回覆」引用群友的文字，私訊直接提問，群組加 `#小浣`。例如甲說「公告是測試，不是正式上線」，乙插話後，丙引用甲問「#小浣 他這個說法對嗎？」：程式會先從同聊天室 ConversationLog 精確取得甲的文字，模型收到目前提問者、原作者與引用關係。找到原文只代表知道在談哪句話，公告是否屬實仍要看證據。
+
+查詢限整張 ConversationLog 尾端 500 列，直接原文最多 2,000 字元，可補一層已記錄的上游文字，所有引用資料合計最多 6,000 字元。找不到、資料讀取失敗與不支援會區分，不能猜最近一句。原文仍在範圍且 ID 完整的舊文字可引用；不還原未記錄的歷史關係或小浣出站訊息。群組未觸發時只記錄已確認的文字關係，不增加 AI／LINE 回覆。
+
+引用中的搜尋或清理指令不等於你現在的要求。原文與當前問題分開；未解析與圖片引用不保存目標 ID，既有圖片路徑仍可使用。`#reset` 清短期脈絡；`#清空紀錄 確認` 刪目前聊天室紀錄並清短期脈絡；不新增引用快取。
 
 ### 圖片
 
@@ -110,7 +119,7 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 
 1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
 2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
-3. **首次建立環境**才執行 `setupLogSheet()` 與 `installWebTaskQueueTrigger()` 並完成必要授權。從 v1.15.4 升級無需 setup、migration 或重建 Trigger。
+3. **v1.16.0 → v1.16.1 有 schema 補欄**：先備份 Sheet，再以同版程式執行 `setupLogSheet()`，確認 ConversationLog 新增 `QuotedMessageId`、`QuoteStatus`，舊欄位／資料保留。首次寫入也會補缺欄，但建議部署前明確完成；不回填舊引用、不修復失真 ID。新 ID 以文字 literal 寫入，需在實際 Sheet 驗收超長 ID。既有 Trigger 不重建；首次建置才另外執行 `installWebTaskQueueTrigger()`。
 4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。
 5. 部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。具體同步檔案與 manual smoke checklist 見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
@@ -135,3 +144,4 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 | v1.14 | DeepSeek Flash 圖片、自然引用、Search transport 校正、SSRF 與 Pending Reply 修正 |
 | v1.15 | 能力路由、JSON Schema、只讀資料工具、圖片交叉研究、圖片語意記憶與 context 成本整理 |
 | v1.16 | Provider Architecture Foundation：registry dispatch、model reasoning policy、統一 adapter 契約、secret 與 metadata hardening；未接入 Luna／OpenAI |
+| v1.16.1 | 使用者文字引用、作者脈絡、跨作者去重修正與人格／task 分層；ConversationLog 補兩欄，尚未部署 |

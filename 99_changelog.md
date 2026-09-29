@@ -1,3 +1,12 @@
+2026-09-29
+v1.16.1 Text Quote & Persona Edition（功能分支交付，尚未合併／部署）
+- 以已合併的 main / v1.16.0 / f37636be695ad6d79465d4c6c6de51432d0cf74b 為基準，在 feature/v1161-text-quote-persona 實作；下方舊版段落保留歷史當時狀態，不能作為最新 Git refs／GAS 部署證明。
+- ConversationLog 追加 QuotedMessageId／QuoteStatus，以同聊天室、精確文字 ID、Role=user 查找直接引用；可補一層已記錄上游。尾端 500 列、2,000／1,000 字元與 6,000 字元引用 context 上限，共用 webhook deadline；失敗／未找到／不支援分開，不猜最近一句。
+- 原 Text 不混入引用；群組未觸發只記錄已確認文字關係。未解析與圖片目標 ID 不持久化，圖片事件 assistant log 也不保存觸發媒體 ID。新 ID 用文字 literal 保存，失真舊 ID 不修復；setupLogSheet 可重複補欄，不重建／回填。
+- 六輪 memory、只讀工具與模型 request 傳遞作者及引用關係，原 UserId 不進模型文字；未知舊紀錄保守處理，去重不合併不同作者。引用 evidence 只留當次，不新增引用 cache，reset／清空紀錄維持原範圍。
+- 共用人格改為群組浣熊夥伴，節目目的移回專用 task；JSON／抽取／封存不加角色表演。DeepSeek、HIGH、sampling、主要預算、新聞故事線、圖片語意、required evidence、PendingReplies 與 provider contract 保留。
+- 本機 224 checks 通過（既有 202＋新增 22），23 GAS sources／441 unique functions；無 live LINE／provider／Sheet 或部署。同步 12 個修改 .gs 並備份 Sheet／執行補欄後，仍需實際 ID 回讀、跨成員引用、圖片／清理／新聞與人格多輪驗收，詳見 CURRENT_VERSION。
+
 2026-09-26
 v1.16.0 Provider Architecture Foundation
 - 基準為 main / v1.15.4 / fc65c5b21c9e22f47155e3c85556b9d4e0b99a53；基礎改版已提交並推送至 feature/v1160-provider-architecture，尚未合併至 main。分支狀態不代表後續 review fix 已提交或 GAS 已部署；本次 review fix 未部署，production 由維護者確認。v1.16.0 只是 Provider Architecture Foundation。DeepSeek Flash 仍唯一 active，Gemini dormant，GPT-6 Luna / OpenAI 尚未接入，無 OpenAI stub、API 呼叫、fallback 或新必要 key。

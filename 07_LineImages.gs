@@ -50,6 +50,8 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
       downloaded.image
     ], requireAiCallOptionsForExecutionContext_(executionContext, { forceWebSearch: needsSearch, clientToolNames: clientToolNames,
       captureImageSemanticContext: true,
+      currentUserId: event.source && event.source.userId,
+      currentMessageId: event.message.type === 'text' ? event.message.id : '',
       excludeMessageId: event.message.id, beforeTimestampMs: event.timestamp }));
     if (!result.ok) {
       if (result.errorType === 'ai_required_evidence_failed') return getBotTextRequiredEvidenceError_();

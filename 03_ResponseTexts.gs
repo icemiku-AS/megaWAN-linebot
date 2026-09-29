@@ -12,11 +12,22 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.16.0 Provider Architecture Foundation';
-const BOT_CURRENT_VERSION_DATE = '2026-09-26';
+const BOT_CURRENT_VERSION = 'v1.16.1 Text Quote & Persona Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-09-29';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.16.1 Text Quote & Persona Edition',
+    date: '2026-09-29',
+    summary: '理解使用者文字引用與說話者，讓小浣自然聊天、嚴謹查資料。',
+    changes: [
+      '同聊天室精確查找引用原文，短期脈絡區分說話者；群組未觸發時只記錄允許的文字關係。',
+      '引用是資料，操作依當前要求；保留圖片引用，未解析或媒體目標 ID 不持久化。',
+      '節目背景與專用 task 分開，聊天不固定推銷節目；正式新聞、週編輯台與節目功能保留。',
+      'ConversationLog 補 QuotedMessageId／QuoteStatus；DeepSeek、HIGH 與主要預算不變。'
+    ]
+  },
   {
     version: 'v1.16.0 Provider Architecture Foundation',
     date: '2026-09-26',

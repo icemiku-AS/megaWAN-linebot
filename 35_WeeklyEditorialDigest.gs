@@ -282,13 +282,15 @@ function prepareWeeklyEditorialConversationPayload_(rawItems, identifiedNewsItem
     if (isWeeklyEditorialConversationNoise_(originalText, textWithoutUrls, mode)) continue;
     if (isWeeklyEditorialNewsTitleOnly_(textWithoutUrls, newsTitleMap)) continue;
 
-    const dedupKey = normalizeWeeklyEditorialConversationDedupKey_(textWithoutUrls);
-    if (!dedupKey || seenTextMap[dedupKey]) continue;
+    const normalizedText = normalizeWeeklyEditorialConversationDedupKey_(textWithoutUrls);
+    const dedupKey = JSON.stringify([item.userId || 'unknown_row_' + i, item.quotedMessageId || '', normalizedText]);
+    if (!normalizedText || seenTextMap[dedupKey]) continue;
     seenTextMap[dedupKey] = true;
 
     filteredNewestFirst.push({
       timestamp: item.timestamp,
       userId: String(item.userId || ''),
+      messageId: item.messageId, quotedMessageId: item.quotedMessageId, quoteStatus: item.quoteStatus,
       text: truncateWeeklyEditorialText_(textWithoutUrls, MAX_WEEKLY_EDITORIAL_CONVERSATION_ITEM_LENGTH)
     });
   }
@@ -306,16 +308,23 @@ function prepareWeeklyEditorialConversationPayload_(rawItems, identifiedNewsItem
   const selectedChronological = selectedNewestFirst.reverse();
   const userAliasMap = {};
   let nextAliasNumber = 1;
+  const sourceRefs = Object.create(null);
+  selectedChronological.forEach(function(item, index) {
+    if (isExactLineMessageId_(item.messageId)) sourceRefs[item.messageId] = Object.prototype.hasOwnProperty.call(sourceRefs, item.messageId) ? '' : 'S' + (index + 1);
+  });
 
   return selectedChronological.map(function(item) {
-    const userKey = item.userId || '__anonymous__';
-    if (!userAliasMap[userKey]) {
+    const userKey = item.userId;
+    if (userKey && !userAliasMap[userKey]) {
       userAliasMap[userKey] = 'U' + ('0' + nextAliasNumber).slice(-2);
       nextAliasNumber++;
     }
     return {
       timestamp: formatWeeklyEditorialDate_(item.timestamp, true),
-      userAlias: userAliasMap[userKey],
+      userAlias: userKey ? userAliasMap[userKey] : '未知作者',
+      sourceRef: isExactLineMessageId_(item.messageId) ? sourceRefs[item.messageId] || '' : '',
+      quoteStatus: TEXT_QUOTE_STATUSES.indexOf(item.quoteStatus) >= 0 ? item.quoteStatus : 'unknown',
+      quotedSourceRef: item.quoteStatus === 'text_found' ? (isExactLineMessageId_(item.quotedMessageId) && sourceRefs[item.quotedMessageId]) || '本次素材未包含可信引用原文' : '',
       text: item.text
     };
   });

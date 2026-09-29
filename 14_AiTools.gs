@@ -130,6 +130,8 @@ function runAiReadOnlyTool_(call, trustedContext) {
   const cutoff = Date.now() - (args.days || 7) * 86400000;
   const query = String(args.query || '').toLowerCase();
   const sources = [];
+  const speaker = trustedContext.speakerForUser || createConversationSpeakerMap_();
+  trustedContext.speakerForUser = speaker;
   try {
     let data;
     switch (call.name) {
@@ -157,6 +159,11 @@ function runAiReadOnlyTool_(call, trustedContext) {
           if (!text.trim() || (query && text.toLowerCase().indexOf(query) < 0)) continue;
           const record = conversation ? {
             role: row.Role, provenance: row.Role === 'derived' ? 'image_derived' : 'user_text',
+            speaker: row.Role === 'derived' ? '小浣的圖片辨識' : speaker(row.UserId),
+            sharedBy: row.Role === 'derived' ? speaker(row.UserId) : '',
+            messageRef: row.Role === 'user' && trustedContext.messageReference ? trustedContext.messageReference(row.MessageId) : '',
+            quoteStatus: TEXT_QUOTE_STATUSES.indexOf(row.QuoteStatus) >= 0 ? row.QuoteStatus : 'unknown',
+            quotedRef: row.Role === 'user' && row.QuoteStatus === 'text_found' && trustedContext.messageReference ? trustedContext.messageReference(row.QuotedMessageId) : '',
             timestamp: new Date(time).toISOString(),
             text: aiToolText_(text.slice(Math.max(0, query ? text.toLowerCase().indexOf(query) - 160 : 0)), 800)
           } : news ? {
@@ -165,6 +172,9 @@ function runAiReadOnlyTool_(call, trustedContext) {
             url: typeof row.Url === 'string' && row.Url.length <= 2048 && isSafePublicUrl(row.Url) ? row.Url : '',
             timestamp: new Date(time).toISOString()
           } : { text: aiToolText_(row.HighlightText, 1200), tags: aiToolText_(row.Tags, 160), timestamp: new Date(time).toISOString() };
+          if (conversation && row.Role === 'user' && findMatchingConversationHistory_(trustedContext.contextHistory, row.MessageId, row.UserId, text, false)) {
+            record.text = ''; record.inShortTermHistory = true;
+          }
           // 在收集來源前確認這筆 evidence 確實會送給模型。
           if (JSON.stringify(records.concat([record])).length > AI_TOOL_MAX_RESULT_CHARS - 300) break;
           records.push(record);
@@ -220,7 +230,7 @@ function readAiScopedSheetRows_(sheetName, conversationId, maxRows) {
     const record = {};
     // 僅使用既有欄名，沒有模型可指定的 Sheet、range 或 column。
     ['CreatedAt', 'Status', 'Title', 'Brief', 'Outline', 'StoryKey', 'Category', 'Url', 'HighlightText', 'Tags',
-      'Timestamp', 'Role', 'Mode', 'MessageId', 'Text'].forEach(function(key) {
+      'Timestamp', 'Role', 'Mode', 'MessageId', 'Text', 'UserId', 'QuotedMessageId', 'QuoteStatus'].forEach(function(key) {
       record[key] = getRowValueByHeader_(row, headers, key);
     });
     return record;

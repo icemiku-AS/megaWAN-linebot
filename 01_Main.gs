@@ -158,9 +158,19 @@ function handleLineEvent(event, webhookStartedAtMs) {
 
   const commandInfo = parseCommand(userText);
   const quotedMessageId = event.message.quotedMessageId;
+  const quoteLookup = createTextQuoteLookup_(conversationId, aiExecutionContext, event.timestamp);
+  const textQuote = quotedMessageId === undefined ? { status: 'none' }
+    : quotedMessageId === event.message.id ? { status: 'failed', reason: 'self_cycle' } : quoteLookup(quotedMessageId);
+  aiExecutionContext.conversationContext = {
+    currentUserId: event.source && event.source.userId,
+    currentMessageId: isExactLineMessageId_(event.message.id) ? event.message.id : '',
+    textQuote: textQuote, quoteLookup: quoteLookup
+  };
+  // 可信文字先走文字路徑；包括誤用舊「看圖」指令的文字引用，也不下載它。
+  if (textQuote.status === 'text_found' && commandInfo.mode === 'image_analysis') commandInfo.mode = 'chat';
   // LINE quote 不附原訊息型別：私訊自然文字可探測圖片；群組只有明確 #小浣 才探測，維持安靜原則。
   // 明確的其他 # 指令仍照原功能執行；沒有 quotedMessageId 就絕不猜上一張圖片。
-  const isNaturalQuotedImageRequest = commandInfo.mode === 'chat' && !!quotedMessageId &&
+  const isNaturalQuotedImageRequest = textQuote.status !== 'text_found' && commandInfo.mode === 'chat' && !!quotedMessageId &&
     !/^#小浣\s+(?:版本(?:紀錄)?|reset)$/.test(userText) && (
     sourceType === 'user'
       ? (!hasTriggerPrefix(userText) || userText.startsWith('#小浣'))
@@ -177,8 +187,9 @@ function handleLineEvent(event, webhookStartedAtMs) {
     event: event,
     conversationId: conversationId,
     role: 'user',
-    text: userText,
-    mode: getUserLogMode(userText)
+    text: isQuotedImageRequest ? redactAiMediaText_(event.message.text) : String(event.message.text || ''),
+    mode: getUserLogMode(userText),
+    textQuote: textQuote
   });
 
   // ======================================================
@@ -190,7 +201,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
     const enqueueResult = isQuotedImageRequest || isResearchUrlRequest ? null
       : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
     return getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
-      (isQuotedImageRequest ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' :
+      (isQuotedImageRequest ? (commandInfo.mode === 'image_analysis' ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' : '\n\n這則引用尚未處理，請重新引用再問一次。') :
         isResearchUrlRequest ? '\n\n這個網址問題尚未研究，請再問一次。' : '');
   });
 
