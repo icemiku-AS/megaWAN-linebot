@@ -466,7 +466,8 @@ function formatConversationItemsText_(items, speakerForUser) {
     }
   });
   return items.map(function(item, index) {
-    return (index + 1) + '. ' + JSON.stringify({ speaker: item.role === 'assistant' ? '小浣' : speaker(item.userId),
+    const speakerName = item.role === 'assistant' ? '小浣' : speaker(item.userId);
+    return (index + 1) + '. ' + JSON.stringify({ speaker: speakerName, speakerIdentityKnown: speakerName !== '未知作者',
       role: item.role, mode: item.mode, sourceRef: item.role === 'user' && isExactLineMessageId_(item.messageId) ? refs[item.messageId] || '' : '',
       quoteStatus: TEXT_QUOTE_STATUSES.indexOf(item.quoteStatus) >= 0 ? item.quoteStatus : 'unknown',
       quotedSourceRef: item.quoteStatus === 'text_found' ? (isExactLineMessageId_(item.quotedMessageId) && refs[item.quotedMessageId]) || '本次素材未包含可信引用原文' : '', text: item.text });

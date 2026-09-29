@@ -2,7 +2,7 @@
 
 住在群組裡的浣熊夥伴：陪群友聊天、查資料，也協助 Podcast「現正熱潮中」整理新聞與節目素材。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-本文件描述 **v1.16.1 Text Quote & Persona Edition** 的本機實作，基準 main / v1.16.0 / `f37636b` 已合併；工作分支 `feature/v1161-text-quote-persona` 尚未合併至 main 或部署 GAS，提交／推送狀態以實際 Git refs 為準。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。實際 GAS 部署由維護者確認；詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+本文件描述 **v1.16.1 Text Quote & Persona Edition** 的版本契約。開發於 `feature/v1161-text-quote-persona`，以 main / v1.16.0 / `f37636b` 為開發基準；實際 Git 提交、推送與 merge 狀態以 repository refs 為準，GAS production deployment 與驗收由維護者另外確認。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
@@ -36,6 +36,8 @@
 查詢限整張 ConversationLog 尾端 500 列，直接原文最多 2,000 字元，可補一層已記錄的上游文字，所有引用資料合計最多 6,000 字元。找不到、資料讀取失敗與不支援會區分，不能猜最近一句。原文仍在範圍且 ID 完整的舊文字可引用；不還原未記錄的歷史關係或小浣出站訊息。群組未觸發時只記錄已確認的文字關係，不增加 AI／LINE 回覆。
 
 引用中的搜尋或清理指令不等於你現在的要求。原文與當前問題分開；未解析與圖片引用不保存目標 ID，既有圖片路徑仍可使用。`#reset` 清短期脈絡；`#清空紀錄 確認` 刪目前聊天室紀錄並清短期脈絡；不新增引用快取。
+
+若有待交付的舊結果，小浣會先交付並提醒這次已觸發的文字引用問題尚未處理，請重新引用提問；不趁這次交付額外研究或收件。群組未觸發的普通 reply 保持安靜，待回覆保留至可交付時；普通網址仍照原路徑靜默收件。
 
 ### 圖片
 
@@ -123,6 +125,8 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。
 5. 部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。具體同步檔案與 manual smoke checklist 見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
+必要 production smoke gate：真實 LINE webhook 的 MessageId 與已確認文字 QuotedMessageId，經 writer 寫入及 `SpreadsheetApp getValues()` 回讀後，必須仍為 string 且與原始 ID 完全相等。Mock 不能代替這項實測；目前未執行 live 驗證，完整檢查式見 CURRENT_VERSION。
+
 本機檢查：`node tests/v1140_smoke.cjs`。這只是既有開發 smoke test，使用 Node 內建模組，沒有新增 runtime dependency。測試不會呼叫真實 GAS／LINE／DeepSeek；目前結果及 live 限制見 CURRENT_VERSION。
 
 修改規則見 [AGENTS.md](AGENTS.md)：先看現行 caller 與契約、在非 main 工作分支修改、檢查 diff，發布與 GAS 同步由維護者處理。
@@ -144,4 +148,4 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 | v1.14 | DeepSeek Flash 圖片、自然引用、Search transport 校正、SSRF 與 Pending Reply 修正 |
 | v1.15 | 能力路由、JSON Schema、只讀資料工具、圖片交叉研究、圖片語意記憶與 context 成本整理 |
 | v1.16 | Provider Architecture Foundation：registry dispatch、model reasoning policy、統一 adapter 契約、secret 與 metadata hardening；未接入 Luna／OpenAI |
-| v1.16.1 | 使用者文字引用、作者脈絡、跨作者去重修正與人格／task 分層；ConversationLog 補兩欄，尚未部署 |
+| v1.16.1 | 使用者文字引用、作者脈絡、跨作者去重修正與人格／task 分層；ConversationLog 補兩欄，部署需另行驗收 |

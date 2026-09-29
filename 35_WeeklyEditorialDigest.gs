@@ -322,6 +322,7 @@ function prepareWeeklyEditorialConversationPayload_(rawItems, identifiedNewsItem
     return {
       timestamp: formatWeeklyEditorialDate_(item.timestamp, true),
       userAlias: userKey ? userAliasMap[userKey] : '未知作者',
+      speakerIdentityKnown: !!userKey,
       sourceRef: isExactLineMessageId_(item.messageId) ? sourceRefs[item.messageId] || '' : '',
       quoteStatus: TEXT_QUOTE_STATUSES.indexOf(item.quoteStatus) >= 0 ? item.quoteStatus : 'unknown',
       quotedSourceRef: item.quoteStatus === 'text_found' ? (isExactLineMessageId_(item.quotedMessageId) && sourceRefs[item.quotedMessageId]) || '本次素材未包含可信引用原文' : '',

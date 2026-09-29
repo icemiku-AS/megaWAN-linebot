@@ -1,4 +1,13 @@
 2026-09-29
+v1.16.1 review fix（本機修改，未提交／部署）
+- 以 feature/v1161-text-quote-persona / 4a5aa8ad7e186370f795b6ad6d2a46a197c8befe 為基準；main 仍為 f37636b。本段記錄 review 當時狀態，實際 merge／部署分別以 Git refs 與維護者驗收為準。
+- Pending Reply 對已觸發的可信文字引用追加尚未處理提醒，不增加 AI／Reader／Queue；交付前先尊重群組 trigger，未觸發訊息保持安靜並保留 pending，普通網址仍靜默收件。acknowledge-after-send 不變。
+- 週編輯台與近期對話／封存素材帶 speakerIdentityKnown；未知作者既不能推定同一人，也不能推定不同人。只改輸入 metadata 與證據規則，不改輸出 schema／validator 或暴露 UserId。
+- news_memory_bridge 使用 factual／evidence Prompt，不帶完整浣熊人格；空字串／過去脈絡最多 3 點、HIGH、token／timeout、故事線與 fallback 保持不變。
+- README／CURRENT_VERSION 改為 merge-neutral，保留真實 LINE 長 MessageId／QuotedMessageId 寫入後由 getValues() 驗證 string 與逐字相等的 production smoke gate；未做 live GAS／Sheet／LINE／provider 測試。
+- 本機基線 224 checks 實跑通過；追加 8 項後 232 checks 通過，23 GAS sources／441 unique functions。原 22 項 v1.16.1 回歸保留；本輪只改 4 個 runtime 檔，不新增 Sheet schema／migration、cache、模型呼叫、Queue 或 Trigger。
+
+2026-09-29
 v1.16.1 Text Quote & Persona Edition（功能分支交付，尚未合併／部署）
 - 以已合併的 main / v1.16.0 / f37636be695ad6d79465d4c6c6de51432d0cf74b 為基準，在 feature/v1161-text-quote-persona 實作；下方舊版段落保留歷史當時狀態，不能作為最新 Git refs／GAS 部署證明。
 - ConversationLog 追加 QuotedMessageId／QuoteStatus，以同聊天室、精確文字 ID、Role=user 查找直接引用；可補一層已記錄上游。尾端 500 列、2,000／1,000 字元與 6,000 字元引用 context 上限，共用 webhook deadline；失敗／未找到／不支援分開，不猜最近一句。

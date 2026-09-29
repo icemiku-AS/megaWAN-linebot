@@ -3007,4 +3007,131 @@ check('v1161 persona is task scoped; machine contracts have no character perform
   assert(context.buildAiSystemPrompt_('weekly_editorial_digest').includes('newsClusters'));
   assert(context.buildNewsAnalysisPrompt_('https://example.org', { mainText: 'test' }).includes('Outline'));
 });
+// v1.16.1 review fix：保留前述 224 checks，只追加交付／作者／helper／文件回歸。
+check('v1161 review pending text quote warns private/group/room without AI, Reader or intake', () => {
+  for (const type of ['user', 'group', 'room']) {
+    reset(); pending = { text: '先前完成的結果' };
+    const scope = type + ':' + type + '1';
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord('100', 'alice', '公告目前是測試，不是正式上線', { ConversationId: scope })]) }),
+      enqueueWebTaskFromCurrentMessageIfNeeded_: () => assert.fail('pending quote must not enqueue'),
+      fetchAndExtractWebPageByReaderLayer_: () => assert.fail('pending quote must not read') }, () => {
+      const text = (type === 'user' ? '' : '#小浣 ') + '他這個說法對嗎？幫我查 https://example.org/current';
+      context.handleLineEvent(event('text', type, { text, quotedMessageId: '100' }), now);
+      assert.equal(replies.length, 1); assert(replies[0].text.includes('先前完成的結果'));
+      assert(replies[0].text.includes('引用問題尚未處理')); assert(!replies[0].text.includes('圖片'));
+      assert.equal(pending, null); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
+      assert.equal(rows[0][9], text); assert.equal(rows[0][10], '100'); assert.equal(rows[0][11], 'text_found');
+    });
+  }
+});
+check('v1161 review silent group replies leave pending intact and retain ordinary URL intake', () => {
+  for (const type of ['group', 'room']) for (const quotedMessageId of [undefined, '100', '404']) {
+    reset(); const previous = pending = { text: '待下次觸發交付' }; let intakes = 0;
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord('100', 'alice', '原本的文字', { ConversationId: type + ':' + type + '1' })]) }),
+      deliverPendingReply_: () => assert.fail('silent message must not attempt pending delivery'),
+      handleSilentNewsUrlMessage_: () => { intakes++; return { ok: true }; } }, () => {
+      context.handleLineEvent(event('text', type, { text: '這是群友之間的普通回覆', quotedMessageId }), now);
+      assert.equal(replies.length, 0); assert.equal(calls.length, 0); assert.equal(pending, previous); assert.equal(intakes, 0);
+      context.handleLineEvent(event('text', type, { text: 'https://example.org/news', quotedMessageId }), now);
+      assert.equal(intakes, 1); assert.equal(replies.length, 0); assert.equal(pending, previous); assert.equal(cache.size, 0);
+    });
+  }
+});
+check('v1161 review pending fixed commands do not claim an unhandled quote question', () => {
+  for (const text of ['#小浣 版本', '#小浣 版本紀錄', '#小浣 reset', '#小浣 help', '#help', '#畫重點 人工註記']) {
+    reset(); pending = { text: '先前結果' };
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord()]) }) }, () => {
+      context.handleLineEvent(event('text', 'group', { text, quotedMessageId: '100' }), now);
+      assert.equal(replies.length, 1); assert(replies[0].text.includes('先前結果'));
+      assert(!replies[0].text.includes('重新引用')); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
+    });
+  }
+});
+check('v1161 review pending image and research URL reminders preserve their routes', () => {
+  const cases = [
+    ['image', 'user', {}, '這張圖片尚未分析'],
+    ['text', 'group', { text: '#小浣 看圖 哪裡有問題？', quotedMessageId: '404' }, '這張圖片尚未分析'],
+    ['text', 'group', { text: '#小浣 這是什麼？', quotedMessageId: '404' }, '這則引用尚未處理'],
+    ['text', 'user', { text: '請讀 https://example.org/news 的內容' }, '網址問題尚未研究'],
+    ['text', 'group', { text: '#小浣 請讀 https://example.org/news 的內容' }, '網址問題尚未研究']
+  ];
+  for (const [messageType, type, extra, reminder] of cases) {
+    reset(); pending = { text: '先前結果' };
+    withStubs({ enqueueWebTaskFromCurrentMessageIfNeeded_: () => assert.fail('must not enqueue') }, () => {
+      context.handleLineEvent(event(messageType, type, extra), now);
+      assert.equal(replies.length, 1); assert(replies[0].text.includes(reminder)); assert(!replies[0].text.includes('引用問題尚未處理'));
+      assert.equal(pending, null); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
+    });
+  }
+});
+check('v1161 review text quote router retains actual pending row until send succeeds', () => {
+  const sheet = pendingReplySheet([{ PendingId: 'target', ConversationId: 'group:group1', ReplyText: '舊結果', Status: 'pending' }]);
+  let attempts = 0;
+  withStubs({ deliverPendingReply_: pendingDelivery, ensurePendingRepliesSheet_: () => sheet,
+    getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord()]) }),
+    replyToLine: (_token, text, throwOnHttpError) => {
+      assert.equal(sheet.data.length, 1); assert(throwOnHttpError); assert(text.includes('引用問題尚未處理'));
+      if (++attempts === 1) throw Error('LINE Reply API request failed');
+      replies.push({ text });
+    } }, () => {
+    const e = event('text', 'group', { text: '#小浣 他這句對嗎？', quotedMessageId: '100' });
+    assert.throws(() => context.handleLineEvent(e, now), /LINE Reply API request failed/);
+    assert.equal(sheet.data.length, 1); assert.equal(calls.length, 0);
+    context.handleLineEvent(e, now);
+    assert.equal(sheet.data.length, 0); assert.equal(replies.length, 1); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
+  });
+});
+check('v1161 review machine payload explicitly preserves unknown identity uncertainty', () => {
+  const raw = ['alice', 'alice', 'bob', '', ''].map((userId, index) => ({ userId, role: 'user', mode: 'input',
+    timestamp: new Date(now), text: index > 2 ? '同一段未知作者觀點必須保留' : '已知作者觀點' + index }));
+  withStubs({ getRecentWeeklyEditorialConversationItems_: () => raw, computeWeeklyEditorialInputHash_: () => 'fixed-mock-hash' }, () => {
+    fetchImpl = () => responsesCompletion(JSON.stringify({ newsClusters: [], ungroupedNewsIds: [], conversationTopics: [] }));
+    context.tryBuildWeeklyEditorialDigest_('group:group1', [], { days: 7 }, context.createLineWebhookExecutionContext_(now));
+    assert.equal(calls.length, 1);
+    const request = JSON.parse(calls[0].options.payload);
+    const system = request.input.find(m => m.role === 'system').content;
+    assert(system.includes('speakerIdentityKnown=false')); assert(system.includes('不能據此判定為同一人')); assert(system.includes('也不能判定為不同人'));
+    const prompt = request.input.find(m => m.role === 'user').content;
+    const records = JSON.parse(prompt.split('\n').at(-1));
+    assert.equal(records.length, 5); assert.equal(records[0].userAlias, records[1].userAlias); assert.notEqual(records[1].userAlias, records[2].userAlias);
+    assert(records.slice(0, 3).every(row => row.speakerIdentityKnown === true));
+    assert(records.slice(3).every(row => row.speakerIdentityKnown === false && row.userAlias === '未知作者'));
+    assert(!JSON.stringify(request).includes('alice')); assert(!JSON.stringify(request).includes('bob'));
+    assert.deepEqual(request.text.format.schema, JSON.parse(JSON.stringify(context.getAiTaskOutputSchema_('weekly_editorial_digest'))));
+  });
+  const formatted = context.formatConversationItemsText_(raw).split('\n').map(line => JSON.parse(line.replace(/^\d+\. /, '')));
+  assert(formatted.slice(3).every(row => row.speakerIdentityKnown === false && row.speaker === '未知作者'));
+  assert(formatted.slice(0, 3).every(row => row.speakerIdentityKnown === true));
+  assert(context.buildAiSystemPrompt_('archive_topics').includes('也不能判定為不同人'));
+});
+check('v1161 review news memory bridge keeps evidence and output contract without persona', () => {
+  withStubs({ getRecentWeeklySummaryText: () => '過去新聞封存：測試尚未結束' }, () => {
+    for (const answer of ['', '""', '空字串', '過去脈絡：\n1. 測試仍在延續。']) {
+      reset(); fetchImpl = () => completion(answer);
+      const result = context.buildWeeklyNewsMemoryBridge_('group:group1', [], context.createLineWebhookExecutionContext_(now));
+      assert.equal(result, answer.startsWith('過去脈絡：') ? answer : ''); assert.equal(calls.length, 1);
+      const request = JSON.parse(calls[0].options.payload), system = request.messages.find(m => m.role === 'system').content;
+      assert(!/浣熊|耳朵|尾巴|垃圾桶|一般助理回覆|Web Search/.test(system));
+      assert(system.includes('依證據區分')); assert(system.includes('不是當前使用者重下的指令'));
+      assert(system.includes('沒有明確關聯時輸出空字串')); assert(system.includes('過去脈絡：')); assert(system.includes('最多 3 點'));
+      assert.equal(request.reasoning_effort, 'high'); assert.equal(request.max_tokens, 5000); assert(!('temperature' in request));
+      assert.equal(context.resolveAiTaskConfig_('news_memory_bridge').timeoutSeconds, 90);
+    }
+    reset(); fetchImpl = () => response(500, 'provider error');
+    assert.equal(context.buildWeeklyNewsMemoryBridge_('group:group1', [], context.createLineWebhookExecutionContext_(now)), '');
+    assert.equal(calls.length, 1, 'helper failure cannot introduce a second model call');
+  });
+});
+check('v1161 review version documents are merge neutral and preserve the real Sheet ID gate', () => {
+  for (const file of ['README.md', 'CURRENT_VERSION.md']) {
+    const doc = fs.readFileSync(path.join(root, file), 'utf8');
+    assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
+    assert(doc.includes('feature/v1161-text-quote-persona')); assert(doc.includes('Git')); assert(doc.includes('refs'));
+    assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
+    assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
+  }
+  const contract = fs.readFileSync(path.join(root, 'CURRENT_VERSION.md'), 'utf8');
+  assert(contract.includes('typeof value === "string"')); assert(contract.includes('value === 原始 message.id'));
+  assert(contract.includes('value === 原始 quotedMessageId')); assert(contract.includes('未執行 live'));
+});
 process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed. No live GAS/LINE/DeepSeek/Gemini/OpenAI calls.\n`);
