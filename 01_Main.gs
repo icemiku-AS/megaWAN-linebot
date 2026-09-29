@@ -198,8 +198,8 @@ function handleLineEvent(event, webhookStartedAtMs) {
   // Pending Reply 優先交付
   // ======================================================
 
-  // 群組未觸發時不交付、也不 consume 舊回覆；下方普通網址仍照原路徑靜默收件。
-  const pendingDelivery = isGroupLike && !hasTriggerPrefix(userText) ? null : deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
+  // 沿用任何文字都可交付 pending 的例外；是否追加引用提醒另由當前 request 判斷。
+  const pendingDelivery = deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
     // 引用／網址研究不趁交付舊結果時轉成新聞收件；保留 Pending Reply 優先交付。
     const enqueueResult = isTextQuoteRequest || isQuotedImageRequest || isResearchUrlRequest ? null
       : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);

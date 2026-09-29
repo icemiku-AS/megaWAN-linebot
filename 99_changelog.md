@@ -1,7 +1,13 @@
 2026-09-29
-v1.16.1 review fix（本機修改，未提交／部署）
+v1.16.1 PendingReplies 相容性修正（功能分支開發紀錄，部署另行確認）
+- 基於 b90b703，移除群組無 trigger 時跳過 Pending 交付的 gate，恢復 v1.16.0「任何文字可交付」契約；普通 reply 不追加重新引用提醒，真正引用提問的提醒與 intake 排除保持不變，普通網址仍靜默收件。
+- runtime 僅修改 01_Main.gs 的交付呼叫與註解；lock、transport、acknowledge-after-send、引用／speaker／Prompt、provider 與 budgets 不變。
+- 修改前 232 checks 通過；替換錯誤契約測試並擴充 group／room 的交付、網址入隊及失敗重試後，233 checks 通過，23 GAS sources／441 unique functions。未做 live GAS／Sheet／LINE／provider 驗證。
+
+2026-09-29
+v1.16.1 review fix（功能分支開發紀錄，部署另行確認）
 - 以 feature/v1161-text-quote-persona / 4a5aa8ad7e186370f795b6ad6d2a46a197c8befe 為基準；main 仍為 f37636b。本段記錄 review 當時狀態，實際 merge／部署分別以 Git refs 與維護者驗收為準。
-- Pending Reply 對已觸發的可信文字引用追加尚未處理提醒，不增加 AI／Reader／Queue；交付前先尊重群組 trigger，未觸發訊息保持安靜並保留 pending，普通網址仍靜默收件。acknowledge-after-send 不變。
+- Pending Reply 對已觸發的可信文字引用追加尚未處理提醒，不增加 AI／Reader／Queue。最終契約仍是任何文字可交付舊結果，普通群組 reply 不追加引用提醒，普通網址仍靜默收件；初稿的交付 gate 已由後續相容性修正移除。acknowledge-after-send 不變。
 - 週編輯台與近期對話／封存素材帶 speakerIdentityKnown；未知作者既不能推定同一人，也不能推定不同人。只改輸入 metadata 與證據規則，不改輸出 schema／validator 或暴露 UserId。
 - news_memory_bridge 使用 factual／evidence Prompt，不帶完整浣熊人格；空字串／過去脈絡最多 3 點、HIGH、token／timeout、故事線與 fallback 保持不變。
 - README／CURRENT_VERSION 改為 merge-neutral，保留真實 LINE 長 MessageId／QuotedMessageId 寫入後由 getValues() 驗證 string 與逐字相等的 production smoke gate；未做 live GAS／Sheet／LINE／provider 測試。

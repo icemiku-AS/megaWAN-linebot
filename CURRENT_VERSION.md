@@ -19,7 +19,7 @@ Sheet schema：**ConversationLog 追加 `QuotedMessageId`、`QuoteStatus`**。�
 - LINE 文字事件先用可信 conversationId、quotedMessageId 查 ConversationLog，再記錄目前發言；原 Text 不拼入引用或作者前綴。命中條件是同聊天室、精確數字字串 ID、`Role=user`、有效的過去／當時 timestamp 與文字，排除 image_input／image_semantic。assistant log 的 MessageId 是觸發文字 ID，不是小浣出站 ID，永遠不作引用原文。完全一致的重複 user rows 可命中，作者／內容／時間／引用 metadata 衝突則失敗；不承諾 webhook 全域 exactly-once。
 - `QuoteStatus`：`none` 無引用；`text_found` 取得可信原文；`not_found` 在視窗內未找到；`failed` ID、資料、讀取或期限異常；`unsupported` 命中本版不支援的使用者輸入。舊列空白在 context 表示 `unknown`，不代表當時沒有引用。只有 `text_found` 寫目標 ID；其餘狀態不保存未解析或媒體 ID。此欄記錄文字 lookup 當時結果，不把失敗反推為圖片。
 - 新 MessageId／QuotedMessageId 用 Sheets 的前置單引號 literal escape 寫入，getValues 應讀回原始字串；沒有先數值化再改格式。lookup 不接受 Number 或科學記號，已失真的舊 ID 不修復。圖片事件的所有 log（含 assistant）與 derived 的 MessageId 留空，修補先前 assistant image reply 可能沿用觸發圖片 ID 的缺口；不清洗既有列。
-- 已確認文字直接走文字路徑，即使當前用了舊「看圖」指令也不下載文字 ID。其他引用仍未知，原有私訊／群組 #小浣 的圖片探測、JPEG/PNG、安全下載及錯誤語意保留。未觸發群組文字可留下已確認引用，但不增加 AI、下載或回覆。PendingReplies 遇到未觸發群組訊息保留待交付，普通網址仍靜默收件；已觸發的文字引用問題只先交付舊結果，附「引用問題尚未處理」提醒，不再呼叫 AI／Reader 或收件。傳送成功後才 acknowledge 的契約不變。
+- 已確認文字直接走文字路徑，即使當前用了舊「看圖」指令也不下載文字 ID。其他引用仍未知，原有私訊／群組 #小浣 的圖片探測、JPEG/PNG、安全下載及錯誤語意保留。未觸發群組文字可留下已確認引用，但不增加 AI、下載或一般 Bot 回答。Pending Reply 是既有交付例外：任何文字訊息均優先嘗試交付，普通群組 reply 不追加「重新引用」提醒，普通網址在交付時仍經原 helper 靜默收件；只有已觸發的文字引用問題才附「引用問題尚未處理」提醒，且不再呼叫 AI／Reader 或收件。傳送成功後才 acknowledge 的契約不變。
 - 每個 execution 的引用 lookup 惰性讀取一次尾端最多 **500 列**快照，所有聊天室共用這個列數視窗，再按 scope 過濾。直接引用 **2,000 字元**、最多一層已記錄上游 **1,000 字元**；六輪 history 至多回填六個直接引用，不遞迴，全部引用 JSON **6,000 字元**上限（escaping 超限會繼續裁切並標記）。直接查找不另設 30 天限制，原文仍在範圍且 ID 完整即可命中；既有 research 的 30 天／500 列限制不變，其讀取與引用快照分開計算。
 - Sheet 讀取前後檢查同一 webhook deadline，保留 8 秒回答餘裕，引用快照約 **2 秒軟上限**；GAS Sheet RPC 不能中途取消，超時結果丟棄為 failed。無引用且沒有 history 引用時不新增 Sheet 查詢。原文找到不代表外部事實已查證。
 - 六輪 history 只增加白名單作者／文字 messageId／quoteStatus／已確認 quotedMessageId，不保存引用 evidence 或媒體 ID。模型端統一轉匿名代稱，當前使用者、其他成員、小浣與未知作者分開；原 UserId 不放進模型文字。舊 cache、legacy caller 沒有作者時保守降級。ConversationLog tools 同時帶來源與作者；圖片摘要的分享者不等於摘要作者。
@@ -100,20 +100,22 @@ PTT 已驗證 article 的 HTTPS canonicalization、over18、結構驗證、metad
 
 若已同步 v1.16.1 基礎提交 `4a5aa8a`，本輪 review fix 只需追加同步 `01_Main.gs`、`05_Storage.gs`、`12_Prompts.gs`、`35_WeeklyEditorialDigest.gs`。本輪沒有新 Sheet 欄位或 migration；v1.16.0 升級的兩欄補齊要求仍適用。
 
+若已同步上一輪 review 提交 `b90b703`，最後一輪 Pending 相容性修正只需同步 `01_Main.gs`；其餘 runtime 不變，沒有新 schema 或 migration。
+
 1. 備份 Spreadsheet；同步同版 `.gs` 後執行 `setupLogSheet()` 補欄，檢查舊列數／內容、欄位位置與重複執行結果。沒有歷史回填，也不用新 Trigger／Property。
 2. 維護者建立 GAS version、更新既有 Web App deployment，保留 URL。部署版本與驗收由維護者另行確認，Git 合併不會自動部署。
 3. 測試聊天室讓甲貼文字、乙插話、丙引用甲加 `#小浣`；檢查回覆作者與目標正確，ConversationLog.Text 仍只有丙的新發言。接著自我引用、無 trigger 引用、下一輪不同成員追問。
 4. **Deployment / production smoke 必要 gate（未執行 live，mock 不代表通過）**：用真實 LINE webhook 的長 MessageId，走 `原始 LINE message.id → ConversationLog writer → SpreadsheetApp getValues()`，逐項確認 `typeof value === "string"` 與 `value === 原始 message.id`。已確認文字引用的 QuotedMessageId 同樣核對 `typeof value === "string"` 與 `value === 原始 quotedMessageId`。確認 assistant 同 ID 不成原文、跨聊天室不命中；文字引用不呼叫 LINE content endpoint，圖片引用照常且媒體目標 ID 不落新欄。
 5. 測試 missing quote／讀取失敗、引用內搜尋與清理字樣、`#reset`、二段 `#清空紀錄` 後再次引用；清理用測試聊天室執行。另測新聞收件、週編輯台故事線、required evidence 與 PendingReplies 交付。
-6. 建立測試 Pending Reply，分別以群組 `#小浣` 文字引用及私訊引用觸發，確認只交付一次舊結果並提示重新引用，無額外 AI／Search／Reader／Queue；未觸發群組 reply 必須安靜且保留 pending。再驗圖片／research URL 提示、傳送失敗重試與週編輯台未知作者語意。
+6. 建立測試 Pending Reply，分別以群組 `#小浣` 文字引用及私訊引用觸發，確認交付舊結果並提示重新引用，無額外 AI／Search／Reader／Queue；未觸發 group／room 的普通文字與 reply 也必須交付舊結果，但不追加引用提醒或一般 AI 回答。普通網址需同時照原路徑靜默收件。再驗圖片／research URL 提示、傳送失敗保留 pending 後重試與週編輯台未知作者語意。
 
 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`；`GEMINI_API_KEY` 非 active runtime 必需，也不需 `OPENAI_API_KEY`。Secret value 只放 GAS Script Properties，不放 source、fixture、文件範例、Sheet、console 或 metadata。既有 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與 Trigger 名稱不變。保留 PendingReplies acknowledge-after-send、LINE 同批 webhook 40 秒 absolute deadline 與原有 Reader／AI 餘裕檢查。
 
 ## 驗證與限制
 
-本機 `node tests/v1140_smoke.cjs`：**23 GAS sources、441 unique functions、232 checks 通過**。v1.16.0 基線 202，v1.16.1 基礎新增 22；本輪 review fix 修改前重新實跑 224 通過，再追加 8 個具名 checks，原 224 項不刪除或弱化。全程使用 Node 內建模組及既有 GAS／LINE／Sheet／provider mocks；不是新增 Node runtime。保留新聞收件／JSON business validators、週故事線、sidecar、群組 silence／限頻、required evidence、PendingReplies、Reader／PTT、provider registry／contract／deadline／usage 回歸。既有 writer mock 配合表頭寫入，dedup fixture 改以精確作者／ID 驗證，引用加 research 的 fixture 反映各一次 bounded read。
+本機 `node tests/v1140_smoke.cjs`：**23 GAS sources、441 unique functions、233 checks 通過**。v1.16.0 基線 202，v1.16.1 基礎新增 22，上一輪 review 新增 8；最後一輪修改前實跑 232 通過，將一項錯誤的「未觸發保留 pending」測試替換為兩項原交付契約測試，並擴充 transport 失敗重試覆蓋。原 22 項 v1.16.1 與其他有效 review checks 保留。全程使用 Node 內建模組及既有 GAS／LINE／Sheet／provider mocks；不是新增 Node runtime。保留新聞收件／JSON business validators、週故事線、sidecar、群組 silence／限頻、required evidence、PendingReplies、Reader／PTT、provider registry／contract／deadline／usage 回歸。既有 writer mock 配合表頭寫入，dedup fixture 改以精確作者／ID 驗證，引用加 research 的 fixture 反映各一次 bounded read。
 
-Review fix 新增：私訊／group／room 的 pending 文字引用、未觸發群組保留 pending 與靜默網址收件、固定指令不誤報、圖片／research URL 提示、router 傳送失敗保留 pending、實際 machine request 的未知身份 boolean、news memory bridge 的人格隔離／空值／錯誤 fallback，以及 merge-neutral 文件與 live ID gate assertions。
+Review fix 覆蓋：私訊／group／room 的 pending 文字引用；未觸發 group／room 的普通文字、可信文字引用及未知引用照常交付但無引用提醒；普通網址透過 enqueueWebTaskFromCurrentMessageIfNeeded_／handleSilentNewsUrlMessage_ 進新聞入隊入口；固定指令不誤報；圖片／research URL 提示；有無 trigger 的 router 傳送失敗保留 pending；實際 machine request 的未知身份 boolean；news memory bridge 的人格隔離／空值／錯誤 fallback；merge-neutral 文件與 live ID gate assertions。
 
 新增測試直接檢查模型 request、Sheet、cache 與副作用：插話後引用／自引／他引、群組與 room 靜默、assistant 同 ID 排除、舊列／未知作者／跨聊天室／失真 ID／重複與衝突／讀取失敗、補欄冪等與重排表頭、上游一層／掃描／長度／deadline、下一輪回填與跨作者去重、引用注入不改路由／required intent、圖片相容與媒體 ID 不持久化、reset／清理、素材與 history 作者一致、optional tool provenance、明確讀網址時引用補對象及 Prompt task 隔離。另以 `git diff --check` 檢查格式；原 provider／profile／schema／主要預算不變。
 

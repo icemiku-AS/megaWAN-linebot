@@ -3024,16 +3024,32 @@ check('v1161 review pending text quote warns private/group/room without AI, Read
     });
   }
 });
-check('v1161 review silent group replies leave pending intact and retain ordinary URL intake', () => {
+check('v1161 review ordinary group and room text delivers pending without quote reminders or AI', () => {
   for (const type of ['group', 'room']) for (const quotedMessageId of [undefined, '100', '404']) {
-    reset(); const previous = pending = { text: '待下次觸發交付' }; let intakes = 0;
+    reset(); pending = { text: '先前已完成的結果' };
     withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord('100', 'alice', '原本的文字', { ConversationId: type + ':' + type + '1' })]) }),
-      deliverPendingReply_: () => assert.fail('silent message must not attempt pending delivery'),
-      handleSilentNewsUrlMessage_: () => { intakes++; return { ok: true }; } }, () => {
+      handleSilentNewsUrlMessage_: () => assert.fail('ordinary text must not enqueue') }, () => {
       context.handleLineEvent(event('text', type, { text: '這是群友之間的普通回覆', quotedMessageId }), now);
-      assert.equal(replies.length, 0); assert.equal(calls.length, 0); assert.equal(pending, previous); assert.equal(intakes, 0);
+      assert.equal(replies.length, 1); assert(replies[0].text.includes('先前已完成的結果')); assert(!replies[0].text.includes('重新引用'));
+      assert.equal(pending, null); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
+      if (quotedMessageId === '100') assert.equal(rows[0][11], 'text_found');
+      context.handleLineEvent(event('text', type, { text: '沒有 pending 的普通回覆', quotedMessageId }), now);
+      assert.equal(replies.length, 1, 'ordinary chat itself remains silent without pending'); assert.equal(calls.length, 0);
+    });
+  }
+});
+check('v1161 review ordinary group and room URL delivers pending and still enters silent intake', () => {
+  for (const type of ['group', 'room']) for (const quotedMessageId of [undefined, '100', '404']) {
+    reset(); pending = { text: '先前已完成的結果' }; let intakes = 0;
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord('100', 'alice', '原本的文字', { ConversationId: type + ':' + type + '1' })]) }),
+      enqueueNewsUrlTasks: (e, scope, text) => {
+        assert.equal(e.source.type, type); assert.equal(scope, type + ':' + type + '1'); assert.equal(text, 'https://example.org/news');
+        intakes++; return { ok: true, urls: [text] };
+      } }, () => {
       context.handleLineEvent(event('text', type, { text: 'https://example.org/news', quotedMessageId }), now);
-      assert.equal(intakes, 1); assert.equal(replies.length, 0); assert.equal(pending, previous); assert.equal(cache.size, 0);
+      assert.equal(intakes, 1); assert.equal(replies.length, 1); assert.equal(pending, null);
+      assert(replies[0].text.includes('先前已完成的結果')); assert(replies[0].text.includes('新網址我也收到了'));
+      assert(!replies[0].text.includes('重新引用')); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
     });
   }
 });
@@ -3065,21 +3081,25 @@ check('v1161 review pending image and research URL reminders preserve their rout
   }
 });
 check('v1161 review text quote router retains actual pending row until send succeeds', () => {
-  const sheet = pendingReplySheet([{ PendingId: 'target', ConversationId: 'group:group1', ReplyText: '舊結果', Status: 'pending' }]);
-  let attempts = 0;
-  withStubs({ deliverPendingReply_: pendingDelivery, ensurePendingRepliesSheet_: () => sheet,
-    getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord()]) }),
-    replyToLine: (_token, text, throwOnHttpError) => {
-      assert.equal(sheet.data.length, 1); assert(throwOnHttpError); assert(text.includes('引用問題尚未處理'));
-      if (++attempts === 1) throw Error('LINE Reply API request failed');
-      replies.push({ text });
-    } }, () => {
-    const e = event('text', 'group', { text: '#小浣 他這句對嗎？', quotedMessageId: '100' });
-    assert.throws(() => context.handleLineEvent(e, now), /LINE Reply API request failed/);
-    assert.equal(sheet.data.length, 1); assert.equal(calls.length, 0);
-    context.handleLineEvent(e, now);
-    assert.equal(sheet.data.length, 0); assert.equal(replies.length, 1); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
-  });
+  for (const type of ['group', 'room']) for (const triggered of [false, true]) {
+    reset(); const scope = type + ':' + type + '1';
+    const sheet = pendingReplySheet([{ PendingId: 'target', ConversationId: scope, ReplyText: '舊結果', Status: 'pending' }]);
+    let attempts = 0;
+    withStubs({ deliverPendingReply_: pendingDelivery, ensurePendingRepliesSheet_: () => sheet,
+      getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord('100', 'alice', '原本的文字', { ConversationId: scope })]) }),
+      replyToLine: (_token, text, throwOnHttpError) => {
+        assert.equal(sheet.data.length, 1); assert(throwOnHttpError); assert(text.includes('舊結果'));
+        assert.equal(text.includes('引用問題尚未處理'), triggered); assert.equal(text.includes('重新引用'), triggered);
+        if (++attempts === 1) throw Error('LINE Reply API request failed');
+        replies.push({ text });
+      } }, () => {
+      const e = event('text', type, { text: triggered ? '#小浣 他這句對嗎？' : '我也覺得', quotedMessageId: '100' });
+      assert.throws(() => context.handleLineEvent(e, now), /LINE Reply API request failed/);
+      assert.equal(sheet.data.length, 1); assert.equal(calls.length, 0);
+      context.handleLineEvent(e, now);
+      assert.equal(sheet.data.length, 0); assert.equal(replies.length, 1); assert.equal(calls.length, 0); assert.equal(cache.size, 0);
+    });
+  }
 });
 check('v1161 review machine payload explicitly preserves unknown identity uncertainty', () => {
   const raw = ['alice', 'alice', 'bob', '', ''].map((userId, index) => ({ userId, role: 'user', mode: 'input',
