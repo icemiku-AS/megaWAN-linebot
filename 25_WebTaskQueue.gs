@@ -453,7 +453,8 @@ function processProgramTopicAnalysisTask_(task) {
     'program_topic_analysis',
     task.conversationId,
     task.userPrompt,
-    prompt
+    prompt,
+    { currentUserId: task.userId }
   ));
 }
 

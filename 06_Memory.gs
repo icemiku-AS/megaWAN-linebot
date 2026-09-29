@@ -31,14 +31,10 @@ function getConversationHistory(conversationId) {
       return [];
     }
 
-    return history.filter(function(message) {
-      return message &&
-             (message.role === 'user' || message.role === 'assistant') &&
-             typeof message.content === 'string';
-    });
+    return trimHistory(history);
 
   } catch (error) {
-    console.error('Parse history error:', error);
+    console.error('Parse history error');
     return [];
   }
 }
@@ -72,6 +68,17 @@ function trimHistory(history) {
            (message.role === 'user' || message.role === 'assistant') &&
            typeof message.content === 'string' &&
            message.content.trim() !== '';
+  }).map(function(message) {
+    const safe = { role: message.role, content: message.content };
+    if (message.role !== 'user') return safe;
+    // 白名單 metadata；引用 evidence、媒體 ID、provider state 不可混進 history。
+    if (typeof message.userId === 'string' && message.userId.length <= 128) safe.userId = message.userId;
+    if (message.provenance === 'user_text' && isExactLineMessageId_(message.messageId)) {
+      safe.messageId = message.messageId; safe.provenance = 'user_text';
+    }
+    if (TEXT_QUOTE_STATUSES.indexOf(message.quoteStatus) >= 0) safe.quoteStatus = message.quoteStatus;
+    if (safe.quoteStatus === 'text_found' && isExactLineMessageId_(message.quotedMessageId)) safe.quotedMessageId = message.quotedMessageId;
+    return safe;
   });
 
   const maxMessages = MAX_HISTORY_PAIRS * 2;
@@ -81,4 +88,15 @@ function trimHistory(history) {
   }
 
   return validHistory.slice(validHistory.length - maxMessages);
+}
+
+/** 同一次請求內共用匿名代稱；未知作者不具有相同身分，也不推定為當前提問者。 */
+function createConversationSpeakerMap_() {
+  const aliases = Object.create(null);
+  let count = 0;
+  return function(userId) {
+    if (typeof userId !== 'string' || !userId || userId.length > 128) return '未知作者';
+    if (!aliases[userId]) aliases[userId] = '成員' + (++count);
+    return aliases[userId];
+  };
 }

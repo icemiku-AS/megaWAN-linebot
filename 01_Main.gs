@@ -158,14 +158,26 @@ function handleLineEvent(event, webhookStartedAtMs) {
 
   const commandInfo = parseCommand(userText);
   const quotedMessageId = event.message.quotedMessageId;
+  const quoteLookup = createTextQuoteLookup_(conversationId, aiExecutionContext, event.timestamp);
+  const textQuote = quotedMessageId === undefined ? { status: 'none' }
+    : quotedMessageId === event.message.id ? { status: 'failed', reason: 'self_cycle' } : quoteLookup(quotedMessageId);
+  aiExecutionContext.conversationContext = {
+    currentUserId: event.source && event.source.userId,
+    currentMessageId: isExactLineMessageId_(event.message.id) ? event.message.id : '',
+    textQuote: textQuote, quoteLookup: quoteLookup
+  };
+  // 可信文字先走文字路徑；包括誤用舊「看圖」指令的文字引用，也不下載它。
+  if (textQuote.status === 'text_found' && commandInfo.mode === 'image_analysis') commandInfo.mode = 'chat';
   // LINE quote 不附原訊息型別：私訊自然文字可探測圖片；群組只有明確 #小浣 才探測，維持安靜原則。
   // 明確的其他 # 指令仍照原功能執行；沒有 quotedMessageId 就絕不猜上一張圖片。
-  const isNaturalQuotedImageRequest = commandInfo.mode === 'chat' && !!quotedMessageId &&
-    !/^#小浣\s+(?:版本(?:紀錄)?|reset)$/.test(userText) && (
+  const isNaturalQuoteRequest = commandInfo.mode === 'chat' && !!quotedMessageId &&
+    !/^#小浣\s+(?:版本(?:紀錄)?|reset)$/.test(userText) && !getHelpTextByCommand_(userText) && (
     sourceType === 'user'
       ? (!hasTriggerPrefix(userText) || userText.startsWith('#小浣'))
       : (isGroupLike && userText.startsWith('#小浣'))
   );
+  const isNaturalQuotedImageRequest = textQuote.status !== 'text_found' && isNaturalQuoteRequest;
+  const isTextQuoteRequest = textQuote.status === 'text_found' && isNaturalQuoteRequest;
   const isQuotedImageRequest = commandInfo.mode === 'image_analysis' || isNaturalQuotedImageRequest;
   // 只有可觸發回答的自然研究問題才跳過收件；群組非 trigger 網址仍保持原靜默收件。
   const isResearchUrlRequest = commandInfo.mode === 'chat' && (sourceType === 'user' || hasTriggerPrefix(userText)) &&
@@ -177,20 +189,23 @@ function handleLineEvent(event, webhookStartedAtMs) {
     event: event,
     conversationId: conversationId,
     role: 'user',
-    text: userText,
-    mode: getUserLogMode(userText)
+    text: isQuotedImageRequest ? redactAiMediaText_(event.message.text) : String(event.message.text || ''),
+    mode: getUserLogMode(userText),
+    textQuote: textQuote
   });
 
   // ======================================================
   // Pending Reply 優先交付
   // ======================================================
 
+  // 沿用任何文字都可交付 pending 的例外；是否追加引用提醒另由當前 request 判斷。
   const pendingDelivery = deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
-    // 圖片／網址研究不趁交付舊結果時轉成新聞收件；保留 Pending Reply 優先交付。
-    const enqueueResult = isQuotedImageRequest || isResearchUrlRequest ? null
+    // 引用／網址研究不趁交付舊結果時轉成新聞收件；保留 Pending Reply 優先交付。
+    const enqueueResult = isTextQuoteRequest || isQuotedImageRequest || isResearchUrlRequest ? null
       : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
     return getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
-      (isQuotedImageRequest ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' :
+      (isTextQuoteRequest ? '\n\n這則引用問題尚未處理，請重新引用再問一次。' :
+        isQuotedImageRequest ? (commandInfo.mode === 'image_analysis' ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' : '\n\n這則引用尚未處理，請重新引用再問一次。') :
         isResearchUrlRequest ? '\n\n這個網址問題尚未研究，請再問一次。' : '');
   });
 

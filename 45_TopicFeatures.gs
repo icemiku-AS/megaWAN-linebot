@@ -18,10 +18,13 @@
 // ======================================================
 
 function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt, aiExecutionContext) {
+  const speaker = createConversationSpeakerMap_();
+  speaker(event.source && event.source.userId);
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
-    false
+    false,
+    speaker
   );
 
   const recentHighlightText = getRecentTopicHighlightsText(
@@ -89,7 +92,7 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt,
     conversationId,
     '#節目話題分析',
     prompt,
-    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+    requireAiCallOptionsForExecutionContext_(aiExecutionContext, { currentUserId: event.source && event.source.userId, speakerForUser: speaker })
   ));
 }
 
@@ -98,10 +101,13 @@ function analyzeProgramTopicFromRecentContext(event, conversationId, userPrompt,
 // ======================================================
 
 function integrateRecentTopics(event, conversationId, userPrompt, aiExecutionContext) {
+  const speaker = createConversationSpeakerMap_();
+  speaker(event.source && event.source.userId);
   const recentConversationText = getRecentConversationText(
     conversationId,
     DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC,
-    false
+    false,
+    speaker
   );
 
   const recentHighlightText = getRecentTopicHighlightsText(
@@ -178,7 +184,7 @@ function integrateRecentTopics(event, conversationId, userPrompt, aiExecutionCon
     conversationId,
     '#統整話題 ' + (userPrompt || ''),
     prompt,
-    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
+    requireAiCallOptionsForExecutionContext_(aiExecutionContext, { currentUserId: event.source && event.source.userId, speakerForUser: speaker })
   ));
 }
 
@@ -194,9 +200,7 @@ function archiveWeeklyTopics(event, conversationId, aiExecutionContext) {
     return getBotTextArchiveNoData_();
   }
 
-  const recentText = recentItems.map(function(item, index) {
-    return (index + 1) + '. [' + item.role + '/' + item.mode + '] ' + item.text;
-  }).join('\n');
+  const recentText = formatConversationItemsText_(recentItems);
 
   const rawMaterialCount = recentItems.length;
   const period = getWeeklyArchivePeriod_(DEFAULT_WEEKLY_NEWS_DAYS);

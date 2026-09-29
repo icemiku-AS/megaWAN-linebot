@@ -44,7 +44,7 @@ function ensureSheetWithHeaders_(sheetName, headers) {
     sheet = ss.insertSheet(sheetName);
   }
 
-  const currentLastColumn = Math.max(sheet.getLastColumn(), headers.length);
+  const currentLastColumn = Math.max(sheet.getLastColumn(), 1);
   const firstRow = sheet.getRange(1, 1, 1, currentLastColumn).getValues()[0];
 
   const hasHeader = firstRow.some(function(value) {
@@ -147,7 +147,9 @@ function ensureLogSheet_() {
     'Role',
     'Mode',
     'MessageId',
-    'Text'
+    'Text',
+    'QuotedMessageId',
+    'QuoteStatus'
   ];
 
   return ensureSheetWithHeaders_(SHEET_NAME, headers);
@@ -290,21 +292,20 @@ function logMessageToSheet(data) {
       ? new Date(event.timestamp)
       : new Date();
 
-    const row = [
-      timestamp,
-      data.conversationId || '',
-      source.type || '',
-      source.userId || '',
-      source.groupId || '',
-      source.roomId || '',
-      data.role || '',
-      data.mode || '',
-      // 圖片的 message ID 不形成永久原圖索引；derived row 也不保存引用關係。
-      data.mode === 'image_input' || data.mode === 'image_semantic' ? '' : (message.id || ''),
-      truncateForSheet(data.text || '')
-    ];
-
-    sheet.appendRow(row);
+    const isText = message.type === 'text' && data.mode !== 'image_input' && data.mode !== 'image_semantic';
+    const quote = data.role === 'user' && isText ? data.textQuote : null;
+    const quoteStatus = quote && TEXT_QUOTE_STATUSES.indexOf(quote.status) >= 0 ? quote.status : '';
+    // 前置單引號是 Sheets 的 literal escape，不是 ID 本體；getValues() 仍讀到精確字串。
+    // 不先寫 Number 再改格式；assistant 的 ID 仍僅代表觸發文字，不是 LINE 出站 ID。
+    appendRowByHeaders_(sheet, {
+      Timestamp: timestamp, ConversationId: data.conversationId || '', SourceType: source.type || '',
+      UserId: source.userId || '', GroupId: source.groupId || '', RoomId: source.roomId || '',
+      Role: data.role || '', Mode: data.mode || '',
+      MessageId: isText && isExactLineMessageId_(message.id) ? "'" + message.id : '',
+      Text: truncateForSheet(data.text || ''),
+      QuotedMessageId: quoteStatus === 'text_found' && isExactLineMessageId_(quote.messageId) ? "'" + quote.messageId : '',
+      QuoteStatus: quoteStatus
+    });
 
   } catch (error) {
     console.error('logMessageToSheet error');
@@ -319,6 +320,84 @@ function logAssistantReplyToSheet(event, conversationId, text, mode) {
     text: text,
     mode: mode || 'reply'
   });
+}
+
+// 引用只在本次 execution 保有一份有限 Sheet snapshot，絕不進 CacheService 或永久媒體索引。
+const TEXT_QUOTE_STATUSES = ['none', 'text_found', 'not_found', 'failed', 'unsupported'];
+const TEXT_QUOTE_MAX_SCAN_ROWS = 500;
+const TEXT_QUOTE_MAX_CHARS = 2000;
+const TEXT_QUOTE_MAX_CONTEXT_CHARS = 6000;
+
+function isExactLineMessageId_(value) {
+  return typeof value === 'string' && /^\d{1,64}$/.test(value);
+}
+
+/** 惰性、只讀；同一次 current quote、上游一層與 history references 共用，不重設 webhook deadline。 */
+function createTextQuoteLookup_(conversationId, executionContext, beforeTimestampMs) {
+  let records = null;
+  let failure = '';
+  return function(messageId, maxChars) {
+    if (!isExactLineMessageId_(messageId)) return { status: 'failed', reason: 'invalid_id' };
+    const deadline = Number(executionContext && executionContext.deadlineAtMs) || Infinity;
+    if (Date.now() + 8000 >= deadline) return { status: 'failed', reason: 'deadline' };
+    if (failure) return { status: 'failed', reason: failure };
+    try {
+      if (!records) {
+        const startedAt = Date.now();
+        if (!/^(user|group|room):[^\s:]+$/.test(String(conversationId || '')) || /:(?:undefined|null)$/.test(conversationId)) {
+          throw new Error('invalid scope');
+        }
+        const sheet = getSpreadsheet_().getSheetByName(SHEET_NAME);
+        if (!sheet) throw new Error('missing sheet');
+        const headers = Object.create(null);
+        sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].forEach(function(value, index) {
+          const key = String(value || '').trim();
+          if (key && headers[key]) throw new Error('duplicate schema');
+          if (key) headers[key] = index + 1;
+        });
+        if (['ConversationId', 'Timestamp', 'Role', 'Mode', 'MessageId', 'Text'].some(function(key) { return !headers[key]; })) {
+          throw new Error('missing schema');
+        }
+        const count = Math.min(Math.max(0, sheet.getLastRow() - 1), TEXT_QUOTE_MAX_SCAN_ROWS);
+        const rows = count ? sheet.getRange(sheet.getLastRow() - count + 1, 1, count, sheet.getLastColumn()).getValues() : [];
+        records = rows.filter(function(row) {
+          return getRowValueByHeader_(row, headers, 'ConversationId') === conversationId;
+        }).map(function(row) {
+          const item = {};
+          ['Timestamp', 'Role', 'Mode', 'MessageId', 'Text', 'UserId', 'QuotedMessageId', 'QuoteStatus'].forEach(function(key) {
+            item[key] = getRowValueByHeader_(row, headers, key);
+          });
+          return item;
+        });
+        // GAS 讀取不能中途取消；超過軟上限則丟棄結果，不能把逾時說成沒找到。
+        if (Date.now() - startedAt > 2000 || Date.now() + 8000 >= deadline) {
+          failure = 'deadline'; records = null;
+          return { status: 'failed', reason: failure };
+        }
+      }
+      const matches = records.filter(function(row) {
+        return row.Role === 'user' && row.MessageId === messageId && row.Mode !== 'image_input' && row.Mode !== 'image_semantic';
+      });
+      if (!matches.length) return { status: records.some(function(row) { return row.Role === 'user' && row.MessageId === messageId; })
+        ? 'unsupported' : 'not_found', limitedWindow: true };
+      const row = matches[0];
+      const time = new Date(row.Timestamp).getTime();
+      if (row.Timestamp === '' || row.Timestamp === null || typeof row.Timestamp === 'boolean' || !isFinite(time) ||
+          time > (Number(beforeTimestampMs) || Date.now()) || typeof row.Text !== 'string' || !row.Text.trim() ||
+          matches.some(function(other) {
+            return new Date(other.Timestamp).getTime() !== time || ['UserId', 'Text', 'Mode', 'QuotedMessageId', 'QuoteStatus'].some(function(key) { return other[key] !== row[key]; });
+          })) return { status: 'failed', reason: 'ambiguous_or_invalid_record' };
+      const limit = Math.min(TEXT_QUOTE_MAX_CHARS, Math.max(1, Number(maxChars) || TEXT_QUOTE_MAX_CHARS));
+      const text = redactAiMediaText_(row.Text);
+      return { status: 'text_found', messageId: messageId, userId: typeof row.UserId === 'string' ? row.UserId : '',
+        text: text.slice(0, limit), truncated: text.length > limit,
+        quoteStatus: TEXT_QUOTE_STATUSES.indexOf(row.QuoteStatus) >= 0 ? row.QuoteStatus : 'unknown',
+        quotedMessageId: row.QuoteStatus === 'text_found' && isExactLineMessageId_(row.QuotedMessageId) ? row.QuotedMessageId : '' };
+    } catch (ignore) {
+      failure = 'read_or_schema'; records = null;
+      return { status: 'failed', reason: failure };
+    }
+  };
 }
 
 // ======================================================
@@ -373,11 +452,25 @@ function saveWebSummary_(task, summaryResult) {
 // 最近資料讀取
 // ======================================================
 
-function getRecentConversationText(conversationId, limit, includeAssistant) {
+function getRecentConversationText(conversationId, limit, includeAssistant, speakerForUser) {
   const items = getRecentConversationItems(conversationId, limit, includeAssistant);
+  return formatConversationItemsText_(items, speakerForUser);
+}
 
+function formatConversationItemsText_(items, speakerForUser) {
+  const speaker = speakerForUser || createConversationSpeakerMap_();
+  const refs = Object.create(null);
+  items.forEach(function(item, index) {
+    if (item.role === 'user' && item.mode !== 'image_input' && item.mode !== 'image_semantic' && isExactLineMessageId_(item.messageId)) {
+      refs[item.messageId] = Object.prototype.hasOwnProperty.call(refs, item.messageId) ? '' : 'S' + (index + 1);
+    }
+  });
   return items.map(function(item, index) {
-    return (index + 1) + '. [' + item.role + '/' + item.mode + '] ' + item.text;
+    const speakerName = item.role === 'assistant' ? '小浣' : speaker(item.userId);
+    return (index + 1) + '. ' + JSON.stringify({ speaker: speakerName, speakerIdentityKnown: speakerName !== '未知作者',
+      role: item.role, mode: item.mode, sourceRef: item.role === 'user' && isExactLineMessageId_(item.messageId) ? refs[item.messageId] || '' : '',
+      quoteStatus: TEXT_QUOTE_STATUSES.indexOf(item.quoteStatus) >= 0 ? item.quoteStatus : 'unknown',
+      quotedSourceRef: item.quoteStatus === 'text_found' ? (isExactLineMessageId_(item.quotedMessageId) && refs[item.quotedMessageId]) || '本次素材未包含可信引用原文' : '', text: item.text });
   }).join('\n');
 }
 
@@ -390,6 +483,7 @@ function getRecentConversationItems(conversationId, limit, includeAssistant) {
   }
 
   const lastCol = sheet.getLastColumn();
+  const headers = getHeaderMap_(sheet);
 
   // 為了效能，最多往回讀最近 500 列
   const readRows = Math.min(lastRow - 1, 500);
@@ -404,10 +498,10 @@ function getRecentConversationItems(conversationId, limit, includeAssistant) {
   for (let i = values.length - 1; i >= 0; i--) {
     const row = values[i];
 
-    const rowConversationId = row[1];
-    const role = row[6];
-    const mode = row[7];
-    const text = row[9];
+    const rowConversationId = getRowValueByHeader_(row, headers, 'ConversationId');
+    const role = getRowValueByHeader_(row, headers, 'Role');
+    const mode = getRowValueByHeader_(row, headers, 'Mode');
+    const text = getRowValueByHeader_(row, headers, 'Text');
 
     if (rowConversationId !== conversationId) {
       continue;
@@ -443,6 +537,10 @@ function getRecentConversationItems(conversationId, limit, includeAssistant) {
     matched.push({
       role: role,
       mode: mode,
+      userId: getRowValueByHeader_(row, headers, 'UserId'),
+      messageId: role === 'user' ? getRowValueByHeader_(row, headers, 'MessageId') : '',
+      quotedMessageId: role === 'user' ? getRowValueByHeader_(row, headers, 'QuotedMessageId') : '',
+      quoteStatus: getRowValueByHeader_(row, headers, 'QuoteStatus'),
       text: textString
     });
 
@@ -525,6 +623,9 @@ function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxSca
       matched.push({
         timestamp: new Date(timestampTime),
         userId: String(getRowValueByHeader_(row, headerMap, 'UserId') || ''),
+        messageId: getRowValueByHeader_(row, headerMap, 'MessageId'),
+        quotedMessageId: getRowValueByHeader_(row, headerMap, 'QuotedMessageId'),
+        quoteStatus: getRowValueByHeader_(row, headerMap, 'QuoteStatus'),
         mode: mode,
         text: text,
         rowNumber: sheetRowNumber
@@ -542,6 +643,7 @@ function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxSca
     return {
       timestamp: item.timestamp,
       userId: item.userId,
+      messageId: item.messageId, quotedMessageId: item.quotedMessageId, quoteStatus: item.quoteStatus,
       mode: item.mode,
       text: item.text
     };
@@ -753,7 +855,8 @@ function deleteConversationLogs(conversationId) {
     return 0;
   }
 
-  const conversationIdColumn = 2; // B 欄：ConversationId
+  const conversationIdColumn = getHeaderMap_(sheet).ConversationId;
+  if (!conversationIdColumn) throw new Error('Missing ConversationId column.');
 
   const values = sheet
     .getRange(2, conversationIdColumn, lastRow - 1, 1)
