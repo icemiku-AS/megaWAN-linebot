@@ -290,7 +290,7 @@ function buildWebSearchSourcesBubble_(sources) {
   });
 
   if (!safeSources.length) {
-    return '本次已使用網路搜尋，但 DeepSeek API 未提供可列出的來源連結。';
+    return '本次已使用網路搜尋，但搜尋服務未提供可列出的來源連結。';
   }
 
   let bubble = '參考來源：';

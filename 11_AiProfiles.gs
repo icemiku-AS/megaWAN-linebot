@@ -16,12 +16,15 @@
 const AI_PROVIDER_REGISTRY = {
   deepseek: {
     id: 'deepseek',
-    adapter: 'deepseek',
+    // 函式只在 dispatch 時呼叫；不依賴 GAS 檔案載入順序或做 top-level 初始化。
+    adapter: function(request) { return callDeepSeekProvider_(request); },
+    validateRequest: function(request) { return validateDeepSeekRequest_(request); },
     status: 'active'
   },
   gemini: {
     id: 'gemini',
-    adapter: 'gemini',
+    adapter: function(request) { return callGeminiProvider_(request); },
+    validateRequest: function(request) { return validateGeminiRequest_(request); },
     status: 'dormant'
   }
 };
@@ -30,13 +33,16 @@ const AI_MODEL_REGISTRY = {
   deepseek_flash: {
     provider: 'deepseek',
     model: 'deepseek-flash',
-    capabilities: ['text', 'thinking', 'vision', 'structuredOutput', 'webSearch', 'clientTools']
+    capabilities: ['text', 'thinking', 'vision', 'structuredOutput', 'webSearch', 'clientTools'],
+    // 這是本專案已驗證的 model policy，不是所有 provider 的 reasoning 限制。
+    reasoning: { modes: ['enabled', 'disabled'], efforts: ['high', 'max'], samplingWhileThinking: false }
   },
   gemini_flash_lite_dormant: {
     provider: 'gemini',
     model: 'gemini-3.1-flash-lite',
     dormant: true,
-    capabilities: ['text']
+    capabilities: ['text'],
+    reasoning: { modes: ['disabled'], efforts: [], samplingWhileThinking: false }
   }
 };
 
@@ -198,9 +204,16 @@ function resolveAiTaskConfig_(task) {
   const modelEntry = AI_MODEL_REGISTRY[route.model];
   const profile = AI_EXECUTION_PROFILES[route.profile];
   // dormant 代表「目前沒有正式 route」，不是刪除 adapter；維護者明確切 route 即視為人工重新啟用。
-  if (!provider || !provider.adapter) throw createAiConfigurationError_('AI provider is not registered: ' + route.provider);
-  if (!modelEntry || modelEntry.provider !== route.provider) throw createAiConfigurationError_('AI model route mismatch: ' + route.model);
+  if (!provider || typeof provider.adapter !== 'function' || typeof provider.validateRequest !== 'function') {
+    throw createAiConfigurationError_('AI provider adapter contract is not registered.');
+  }
+  if (!modelEntry || modelEntry.provider !== route.provider || typeof modelEntry.model !== 'string' || !modelEntry.model.trim()) {
+    throw createAiConfigurationError_('AI model route mismatch or missing model name.');
+  }
   if (!profile) throw createAiConfigurationError_('Unknown AI execution profile: ' + route.profile);
+  if (!Array.isArray(modelEntry.capabilities) || !Array.isArray(route.capabilities || [])) {
+    throw createAiConfigurationError_('AI model/task capabilities must be arrays.');
+  }
 
   const thinkingType = String(profile.thinking && profile.thinking.type || '');
   if (thinkingType !== 'enabled' && thinkingType !== 'disabled') {
@@ -215,11 +228,13 @@ function resolveAiTaskConfig_(task) {
   if (['text', 'json'].indexOf(profile.outputMode) < 0) {
     throw createAiConfigurationError_('AI profile output mode must be text or json: ' + route.profile);
   }
-  if (thinkingType === 'enabled' && ['high', 'max'].indexOf(profile.reasoningEffort) < 0) {
-    throw createAiConfigurationError_('Thinking profile requires reasoning effort high or max: ' + route.profile);
+  const reasoning = modelEntry.reasoning || {};
+  if (!Array.isArray(reasoning.modes) || !Array.isArray(reasoning.efforts) || reasoning.modes.indexOf(thinkingType) < 0 ||
+      (thinkingType === 'enabled' && (reasoning.efforts || []).indexOf(profile.reasoningEffort) < 0)) {
+    throw createAiConfigurationError_('Model does not support the requested reasoning mode/effort.');
   }
-  if (thinkingType === 'enabled' && profile.allowSampling === true) {
-    throw createAiConfigurationError_('Thinking profile cannot enable sampling parameters: ' + route.profile);
+  if (thinkingType === 'enabled' && profile.allowSampling === true && reasoning.samplingWhileThinking !== true) {
+    throw createAiConfigurationError_('Model does not support sampling while thinking.');
   }
   if (thinkingType === 'disabled' && profile.reasoningEffort) {
     throw createAiConfigurationError_('Non-thinking profile must not set reasoning effort: ' + route.profile);
@@ -232,7 +247,7 @@ function resolveAiTaskConfig_(task) {
   const timeoutSeconds = Number(Object.prototype.hasOwnProperty.call(route, 'timeoutSeconds')
     ? route.timeoutSeconds
     : profile.timeoutSeconds);
-  if (!isFinite(maxOutputTokens) || maxOutputTokens <= 0) {
+  if (!Number.isInteger(maxOutputTokens) || maxOutputTokens <= 0) {
     throw createAiConfigurationError_('AI task max output tokens must be positive: ' + taskName);
   }
   if (!isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
@@ -253,6 +268,7 @@ function resolveAiTaskConfig_(task) {
     task: taskName,
     provider: route.provider,
     providerAdapter: provider.adapter,
+    validateProviderRequest: provider.validateRequest,
     model: modelEntry.model,
     modelRegistryKey: route.model,
     // 舊 callers 可繼續讀相容旗標，source of truth 是 capability list。
