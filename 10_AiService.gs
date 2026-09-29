@@ -312,8 +312,8 @@ function runAiMessagesTask(task, messages, options) {
     // 這不是 wire payload/token 估算；Search intent 另以 webSearchMode 記錄。
     measurement.toolDefinitionChars = request.tools.length ? JSON.stringify(request.tools).length : 0;
     // 工具可用不代表會續接；首輪共享完整 window，真的要求工具時才檢查讀取／final 餘裕。
-    providerResult = config.providerAdapter(request);
-    measurement.modelCalls += providerResult.modelCalls;
+    providerResult = validateAiProviderResult_(config.providerAdapter(request));
+    measurement.modelCalls = providerResult.modelCalls;
     const webEvidence = researchEvidence.find(function(item) { return item.source === 'web_search'; });
     if (webEvidence && providerResult.usedWebSearch) webEvidence.status = 'COMPLETED';
 
@@ -337,8 +337,9 @@ function runAiMessagesTask(task, messages, options) {
       });
       const firstResult = providerResult;
       measurement.continuationCount++;
-      providerResult = firstResult.continueWithToolResults(toolResults.map(function(item) { return { id: item.id, data: item.data }; }), orchestrationDeadline);
-      measurement.modelCalls += providerResult.modelCalls;
+      providerResult = validateAiProviderResult_(firstResult.continueWithToolResults(
+        toolResults.map(function(item) { return { id: item.id, data: item.data }; }), orchestrationDeadline));
+      measurement.modelCalls = providerResult.modelCalls === null ? null : measurement.modelCalls + providerResult.modelCalls;
       // 第二輪失敗仍計入用量；未 dispatch 的第二輪則保留首輪已知用量。
       providerResult.usage = providerResult.modelCalls === 0 ? firstResult.usage : sumAiUsage_(firstResult.usage, providerResult.usage);
       providerResult.usedWebSearch = firstResult.usedWebSearch || providerResult.usedWebSearch;
@@ -752,6 +753,49 @@ function normalizeAiErrorType_(value) {
     'ai_web_search_failed', 'ai_required_evidence_failed', 'ai_tool_limit', 'ai_tool_not_allowed',
     'ai_invalid_tool_call', 'ai_invalid_tool_arguments', 'ai_unsafe_tool_url', 'ai_tool_round_limit', 'ai_tool_data_unavailable'
   ]).indexOf(value) >= 0 ? value : 'ai_unknown_error';
+}
+
+/** Dispatch/continuation 的共同信任邊界；缺欄位不可靠 builder defaults 假裝合法。 */
+function validateAiProviderResult_(result) {
+  const object = result !== null && typeof result === 'object' && !Array.isArray(result);
+  const source = object ? result : {};
+  const fields = ['ok', 'text', 'finishReason', 'usage', 'elapsedMs', 'httpStatus', 'transport',
+    'usedWebSearch', 'sources', 'toolCalls', 'continueWithToolResults', 'modelCalls', 'errorType', 'errorMessage', 'retryable'];
+  const usage = source.usage;
+  const validUsage = usage !== null && typeof usage === 'object' && !Array.isArray(usage) &&
+    Object.keys(normalizeAiUsage_()).every(function(key) {
+      return Object.prototype.hasOwnProperty.call(usage, key) &&
+        (usage[key] === null || normalizeAiOptionalNumber_(usage[key]) !== null);
+    });
+  const validCalls = source.modelCalls === 0 || source.modelCalls === 1;
+  const validStatus = normalizeAiOptionalNumber_(source.httpStatus) !== null &&
+    (source.httpStatus === 0 || (source.httpStatus >= 100 && source.httpStatus <= 599));
+  const validTransport = typeof source.transport === 'string' && /^[a-z0-9_]{0,64}$/.test(source.transport);
+  const valid = object && fields.every(function(key) { return Object.prototype.hasOwnProperty.call(source, key); }) &&
+    typeof source.ok === 'boolean' && typeof source.text === 'string' &&
+    typeof source.finishReason === 'string' && normalizeAiFinishReason_(source.finishReason) === source.finishReason &&
+    validUsage && validCalls && validStatus && validTransport && normalizeAiOptionalNumber_(source.elapsedMs) !== null &&
+    typeof source.usedWebSearch === 'boolean' && Array.isArray(source.sources) && source.sources.every(function(item) {
+      return item && typeof item.title === 'string' && typeof item.url === 'string' && item.url.length <= 2048 && isSafePublicUrl(item.url);
+    }) && Array.isArray(source.toolCalls) && source.toolCalls.every(function(call) {
+      return call && typeof call.id === 'string' && typeof call.name === 'string' &&
+        call.arguments !== null && typeof call.arguments === 'object' && !Array.isArray(call.arguments);
+    }) && typeof source.errorType === 'string' && typeof source.errorMessage === 'string' && typeof source.retryable === 'boolean' &&
+    (source.ok
+      ? source.errorType === '' && source.errorMessage === '' && !source.retryable &&
+        (source.toolCalls.length > 0
+          ? source.finishReason === 'tool_calls' && typeof source.continueWithToolResults === 'function'
+          : source.continueWithToolResults === null && source.finishReason !== 'tool_calls')
+      : source.text === '' && source.errorType !== '' && normalizeAiErrorType_(source.errorType) === source.errorType &&
+        !source.toolCalls.length && source.continueWithToolResults === null);
+  if (valid) return buildAiProviderResult_(source);
+  // 只保留各自通過型別驗證的計數；不能由 adapter 被呼叫推測 HTTP 已 dispatch。
+  return Object.assign(buildAiProviderResult_({
+    ok: false, errorType: 'ai_invalid_provider_response', retryable: false,
+    usage: validUsage ? usage : null, httpStatus: validStatus ? source.httpStatus : 0,
+    transport: validTransport ? source.transport : '',
+    elapsedMs: normalizeAiOptionalNumber_(source.elapsedMs)
+  }), { modelCalls: validCalls ? source.modelCalls : null });
 }
 
 /** Adapter 共用結果契約。只收安全欄位；opaque callback 僅供 service，最後 normalized result 不外傳它。 */

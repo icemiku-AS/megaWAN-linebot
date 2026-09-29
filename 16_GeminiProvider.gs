@@ -60,7 +60,7 @@ function callGeminiProvider_(request) {
     const responseText = response.getContentText();
 
     if (statusCode < 200 || statusCode >= 300) {
-      return classifyGeminiHttpFailure_(statusCode, responseText, Date.now() - startedAt);
+      return Object.assign(classifyGeminiHttpFailure_(statusCode, responseText, Date.now() - startedAt), { modelCalls: modelCalls });
     }
 
     let json = null;

@@ -116,7 +116,7 @@ function callDeepSeekProvider_(request, privateContinuation) {
     const responseText = response.getContentText();
 
     if (statusCode < 200 || statusCode >= 300) {
-      return classifyDeepSeekHttpFailure_(statusCode, responseText, Date.now() - startedAt, transport);
+      return Object.assign(classifyDeepSeekHttpFailure_(statusCode, responseText, Date.now() - startedAt, transport), { modelCalls: modelCalls });
     }
 
     let json = null;
@@ -183,7 +183,7 @@ function callDeepSeekProvider_(request, privateContinuation) {
     // metadata 也需驗證；未知內容不可原樣穿透 console。null content 仍交由 finish/empty 檢查，
     // 尤其 reasoning 用完 budget 時，length 必須維持既有不可重試的截斷契約。
     if (['', 'stop', 'length', 'tool_calls', 'content_filter', 'insufficient_system_resource', 'aborted'].indexOf(finishReason) < 0) {
-      return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek returned an unknown finish reason.', statusCode, true, Date.now() - startedAt, null, '', transport);
+      return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek returned an unknown finish reason.', statusCode, true, Date.now() - startedAt, normalizeDeepSeekUsage_(json.usage), '', transport);
     }
     if (finishReason === 'insufficient_system_resource' || finishReason === 'aborted') {
       // 這是 DeepSeek protocol 的暫時性停止原因，必須在 adapter 轉成 retryable typed failure，
@@ -201,7 +201,7 @@ function callDeepSeekProvider_(request, privateContinuation) {
     }
 
     if (containsDeepSeekToolProtocolMarkup_(choice.message.content)) {
-      return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek returned internal protocol markup.', statusCode, true, Date.now() - startedAt, null, '', transport);
+      return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek returned internal protocol markup.', statusCode, true, Date.now() - startedAt, normalizeDeepSeekUsage_(json.usage), '', transport);
     }
     return buildAiProviderResult_({
       ok: true,
@@ -362,9 +362,6 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
   if (!json || json.type !== 'message' || json.role !== 'assistant' || !Array.isArray(content) || !stopReason) {
     return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek Anthropic response is malformed.', statusCode, true, elapsedMs, usage, '', 'anthropic_messages');
   }
-  if (['end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'pause_turn', 'refusal', 'model_context_window_exceeded'].indexOf(stopReason) < 0) {
-    return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'DeepSeek Anthropic response has an unknown stop reason.', statusCode, true, elapsedMs, usage, '', 'anthropic_messages');
-  }
   if (content.some(function(block) {
     return !block || ['text', 'thinking', 'tool_use', 'server_tool_use', 'web_search_tool_result'].indexOf(block.type) < 0 ||
       (block.type === 'text' && typeof block.text !== 'string') ||
@@ -374,12 +371,6 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
       (block.type === 'web_search_tool_result' && typeof block.tool_use_id !== 'string');
   })) return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'Invalid message content blocks.', statusCode, false, elapsedMs, usage, '', 'anthropic_messages');
   const clientBlocks = content.filter(function(block) { return block && block.type === 'tool_use'; });
-  if ((stopReason === 'tool_use') !== (clientBlocks.length > 0)) {
-    return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'Inconsistent client tool stop reason.', statusCode, false, elapsedMs, usage, '', 'anthropic_messages');
-  }
-  if (isContinuation && clientBlocks.length) {
-    return buildDeepSeekProviderFailure_('ai_tool_round_limit', 'Only one client tool continuation is allowed.', statusCode, false, elapsedMs, usage, 'tool_calls', 'anthropic_messages');
-  }
   const toolCalls = clientBlocks.map(function(block) { return { id: block.id, name: block.name, arguments: block.input }; });
 
   const searchUses = content.filter(function(block) {
@@ -398,16 +389,32 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
   const canDeferSearch = !isContinuation && stopReason === 'tool_use' && clientBlocks.length > 0;
   const searchFailed = searchResults.some(function(block) {
     // 官方成功形態一定是 result array；單一 object 是 tool error，其他非陣列也不可當成功。
-    return !Array.isArray(block.content) || block.content.some(function(item) { return !item || item.type !== 'web_search_result'; });
+    return !Array.isArray(block.content) || block.content.some(function(item) {
+      return !item || item.type !== 'web_search_result' || typeof item.url !== 'string' ||
+        !item.url.trim() || item.url.length > 2048 || !isSafePublicUrl(item.url) ||
+        (item.title !== undefined && typeof item.title !== 'string') || containsDeepSeekToolProtocolMarkup_(item.title);
+    });
   }) || Object.keys(searchUseIds).some(function(id) { return !id || searchUseIds[id] !== 1; }) ||
     Object.keys(searchResultIds).some(function(id) { return !id || searchUseIds[id] !== 1 || searchResultIds[id] !== 1; }) ||
     (pendingIds.length > 0 && !canDeferSearch);
   if (searchFailed) {
+    if ((stopReason === 'tool_use') !== (clientBlocks.length > 0)) {
+      return buildDeepSeekProviderFailure_('ai_invalid_provider_response', 'Inconsistent client tool stop reason.', statusCode, false, elapsedMs, usage, '', 'anthropic_messages');
+    }
+    if (isContinuation && clientBlocks.length) {
+      return buildDeepSeekProviderFailure_('ai_tool_round_limit', '', statusCode, false, elapsedMs, usage, 'tool_calls', 'anthropic_messages');
+    }
     return buildDeepSeekProviderFailure_('ai_web_search_failed', 'DeepSeek Web Search did not complete.', statusCode, true, elapsedMs, usage, 'error', 'anthropic_messages');
   }
 
-  if (pendingIds.length) validateAiToolCalls_(toolCalls, searchState.tools);
-  const usedWebSearch = Object.keys(searchResultIds).length > 0;
+  if (pendingIds.length) {
+    try { validateAiToolCalls_(toolCalls, searchState.tools); }
+    catch (error) {
+      return buildDeepSeekProviderFailure_(error.errorType, '', statusCode, false, elapsedMs, usage, 'tool_calls', 'anthropic_messages');
+    }
+  }
+  // 每輪只報本輪已驗證完成的 Search；AiService 合併前輪觀測，不重複假報 pending Search。
+  const usedWebSearch = searchResults.length > 0;
   const sources = usedWebSearch ? collectDeepSeekAnthropicWebSearchSources_(searchResults) : [];
   const text = content.reduce(function(parts, block) {
     if (block && block.type === 'text' && typeof block.text === 'string') parts.push(block.text);
@@ -425,11 +432,20 @@ function normalizeDeepSeekAnthropicMessagesResult_(json, statusCode, searchMode,
       : 'ai_invalid_provider_response';
     return buildDeepSeekProviderFailure_(errorType, 'DeepSeek returned internal tool protocol markup.', statusCode, true, elapsedMs, usage, finishReason, 'anthropic_messages');
   }
-  if (searchMode === 'required' && !usedWebSearch && !pendingIds.length) {
+  // 只有完整 Search protocol 與正文檢查通過，後段 failure 才可保留此觀測。
+  const completedSearch = { usedWebSearch: usedWebSearch, sources: sources };
+  const knownStopReason = ['end_turn', 'max_tokens', 'stop_sequence', 'tool_use', 'pause_turn', 'refusal', 'model_context_window_exceeded'].indexOf(stopReason) >= 0;
+  if (!knownStopReason || (stopReason === 'tool_use') !== (clientBlocks.length > 0)) {
+    return buildDeepSeekProviderFailure_('ai_invalid_provider_response', '', statusCode, !knownStopReason, elapsedMs, usage, '', 'anthropic_messages', completedSearch);
+  }
+  if (isContinuation && clientBlocks.length) {
+    return buildDeepSeekProviderFailure_('ai_tool_round_limit', '', statusCode, false, elapsedMs, usage, 'tool_calls', 'anthropic_messages', completedSearch);
+  }
+  if (searchMode === 'required' && !Object.keys(searchResultIds).length && !pendingIds.length) {
     return buildDeepSeekProviderFailure_('ai_web_search_failed', 'DeepSeek did not execute the required Web Search.', statusCode, true, elapsedMs, usage, finishReason, 'anthropic_messages');
   }
   if (stopReason === 'pause_turn') {
-    return buildDeepSeekProviderFailure_(usedWebSearch ? 'ai_web_search_failed' : 'ai_provider_http_error', 'DeepSeek Anthropic request did not complete in one response.', statusCode, true, elapsedMs, usage, finishReason, 'anthropic_messages');
+    return buildDeepSeekProviderFailure_(usedWebSearch ? 'ai_web_search_failed' : 'ai_provider_http_error', 'DeepSeek Anthropic request did not complete in one response.', statusCode, true, elapsedMs, usage, finishReason, 'anthropic_messages', completedSearch);
   }
 
   return buildAiProviderResult_({
@@ -602,7 +618,7 @@ function extractDeepSeekErrorMessage_(responseText) {
   return 'DeepSeek HTTP request failed.';
 }
 
-function buildDeepSeekProviderFailure_(errorType, errorMessage, httpStatus, retryable, elapsedMs, usage, finishReason, transport) {
+function buildDeepSeekProviderFailure_(errorType, errorMessage, httpStatus, retryable, elapsedMs, usage, finishReason, transport, completedSearch) {
   return buildAiProviderResult_({
     ok: false,
     text: '',
@@ -614,8 +630,8 @@ function buildDeepSeekProviderFailure_(errorType, errorMessage, httpStatus, retr
     httpStatus: Number(httpStatus || 0),
     retryable: retryable === true,
     transport: String(transport || ''),
-    usedWebSearch: false,
-    sources: []
+    usedWebSearch: !!(completedSearch && completedSearch.usedWebSearch),
+    sources: completedSearch && completedSearch.usedWebSearch ? completedSearch.sources : []
   });
 }
 
