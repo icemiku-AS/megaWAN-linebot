@@ -114,7 +114,8 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
       (legacyResult && legacyResult.error ? legacyResult.error : '未知錯誤'),
     {
       retryable: combinedRetryable,
-      httpStatus: combinedHttpStatus
+      httpStatus: combinedHttpStatus,
+      errorReason: hasLegacyAiError ? legacyResult.errorReason : ''
     }
   );
 }
@@ -893,6 +894,7 @@ function buildReaderLayerErrorResult_(url, readerRoute, errorType, errorMessage,
     error: errorMessage || 'reader failed'
   };
   const safeMetadata = metadata || {};
+  if (normalizeAiErrorReason_(safeMetadata.errorReason)) result.errorReason = normalizeAiErrorReason_(safeMetadata.errorReason);
   if (typeof safeMetadata.retryable === 'boolean') result.retryable = safeMetadata.retryable;
   if (Object.prototype.hasOwnProperty.call(safeMetadata, 'httpStatus')) {
     result.httpStatus = Number(safeMetadata.httpStatus || 0);

@@ -2,17 +2,38 @@
 
 ## 版本與 source of truth
 
-MEGA浣 / 小浣：**v1.16.1 Text Quote & Persona Edition**（2026-09-29），主題「文字引用脈絡與小浣人格調整」。開發於 `feature/v1161-text-quote-persona`，以 main / v1.16.0 / `f37636be695ad6d79465d4c6c6de51432d0cf74b` 為開發基準。現行 `.gs` 是程式契約的首要依據；實際 Git 提交、推送與 merge 狀態請以 repository refs 為準。工作樹修改、Git refs、GAS production deployment 是不同狀態，正式環境版本與部署驗收由維護者另外確認。
+MEGA浣 / 小浣：**v1.16.2 Reply Diagnostics & Personality Edition**（2026-10-02），主題「可排修的錯誤回覆與更自然的聊天」。工作分支 `codex/v1162-reply-diagnostics-personality`，以抓取後的 origin/main / v1.16.1 / `fe8860fd6d7fec84b35bc89547e2b856de491e04` 為開發基準。現行 `.gs` 是程式契約的首要依據；實際 Git 提交、推送與 merge 狀態請以 repository refs 為準。工作樹修改、Git refs、GAS production deployment 是不同狀態，正式環境版本與部署驗收由維護者另外確認。
 
 執行環境為 Google Apps Script，資料在 Google Sheets；LINE Messaging API、DeepSeek API、Jina Reader、FxTwitter API 是既有外部服務。DeepSeek Flash 是唯一 active AI provider；Gemini adapter 保留 dormant，沒有自動 fallback。Git 版本與 GAS deployment 不是同一件事。AI agent 工作規則見 `AGENTS.md`，使用方式見 `README.md`，舊版沿革見 `99_changelog.md`。
 
 ## 本版邊界
 
-本版完成使用者文字引用的精確查找、說話者／引用上下文、跨作者去重修正與人格／task Prompt 分層；沿用現有 GAS service、Sheet、六輪 Cache memory 及 mocks。**DeepSeek Flash 仍是唯一 active provider；Gemini 仍 dormant；Luna／OpenAI 未接入**，沒有新增 provider、fallback、動態 routing 或分類／改寫模型呼叫。
+本版修正 AI／Search 錯誤細項在共用流程及 LINE 文案中遺失的問題，讓聊天、圖片、封存、同步新聞與背景網址通知顯示安全診斷碼；補充人類回覆的句型變化、接梗與有用例子。沿用現有 GAS service、Sheet、六輪 Cache memory 及 mocks。**DeepSeek Flash 仍是唯一 active provider；Gemini 仍 dormant；Luna／OpenAI 未接入**，沒有新增 provider、fallback、動態 routing、模型呼叫或自動重試。Search 拒絕條件與 pause／continuation 行為不變；本版不宣稱修復先前間歇失敗的未知根因。
 
 保留圖片語意記憶、按需週封存、generic／PTT Reader、Required Internal Evidence、一次 client tool continuation、PendingReplies、正式新聞／週故事線／節目分析與 v1.16.0 provider contract。HIGH、sampling policy、各 task token／timeout 與 Search `max_uses=3` 不變，原本群組靜默 caption 的 non-thinking 設定不變。沒有 embeddings、Vector DB、永久圖片索引、使用者姓名系統、新 Queue／Trigger／資料庫、Node/npm runtime、GitHub Actions 或自架 server。沒有重建完整 reply graph、補猜舊引用或建立小浣出站訊息 ID 索引。
 
-Sheet schema：**ConversationLog 追加 `QuotedMessageId`、`QuoteStatus`**。升級先備份 Sheet，執行同版 `setupLogSheet()` 補欄；首次寫入也會自動補缺欄，重複執行不重建、不清空或回填。writer／近期 reader／legacy delete 改以表頭對位，保留未知欄位；共用補欄 helper 修正舊表升級時多留空欄的問題。新 Trigger／Script Property：**none**。GAS runtime 仍為 23 檔。
+本版沒有 Sheet schema、Trigger、Script Property、cache 格式或 migration 變更，GAS runtime 仍為 23 檔。既有 LastErrorText／PendingReplies 只保存安全的診斷文案。v1.16.0 → v1.16.1 的 ConversationLog `QuotedMessageId`／`QuoteStatus` 補欄要求仍適用；從已完成補欄的 v1.16.1 升級不用重新執行 setup。v1.16.1 引用／人格基礎開發於 `feature/v1161-text-quote-persona`，其下列契約保留。
+
+## 錯誤回覆與診斷
+
+- 沿用穩定的 `errorType`／`retryable`，新增白名單 `errorReason`。既有 adapter 欄位仍必填；診斷擴充可缺省以保留舊 caller 相容，但若提供未知值、錯誤型別，或成功結果帶失敗原因，guard 會拒絕。Builders 固定輸出此欄，成功為空字串，失敗無細項時使用既有 errorType。
+- 供應商 adapter 分類已確認的工具錯誤、結果結構、來源欄位、ID 配對／重複、pending、pause 及內部協議文字；原拒絕條件、HTTP 嘗試數、用量與搜尋完成觀測保留。`errorReason` 穿越 service、一次 continuation、typed Error 與 legacy Reader，不傳遞原始工具內容。
+- LINE 顯示中文原因、處理方向及大寫代碼；取得有效 HTTP 狀態才附上狀態碼。`AI_CALL_METADATA.errorReason` 使用同一代碼的小寫值。HTTP 200 仍可能有工具錯誤；未取得回應與本機時間不足分開，不能據此宣稱使用者網路故障。未知供應商 error_code、exception／body、query、來源 URL、reasoning 或 secret 不進診斷碼與錯誤回覆。
+- Reader 顯示已知錯誤大類及 HTTP 狀態，不再列出登入／擋爬蟲等未確認原因。已完成搜尋後生成失敗時，回覆明示搜尋已執行但完整回覆未完成；失敗答案不保存。原 Queue retry/backoff、群組靜默、PendingReplies 傳送成功才 acknowledge 的契約不變。
+- 內部工具保留欄位不可用、讀取失敗、回傳過大與網址工具失敗；診斷欄留在 service，不加入模型的 tool data。圖片下載保留 HTTP 狀態，下載逾時與本機 deadline 不足分開，確認非圖片引用也有獨立代碼。
+
+| 代碼例子 | 可確認的情況 |
+| --- | --- |
+| API_NO_RESPONSE / AI_TIMEOUT / LOCAL_TIME_BUDGET | 未取得有效 HTTP 回應 / API 逾時 / 本機執行時間不足 |
+| AI_AUTH_ERROR / AI_RATE_LIMIT / AI_PROVIDER_HTTP_ERROR | 驗證或存取拒絕 / API 限流 / HTTP 錯誤，附實際狀態 |
+| MISSING_DEEPSEEK_API_KEY | 缺少 active provider 的 Script Property，只顯示名稱 |
+| SEARCH_UNAVAILABLE / SEARCH_RATE_LIMIT / SEARCH_LIMIT | 工具回報不可用 / 限流 / 本次使用次數上限 |
+| SEARCH_NOT_EXECUTED / SEARCH_PENDING / PROVIDER_PAUSED | 無搜尋執行紀錄 / 缺對應結果 / paused turn 未完成 |
+| SEARCH_RESULT_MISMATCH / SEARCH_RESULT_DUPLICATE | 搜尋呼叫與結果錯配 / 識別碼重複 |
+| SEARCH_SOURCE_URL_INVALID / SEARCH_SOURCE_TITLE_INVALID | 來源網址格式或安全檢查 / 標題型別未通過 |
+| API_RESPONSE_NOT_JSON / PROVIDER_PROTOCOL_MARKUP | 非 JSON HTTP 回應 / 混入內部工具協議 |
+| AI_TOOL_DATA_UNAVAILABLE / TOOL_READ_FAILED / TOOL_RESULT_TOO_LARGE / TOOL_URL_READ_FAILED | 資料欄位不可用 / 內部讀取失敗 / 回傳過大 / 網址工具未取得正文 |
+| IMAGE_DOWNLOAD_TIMEOUT / QUOTED_CONTENT_NOT_IMAGE | 等待 LINE 圖片下載逾時 / 引用內容不是可用 JPEG/PNG 圖片 |
 
 ## 文字引用與說話者
 
@@ -30,6 +51,8 @@ Sheet schema：**ConversationLog 追加 `QuotedMessageId`、`QuoteStatus`**。�
 ## 人格與 Prompt 分層
 
 共用人格是住在群組、喜歡翻垃圾找寶物的浣熊夥伴，靠好奇與輕巧幽默呈現，不固定口癖或動作。普通聊天自然收尾，問候／代號／記憶測試簡短；認真或焦急時先處理問題。Podcast 只是背景；節目風格、主持切角、SEO 與錄音用途留在相關 task。自然語言明確要求節目段落仍可協助文字整理，但不虛構收件／保存。
+
+v1.16.2 在相同人類回覆 Prompt 中增加具體反差、短比喻、接梗與輕巧吐槽，參考目前對話避免複製上一輪的起手式、收尾和笑點。簡單問題保持俐落，需要深入時以例子、比較、細節與實際影響豐富內容；不增加隨機模板、持久狀態或改寫模型呼叫。錯誤診斷文案固定清楚，不靠角色表演掩蓋故障。自然度與多樣性仍須實際多輪抽樣驗收。
 
 證據規則獨立於角色：保留日期、數字、型號與代號，分清事實／主張／推測／未知，不造熱度起源或工具執行。JSON／分類／抽取／封存走機器任務規則與原 schema／validator，不套可愛前言；圖片嚴謹程度取決於問題而非是否有圖片。固定來源 bubble、只讀工具與 required evidence 不變。
 
@@ -96,13 +119,13 @@ PTT 已驗證 article 的 HTTPS canonicalization、over18、結構驗證、metad
 
 23 個 active `.gs`：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、`40_TopicHighlights.gs`、`45_TopicFeatures.gs`、`50_DataCleanup.gs`。數字前綴僅供導航，不代表 GAS load order。
 
-從完整 v1.16.0 升級需一起手動同步 **12 個 runtime 檔**：`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs`、`10_AiService.gs`、`12_Prompts.gs`、`14_AiTools.gs`、`25_WebTaskQueue.gs`、`35_WeeklyEditorialDigest.gs`、`45_TopicFeatures.gs`。`00_Config.gs`、`11_AiProfiles.gs`、schema 與兩個 provider adapters 不變。若部署基準不確定，使用同版全部 23 個 `.gs`。Markdown、AGENTS 與 tests 不部署至 GAS。
+從完整 v1.16.1 升級需手動同步 **12 個 runtime 檔**：`01_Main.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`10_AiService.gs`、`12_Prompts.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`。若部署基準不確定，使用同版全部 23 個 `.gs`。Markdown、AGENTS 與 tests 不部署至 GAS。
 
-若已同步 v1.16.1 基礎提交 `4a5aa8a`，本輪 review fix 只需追加同步 `01_Main.gs`、`05_Storage.gs`、`12_Prompts.gs`、`35_WeeklyEditorialDigest.gs`。本輪沒有新 Sheet 欄位或 migration；v1.16.0 升級的兩欄補齊要求仍適用。
+本版不需要 migration；從 v1.16.0 或更早版本升級時，仍須先備份 Sheet 並執行 `setupLogSheet()` 補齊 ConversationLog 的兩個引用欄位。
 
-若已同步上一輪 review 提交 `b90b703`，最後一輪 Pending 相容性修正只需同步 `01_Main.gs`；其餘 runtime 不變，沒有新 schema 或 migration。
+GAS／LINE 人工驗收（本版未執行 live）：`#版本` 顯示 v1.16.2；私訊／group／room 搜尋與圖片研究正常產生來源；錯誤回覆的代碼對應 `AI_CALL_METADATA.errorReason`，原文與秘密不外傳；封存／直接網址及背景通知保留原因。聊天連續換幾種方式吐槽小浣，再提出認真排錯／深入解釋，檢查笑點不複製、需要時有用例子、排錯優先說清楚。不要為了誘發故障更改正式 API Key。
 
-1. 備份 Spreadsheet；同步同版 `.gs` 後執行 `setupLogSheet()` 補欄，檢查舊列數／內容、欄位位置與重複執行結果。沒有歷史回填，也不用新 Trigger／Property。
+1. 若 ConversationLog 尚未完成 v1.16.1 引用補欄，先備份 Spreadsheet，再以同版 `setupLogSheet()` 補欄並檢查舊列數／內容及欄位。已完成者不用重新執行；沒有歷史回填，也不用新 Trigger／Property。
 2. 維護者建立 GAS version、更新既有 Web App deployment，保留 URL。部署版本與驗收由維護者另行確認，Git 合併不會自動部署。
 3. 測試聊天室讓甲貼文字、乙插話、丙引用甲加 `#小浣`；檢查回覆作者與目標正確，ConversationLog.Text 仍只有丙的新發言。接著自我引用、無 trigger 引用、下一輪不同成員追問。
 4. **Deployment / production smoke 必要 gate（未執行 live，mock 不代表通過）**：用真實 LINE webhook 的長 MessageId，走 `原始 LINE message.id → ConversationLog writer → SpreadsheetApp getValues()`，逐項確認 `typeof value === "string"` 與 `value === 原始 message.id`。已確認文字引用的 QuotedMessageId 同樣核對 `typeof value === "string"` 與 `value === 原始 quotedMessageId`。確認 assistant 同 ID 不成原文、跨聊天室不命中；文字引用不呼叫 LINE content endpoint，圖片引用照常且媒體目標 ID 不落新欄。
@@ -113,11 +136,13 @@ PTT 已驗證 article 的 HTTPS canonicalization、over18、結構驗證、metad
 
 ## 驗證與限制
 
-本機 `node tests/v1140_smoke.cjs`：**23 GAS sources、441 unique functions、233 checks 通過**。v1.16.0 基線 202，v1.16.1 基礎新增 22，上一輪 review 新增 8；最後一輪修改前實跑 232 通過，將一項錯誤的「未觸發保留 pending」測試替換為兩項原交付契約測試，並擴充 transport 失敗重試覆蓋。原 22 項 v1.16.1 與其他有效 review checks 保留。全程使用 Node 內建模組及既有 GAS／LINE／Sheet／provider mocks；不是新增 Node runtime。保留新聞收件／JSON business validators、週故事線、sidecar、群組 silence／限頻、required evidence、PendingReplies、Reader／PTT、provider registry／contract／deadline／usage 回歸。既有 writer mock 配合表頭寫入，dedup fixture 改以精確作者／ID 驗證，引用加 research 的 fixture 反映各一次 bounded read。
+v1.16.2 本機 `node tests/v1140_smoke.cjs`：**23 GAS sources、444 unique functions、245 checks 通過**（保留 233 項基線，追加 12 項診斷／安全／跨流程及 Prompt 邊界檢查）。新增測試包含六種已知 Search tool error 與未知 code、私訊／group／room、pending／pause、來源與配對、零 HTTP、缺 key、時間不足、continuation、舊 adapter 相容、typed Error／Reader、封存／同步新聞／背景通知、圖片下載與內部工具原因。Mock 的 Prompt 斷言不證明真實模型更有趣。
+
+v1.16.1 基線 `node tests/v1140_smoke.cjs`：**23 GAS sources、441 unique functions、233 checks 通過**。v1.16.0 基線 202，v1.16.1 基礎新增 22，上一輪 review 新增 8；最後一輪修改前實跑 232 通過，將一項錯誤的「未觸發保留 pending」測試替換為兩項原交付契約測試，並擴充 transport 失敗重試覆蓋。原 22 項 v1.16.1 與其他有效 review checks 保留。全程使用 Node 內建模組及既有 GAS／LINE／Sheet／provider mocks；不是新增 Node runtime。保留新聞收件／JSON business validators、週故事線、sidecar、群組 silence／限頻、required evidence、PendingReplies、Reader／PTT、provider registry／contract／deadline／usage 回歸。既有 writer mock 配合表頭寫入，dedup fixture 改以精確作者／ID 驗證，引用加 research 的 fixture 反映各一次 bounded read。
 
 Review fix 覆蓋：私訊／group／room 的 pending 文字引用；未觸發 group／room 的普通文字、可信文字引用及未知引用照常交付但無引用提醒；普通網址透過 enqueueWebTaskFromCurrentMessageIfNeeded_／handleSilentNewsUrlMessage_ 進新聞入隊入口；固定指令不誤報；圖片／research URL 提示；有無 trigger 的 router 傳送失敗保留 pending；實際 machine request 的未知身份 boolean；news memory bridge 的人格隔離／空值／錯誤 fallback；merge-neutral 文件與 live ID gate assertions。
 
-新增測試直接檢查模型 request、Sheet、cache 與副作用：插話後引用／自引／他引、群組與 room 靜默、assistant 同 ID 排除、舊列／未知作者／跨聊天室／失真 ID／重複與衝突／讀取失敗、補欄冪等與重排表頭、上游一層／掃描／長度／deadline、下一輪回填與跨作者去重、引用注入不改路由／required intent、圖片相容與媒體 ID 不持久化、reset／清理、素材與 history 作者一致、optional tool provenance、明確讀網址時引用補對象及 Prompt task 隔離。另以 `git diff --check` 檢查格式；原 provider／profile／schema／主要預算不變。
+v1.16.1 基線測試直接檢查模型 request、Sheet、cache 與副作用：插話後引用／自引／他引、群組與 room 靜默、assistant 同 ID 排除、舊列／未知作者／跨聊天室／失真 ID／重複與衝突／讀取失敗、補欄冪等與重排表頭、上游一層／掃描／長度／deadline、下一輪回填與跨作者去重、引用注入不改路由／required intent、圖片相容與媒體 ID 不持久化、reset／清理、素材與 history 作者一致、optional tool provenance、明確讀網址時引用補對象及 Prompt task 隔離。另以 `git diff --check` 檢查格式；provider route／profile／schema／主要預算不變。
 
 未能本機執行 GAS，沒有真實 LINE／DeepSeek／Gemini／OpenAI／Jina／Sheet 呼叫，也沒有部署。Payload parity 以既有三 transport fixtures 驗證，不能取代 production capability／Search metadata／latency／cache／sidecar／圖片辨識品質驗收。
 

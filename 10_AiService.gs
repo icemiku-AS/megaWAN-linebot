@@ -345,7 +345,9 @@ function runAiMessagesTask(task, messages, options) {
         evidence = runAiReadOnlyTool_(call, trustedResearchContext);
       } catch (error) {
         execution.status = 'FAILED';
-        throw createAiToolError_('ai_required_evidence_failed');
+        throw Object.assign(createAiToolError_('ai_required_evidence_failed'), {
+          errorReason: normalizeAiErrorReason_(error && error.errorReason) || normalizeAiErrorReason_(error && error.errorType)
+        });
       }
       if (!evidence || !evidence.data || evidence.data.ok !== true ||
         ['SEARCHED_FOUND', 'SEARCHED_EMPTY'].indexOf(evidence.data.executionStatus) < 0) {
@@ -353,7 +355,9 @@ function runAiMessagesTask(task, messages, options) {
         resolveAiRequestTimeoutSeconds_(request.timeoutSeconds, {
           executionDeadlineAtMs: orchestrationDeadline, minimumRequestSeconds: AI_TOOL_FINAL_RESERVE_SECONDS
         });
-        throw createAiToolError_('ai_required_evidence_failed');
+        throw Object.assign(createAiToolError_('ai_required_evidence_failed'), {
+          errorReason: normalizeAiErrorReason_(evidence && evidence.errorReason)
+        });
       }
       execution.status = evidence.data.executionStatus;
       resolveAiRequestTimeoutSeconds_(request.timeoutSeconds, {
@@ -414,6 +418,7 @@ function runAiMessagesTask(task, messages, options) {
         const execution = researchEvidence.find(function(item) { return item.source === call.name; });
         if (execution) execution.status = evidence.data.ok && ['SEARCHED_FOUND', 'SEARCHED_EMPTY'].indexOf(evidence.data.executionStatus) >= 0
           ? evidence.data.executionStatus : 'FAILED';
+        if (execution && execution.status === 'FAILED') execution.errorReason = normalizeAiErrorReason_(evidence.errorReason);
       });
       resolveAiRequestTimeoutSeconds_(request.timeoutSeconds, {
         executionDeadlineAtMs: orchestrationDeadline, minimumRequestSeconds: AI_TOOL_FINAL_RESERVE_SECONDS
@@ -436,8 +441,11 @@ function runAiMessagesTask(task, messages, options) {
       if (request.webSearchMode === 'required' && !providerResult.usedWebSearch) {
         throw Object.assign(createAiToolError_('ai_web_search_failed'), { retryable: true });
       }
-      if (researchEvidence.some(function(item) { return item.required && item.source !== 'web_search' &&
-        ['SEARCHED_FOUND', 'SEARCHED_EMPTY'].indexOf(item.status) < 0; })) throw createAiToolError_('ai_required_evidence_failed');
+      const failedEvidence = researchEvidence.find(function(item) { return item.required && item.source !== 'web_search' &&
+        ['SEARCHED_FOUND', 'SEARCHED_EMPTY'].indexOf(item.status) < 0; });
+      if (failedEvidence) throw Object.assign(createAiToolError_('ai_required_evidence_failed'), {
+        errorReason: normalizeAiErrorReason_(failedEvidence.errorReason)
+      });
       providerResult.sources = mergeAiEvidenceSources_([].concat(providerResult.sources || [], prefetchedSources));
     }
     let result = normalizeAiProviderResult_(config, providerResult, Date.now() - startedAt);
@@ -726,6 +734,7 @@ function normalizeAiProviderResult_(config, providerResult, elapsedMs) {
       source.finishReason
     );
     failed.transport = String(source.transport || '');
+    failed.errorReason = normalizeAiErrorReason_(source.errorReason) || failed.errorType;
     failed.usedWebSearch = source.usedWebSearch === true;
     failed.sources = mergeAiEvidenceSources_(source.sources);
     return failed;
@@ -746,6 +755,7 @@ function normalizeAiProviderResult_(config, providerResult, elapsedMs) {
     usage: normalizeAiUsage_(source.usage),
     elapsedMs: Number(source.elapsedMs || elapsedMs || 0),
     errorType: '',
+    errorReason: '',
     errorMessage: '',
     httpStatus: Number(Object.prototype.hasOwnProperty.call(source, 'httpStatus') ? source.httpStatus : 0),
     retryable: false
@@ -772,6 +782,7 @@ function buildAiFailureResponse_(config, errorType, errorMessage, httpStatus, re
     usage: normalizeAiUsage_(usage),
     elapsedMs: Number(elapsedMs || 0),
     errorType: normalizeAiErrorType_(errorType),
+    errorReason: normalizeAiErrorType_(errorType),
     // exception/body 可能反射 request 或 secret；不把原文轉交 caller 的既有 console/error paths。
     errorMessage: 'AI task failed (' + normalizeAiErrorType_(errorType) + ').',
     httpStatus: Number(httpStatus || 0),
@@ -799,7 +810,7 @@ function buildAiFailureFromException_(config, task, error, elapsedMs) {
     try { safeConfig = resolveAiTaskConfig_(task); } catch (ignore) { safeConfig = { task: String(task || '') }; }
   }
 
-  return buildAiFailureResponse_(
+  const failed = buildAiFailureResponse_(
     safeConfig,
     errorType,
     message,
@@ -807,6 +818,8 @@ function buildAiFailureFromException_(config, task, error, elapsedMs) {
     typeof (error && error.retryable) === 'boolean' ? error.retryable : isAiErrorTypeRetryable_(errorType),
     elapsedMs
   );
+  failed.errorReason = normalizeAiErrorReason_(error && error.errorReason) || failed.errorType;
+  return failed;
 }
 
 /**
@@ -842,6 +855,17 @@ function normalizeAiErrorType_(value) {
   ]).indexOf(value) >= 0 ? value : 'ai_unknown_error';
 }
 
+/** 固定診斷碼才可進 LINE／log；未知供應商字串、exception 與正文不可穿透。 */
+function normalizeAiErrorReason_(value) {
+  const reasons = ['api_no_response', 'local_time_budget', 'image_download_timeout', 'missing_deepseek_api_key', 'missing_gemini_api_key',
+    'api_response_not_json', 'provider_interrupted', 'provider_paused', 'provider_protocol_markup',
+    'search_unavailable', 'search_rate_limit', 'search_limit', 'search_invalid_input', 'search_query_too_long',
+    'search_request_too_large', 'search_tool_error', 'search_not_executed', 'search_pending',
+    'search_result_mismatch', 'search_result_duplicate', 'search_result_invalid',
+    'search_source_url_invalid', 'search_source_title_invalid', 'tool_read_failed', 'tool_url_read_failed', 'tool_result_too_large'];
+  return reasons.indexOf(value) >= 0 || (typeof value === 'string' && normalizeAiErrorType_(value) === value) ? value : '';
+}
+
 /** Dispatch/continuation 的共同信任邊界；缺欄位不可靠 builder defaults 假裝合法。 */
 function validateAiProviderResult_(result) {
   const object = result !== null && typeof result === 'object' && !Array.isArray(result);
@@ -868,6 +892,9 @@ function validateAiProviderResult_(result) {
       return call && typeof call.id === 'string' && typeof call.name === 'string' &&
         call.arguments !== null && typeof call.arguments === 'object' && !Array.isArray(call.arguments);
     }) && typeof source.errorType === 'string' && typeof source.errorMessage === 'string' && typeof source.retryable === 'boolean' &&
+    (!Object.prototype.hasOwnProperty.call(source, 'errorReason') ||
+      (typeof source.errorReason === 'string' && normalizeAiErrorReason_(source.errorReason) === source.errorReason &&
+        (!source.ok || source.errorReason === ''))) &&
     (source.ok
       ? source.errorType === '' && source.errorMessage === '' && !source.retryable &&
         (source.toolCalls.length > 0
@@ -900,7 +927,8 @@ function buildAiProviderResult_(fields) {
     continueWithToolResults: ok && typeof source.continueWithToolResults === 'function' ? source.continueWithToolResults : null,
     // 每次 adapter 呼叫最多一次 HTTP；network exception 也算一次，驗證／缺 key 則是零。
     modelCalls: source.modelCalls === 0 || source.modelCalls === 1 ? source.modelCalls : (source.httpStatus > 0 ? 1 : 0),
-    errorType: errorType, errorMessage: ok ? '' : 'AI provider request failed (' + errorType + ').',
+    errorType: errorType, errorReason: ok ? '' : normalizeAiErrorReason_(source.errorReason) || errorType,
+    errorMessage: ok ? '' : 'AI provider request failed (' + errorType + ').',
     retryable: !ok && source.retryable === true
   };
 }
@@ -913,6 +941,7 @@ function throwAiResultError_(result) {
   const safeResult = result || {};
   const error = new Error(safeResult.errorMessage || 'AI task failed.');
   error.errorType = safeResult.errorType || 'ai_unknown_error';
+  error.errorReason = normalizeAiErrorReason_(safeResult.errorReason) || normalizeAiErrorType_(error.errorType);
   error.retryable = safeResult.retryable === true;
   error.httpStatus = Number(safeResult.httpStatus || 0);
   error.aiResult = safeResult;
@@ -960,6 +989,7 @@ function createAiConfigurationError_(message) {
 function createAiExecutionBudgetError_(message) {
   const error = new Error(String(message || 'AI execution budget is exhausted.').slice(0, 500));
   error.errorType = 'ai_timeout';
+  error.errorReason = 'local_time_budget';
   // 同一 request 不應硬撐，但換到既有背景 Queue 後有完整時間預算，因此仍屬可重試。
   error.retryable = true;
   error.httpStatus = 0;
@@ -1035,6 +1065,7 @@ function logAiCallMetadata_(result, config) {
     businessValidation: safeConfig.outputMode === 'json' && safeResult.ok === true ? 'caller_owned_pending' : 'not_applicable',
     ok: safeResult.ok === true,
     errorType: safeResult.errorType || '',
+    errorReason: safeResult.ok === true ? '' : normalizeAiErrorReason_(safeResult.errorReason) || normalizeAiErrorType_(safeResult.errorType),
     httpStatus: Number(safeResult.httpStatus || 0),
     retryable: safeResult.retryable === true
   }));

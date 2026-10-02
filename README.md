@@ -2,7 +2,7 @@
 
 住在群組裡的浣熊夥伴：陪群友聊天、查資料，也協助 Podcast「現正熱潮中」整理新聞與節目素材。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-本文件描述 **v1.16.1 Text Quote & Persona Edition** 的版本契約。開發於 `feature/v1161-text-quote-persona`，以 main / v1.16.0 / `f37636b` 為開發基準；實際 Git 提交、推送與 merge 狀態以 repository refs 為準，GAS production deployment 與驗收由維護者另外確認。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+本文件描述 **v1.16.2 Reply Diagnostics & Personality Edition** 的版本契約。工作分支 `codex/v1162-reply-diagnostics-personality`，以抓取後的 origin/main / v1.16.1 / `fe8860f` 為開發基準；實際 Git 提交、推送與 merge 狀態以 repository refs 為準，GAS production deployment 與驗收由維護者另外確認。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
@@ -13,6 +13,7 @@
 - 新聞分析、快讀、封存、週編輯台與人工補充使用 JSON Schema；程式仍負責分類、完整性與資料寫入驗證。
 - 保留多輪文字記憶、人工畫重點、明確封存與二段確認清理。
 - 文字引用由程式精確查找原文並區分說話者；一般聊天不再預設延伸節目企劃。
+- 出錯時直接顯示已確認的原因、處理方向與診斷碼；正常聊天依話題換句型、接梗，深入問題補有用例子。
 
 ## 使用方式
 
@@ -28,6 +29,12 @@
 - 私訊或 `#小浣` 詢問「這篇網址跟之前收過的新聞有沒有重複？」可只讀比對，不會把研究網址自動新增為新聞。
 
 普通聊天由模型判斷是否需要搜尋；「幫我查／搜尋／上網查」會強制要求。明確問「聊過／收過／封存／畫過重點」時，程式先查指定資料。對話查詢限目前聊天室的過去使用者文字與圖片衍生摘要，並標明兩者來源；圖片摘要只表示小浣當時的辨識，不代表使用者說過或圖片主張已查證。查過但沒有結果、取得候選資料、尚未查詢／失敗會分開處理。來源依實際搜尋或工具取得的公開網址列出，最多三筆；來源 bubble 與主回答分開。
+
+### 錯誤回覆
+
+回覆中的「錯誤代碼」可直接用於排修，例如 `SEARCH_UNAVAILABLE｜HTTP 200` 是搜尋工具回報不可用，`SEARCH_RESULT_MISMATCH` 是結果配對異常，`AI_AUTH_ERROR｜HTTP 401` 是驗證或存取拒絕，`API_NO_RESPONSE` 是未取得有效 HTTP 回應，`LOCAL_TIME_BUDGET` 是本機回覆時間不足。API 限流與搜尋工具限流也分開顯示。未知原因明確標示，不直接判成使用者網路壞掉。
+
+需要追查時，貼錯誤回覆、發生時間及 GAS 的 `AI_CALL_METADATA`；其中 `errorReason` 是相同代碼的小寫值。請勿提供 API Key、完整請求／回應或工具正文。網址與圖片錯誤使用各自的固定代碼；已執行搜尋但後段失敗時，也會保留這個執行狀態。
 
 ### 文字引用
 
@@ -108,7 +115,7 @@ DeepSeek 依能力選擇 Chat Completions（普通文字／Vision／legacy extra
 
 - `11_AiProfiles.gs` 以 Provider Registry 註冊純 `validateRequest(request)` 與 `adapter(request)` 函式，以 Model Registry 宣告 capabilities、reasoning modes／efforts／sampling policy。Task/profile 表達是否需要推理及 effort；`high/max` 是目前 DeepSeek 已驗證的 policy，不是所有 provider 的限制。正式 task 的 HIGH、token／timeout 與 non-thinking caption 預算不變。
 - AiService 只調度 messages、能力、business schema、trusted scope、required evidence、只讀 tools 與共同 deadline；adapter 負責 endpoint、secret、payload、Search、Vision、structured output、finish／usage 及私有 continuation。能力組合先驗證；序列化、body limit 與 deadline 通過後才讀該 provider 的 Script Property，HTTP 不自動跟隨 redirect。
-- `buildAiProviderResult_()` 統一 adapter 結果欄位；首輪與 continuation 均經 `validateAiProviderResult_()` 檢查完整欄位、型別與 tools／callback 一致性，違反契約以 `ai_invalid_provider_response` 拒絕，未知 HTTP 次數記 null。callback 只在本次 service 內使用，最多一次，原始 turn／reasoning／tool data 不進 feature、history 或 Sheet。已驗證完成的 Search metadata 在後段失敗仍保留，非法或 pending Search 不當成完成。錯誤只輸出固定 typed 訊息。Gemini 僅補安全性與契約一致性，不啟用新能力。
+- `buildAiProviderResult_()` 統一 adapter 結果欄位；首輪與 continuation 均經 `validateAiProviderResult_()` 檢查完整欄位、型別與 tools／callback 一致性，違反契約以 `ai_invalid_provider_response` 拒絕，未知 HTTP 次數記 null。新增白名單 `errorReason`，缺省仍相容舊 adapter，有值必須通過 guard；LINE 和 metadata 保留細項，unknown 不輸出原文。callback 只在本次 service 內使用，最多一次，原始 turn／reasoning／tool data 不進 feature、history 或 Sheet。已驗證完成的 Search metadata 在後段失敗仍保留，非法或 pending Search 不當成完成。Gemini 僅補安全性與契約一致性，不啟用新能力。
 - `AI_CALL_METADATA` 保留安全 usage／Search／來源數與成本計數。缺少或無效 token 欄位為 `null`；多輪總數必須每輪都有該欄位才相加。`modelCalls` 計實際 HTTP 嘗試，`requiredEvidenceReads`／`clientToolCalls` 計工具執行嘗試，`continuationCount` 計續接嘗試。`contextTextChars` 計首輪文字 context；`toolDefinitionChars` 自 v1.16.0 起只計 provider-neutral client tool definitions 的 JSON 字元數，無工具為 0，不包含 built-in Search schema。Search intent 另記 `webSearchMode`，實際執行另記 `usedWebSearch`。這些不是 token、帳單或完整 wire payload 大小。
 
 未來增加 provider，工作應集中於新增 adapter、更新 Provider／Model Registry 與必要 profile／route、加入 adapter tests，驗證後才配置該 provider 的 key 與切換 route。LINE、圖片下載、ConversationLog、Reader、client tool implementations 和 business validators 不需因供應商改寫。本版沒有 OpenAI stub、OpenAI API 呼叫或必要的 `OPENAI_API_KEY`；Search `max_uses=3` 不變。
@@ -120,6 +127,7 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 ## Setup、部署與維護
 
 1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
+   完整 v1.16.1 升級本版只需同步 12 個修改的 runtime 檔，清單見 CURRENT_VERSION；部署基準不確定時同步同版全部 23 檔。
 2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
 3. **v1.16.0 → v1.16.1 有 schema 補欄**：先備份 Sheet，再以同版程式執行 `setupLogSheet()`，確認 ConversationLog 新增 `QuotedMessageId`、`QuoteStatus`，舊欄位／資料保留。首次寫入也會補缺欄，但建議部署前明確完成；不回填舊引用、不修復失真 ID。新 ID 以文字 literal 寫入，需在實際 Sheet 驗收超長 ID。既有 Trigger 不重建；首次建置才另外執行 `installWebTaskQueueTrigger()`。
 4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。
@@ -149,3 +157,4 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 | v1.15 | 能力路由、JSON Schema、只讀資料工具、圖片交叉研究、圖片語意記憶與 context 成本整理 |
 | v1.16 | Provider Architecture Foundation：registry dispatch、model reasoning policy、統一 adapter 契約、secret 與 metadata hardening；未接入 Luna／OpenAI |
 | v1.16.1 | 使用者文字引用、作者脈絡、跨作者去重修正與人格／task 分層；ConversationLog 補兩欄，部署需另行驗收 |
+| v1.16.2 | AI／搜尋／Reader／圖片錯誤診斷碼與自然聊天變化；無新資料欄位、設定或模型呼叫 |

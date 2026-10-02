@@ -374,6 +374,7 @@ function fetchAndExtractWebPage(url, aiExecutionContext) {
         url: url,
         readerRoute: 'legacy_raw_html_ai',
         errorType: extracted.errorType || 'ai_invalid_provider_response',
+        errorReason: normalizeAiErrorReason_(extracted.errorReason),
         retryable: typeof extracted.retryable === 'boolean' ? extracted.retryable : true,
         httpStatus: Number(extracted.httpStatus || 0),
         statusCode: rawPage.statusCode,
@@ -423,6 +424,7 @@ function fetchAndExtractWebPage(url, aiExecutionContext) {
       url: url,
       readerRoute: 'legacy_raw_html_ai',
       errorType: errorType || 'legacy_raw_html_extraction_error',
+      errorReason: normalizeAiErrorReason_(error && error.errorReason),
       retryable: typeof (error && error.retryable) === 'boolean' ? error.retryable : true,
       httpStatus: Number(error && error.httpStatus || 0),
       // AI typed error 只公開穩定類型；不把 provider response、Prompt 或正文塞進 Reader result。

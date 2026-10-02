@@ -12,11 +12,22 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.16.1 Text Quote & Persona Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-09-29';
+const BOT_CURRENT_VERSION = 'v1.16.2 Reply Diagnostics & Personality Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-10-02';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.16.2 Reply Diagnostics & Personality Edition',
+    date: '2026-10-02',
+    summary: '錯誤回覆帶明確原因與診斷碼，正常聊天更有變化與趣味。',
+    changes: [
+      '區分連線未取得回應、API／搜尋工具錯誤、協議格式與本機執行時間不足。',
+      '聊天、圖片研究、封存與網址整理保留診斷碼；未知原因明確標示，不猜成網路故障。',
+      '依話題接梗、換句型、補有用例子；嚴肅問題與機器格式仍維持清楚可靠。',
+      '沿用現有模型、搜尋次數、時間預算與資料表，不新增設定或模型呼叫。'
+    ]
+  },
   {
     version: 'v1.16.1 Text Quote & Persona Edition',
     date: '2026-09-29',
@@ -487,12 +498,12 @@ function getBotTextDirectNewsSummaryQueued_() {
   ].join('\n');
 }
 
-function getBotTextDirectNewsSummaryFailed_(url, errorMessage) {
+function getBotTextDirectNewsSummaryFailed_(url, failure) {
   return [
     '這個網址目前無法自動讀取：',
     url || '',
     '',
-    '原因：' + String(errorMessage || '未知錯誤').slice(0, 1000),
+    getBotTextReaderError_(failure),
     '',
     '你可以改用 #新聞補充，加上簡短說明與原文網址。'
   ].join('\n');
@@ -517,8 +528,45 @@ function getBotTextPendingDelivery_(pendingText, alsoAcceptedNewUrl) {
   return text;
 }
 
-function getBotTextNewsUrlFailed_(url, errorMessage) {
-  return ['小浣剛剛有一個網址讀不到，可能是網站擋爬蟲、需要登入，或內容抓取失敗：', '', url || '', '', '原因：', String(errorMessage || '未知錯誤').slice(0, 1000), '', '你可以用 #新聞補充 加上網址和簡單說明，我再幫你手動放進本週新聞素材池。'].join('\n');
+function getBotTextNewsUrlFailed_(url, failure) {
+  return ['這個網址的自動整理沒有完成：', '', url || '', '', getBotTextReaderError_(failure), '', '你可以用 #新聞補充，加上網址與簡短說明，手動補進新聞素材池。'].join('\n');
+}
+
+/** Reader 的固定分類與 AI failure 分開；不憑抓取失敗猜登入牆，也不直接顯示 error/body。 */
+function getBotTextReaderError_(failure) {
+  const result = failure || {};
+  if (typeof result.errorType === 'string' && result.errorType.indexOf('ai_') === 0 || result.aiResult) return getBotTextAiError_(result);
+  const messages = {
+    unsafe_url: '網址未通過格式或安全檢查，請確認是可公開讀取的 HTTP/HTTPS 網址。',
+    x_twitter_url_without_status_id: '這個 X 網址不是單篇貼文，請提供含 /status/{id} 的貼文連結。',
+    fxtwitter_fetch_failed: 'FxTwitter 讀取服務回傳 HTTP 錯誤，請依狀態碼檢查。',
+    fxtwitter_fetch_exception: '呼叫 FxTwitter 讀取服務未完成，連線原因尚未確認。',
+    fxtwitter_invalid_json: 'FxTwitter 讀取服務回傳的內容不是合法 JSON。',
+    fxtwitter_status_unavailable: 'FxTwitter 讀取服務沒有提供可用貼文；尚不能確認是貼文狀態或服務問題。',
+    fxtwitter_empty_status_text: 'FxTwitter 讀取服務沒有提供可用的貼文文字。',
+    jina_fetch_failed: 'Jina 網頁讀取服務回傳 HTTP 錯誤，請依狀態碼檢查。',
+    jina_fetch_exception: '呼叫 Jina 網頁讀取服務未完成，連線原因尚未確認。',
+    jina_and_legacy_failed: 'Jina 與備援讀取流程都未取得可用正文，請維護者查看 Reader 紀錄。',
+    reader_empty_content: '網頁讀取有回應，但正文長度或品質未通過檢查，尚未確認頁面原因。',
+    reader_sync_budget_exhausted: '本次網頁讀取的執行時間不足，未能完成處理。',
+    raw_html_fetch_failed: '目標網站回傳 HTTP 錯誤，請依狀態碼檢查。',
+    raw_html_fetch_exception: '連接目標網站未完成，連線原因尚未確認。',
+    unsupported_content_type: '目標網址的內容類型目前不支援，請提供網頁文章或手動補充。',
+    legacy_raw_html_extraction_error: '網頁正文抽取未完成，原因尚未確認，請維護者查看執行紀錄。',
+    ptt_not_found: 'PTT 回傳文章不存在或已移除的 HTTP 狀態，請確認文章連結。',
+    ptt_access_blocked: 'PTT 拒絕存取，請維護者檢查讀取服務。',
+    ptt_unexpected_redirect: 'PTT 回傳未預期的轉址，程式未跟隨，請確認文章連結。',
+    ptt_fetch_failed: 'PTT 回傳 HTTP 錯誤，請依狀態碼檢查。',
+    ptt_fetch_exception: '連接 PTT 未完成，連線原因尚未確認。',
+    ptt_fallback_failed: 'PTT 直接讀取與 Jina 備援均未成功，請維護者查看 PTT_READER 紀錄。',
+    ptt_over18_failed: 'PTT 仍回傳年齡確認頁，尚未取得文章。',
+    ptt_unexpected_page: 'PTT 回應不符合文章頁面的預期結構。',
+    ptt_empty_content: 'PTT 文章正文經清理後為空，尚未取得可用內容。',
+    reader_error: '網址處理未完成，原因尚未確認，請維護者查看執行紀錄。'
+  };
+  const code = typeof result.errorType === 'string' && Object.prototype.hasOwnProperty.call(messages, result.errorType) ? result.errorType : 'reader_error';
+  const status = normalizeAiOptionalNumber_(getReaderFailureHttpStatus_(result));
+  return messages[code] + '\n錯誤代碼：' + code.toUpperCase() + (status >= 100 && status <= 599 ? '｜HTTP ' + status : '');
 }
 
 function getBotTextManualNewsSupplementNeedUrl_() { return ['我大概懂你想補一個素材，不過新聞素材池需要有網址，之後你們才找得到原文。', '你可以用這種方式丟我：', '#新聞補充 這篇大概是在講某某事件，偏社群輿論，節目潛力高，後面附上原文網址'].join('\n'); }
@@ -593,34 +641,28 @@ function getBotTextNewsQuestionNoData_(queryOptions) {
 
 function getBotTextUnsupportedMessage_() { return '目前支援文字與 JPEG/PNG 圖片；貼圖、語音、影片與檔案還不能分析。私訊可以直接傳圖片，也可以回覆圖片後自然提問。'; }
 
-function getBotTextImageError_(errorType) {
-  switch (errorType) {
-    case 'image_need_quote':
-      return '請用 LINE「回覆」選取那張圖片再提問；群組用 #小浣 開頭即可，舊的 #小浣 看圖 也能繼續用。私訊可直接傳圖片。';
-    case 'image_album_unknown_index':
-      return 'LINE 沒有提供這組圖片的順序，這次尚未分析。請單張分次傳送，或回覆其中一張圖片；群組再用 #小浣 提問。';
-    case 'image_too_large':
-      return '這張圖片超過 4 MiB 的處理上限，請裁切重點或縮小後重新傳送。';
-    case 'image_unsupported_format':
-      return '這份內容不是可辨識的 JPEG/PNG 圖片，請改傳 JPG 或 PNG 截圖。';
-    case 'image_unavailable':
-      return 'LINE 沒有提供這張圖片，可能已過期、被撤回，或引用的不是圖片。請重新傳圖；群組再回覆該圖並用 #小浣 提問。';
-    case 'ai_timeout':
-      return '這次看圖沒有在回覆時間內完成。圖片不會排入背景佇列，請稍後重新傳圖，或裁切重點後再試。';
-    case 'image_download_failed':
-      return '這次沒能從 LINE 下載圖片，請稍後重新傳圖再試。';
-    default:
-      return '這次圖片分析沒有完成，可能是服務忙碌或圖片無法解析。請裁切重點、縮小圖片，或稍後重試。';
-  }
+function getBotTextImageError_(failure) {
+  const type = typeof failure === 'string' ? failure : failure && failure.errorType;
+  if (type === 'ai_timeout') return '這次看圖沒有在回覆時間內完成。圖片不會排入背景佇列，請稍後重新傳圖，或裁切重點後再試。\n' + getBotTextAiError_(failure);
+  const messages = {
+    image_need_quote: '請用 LINE「回覆」選取那張圖片再提問；群組用 #小浣 開頭即可，舊的 #小浣 看圖 也能繼續用。私訊可直接傳圖片。',
+    image_album_unknown_index: 'LINE 沒有提供這組圖片的順序，這次尚未分析。請單張分次傳送，或回覆其中一張圖片；群組再用 #小浣 提問。',
+    image_too_large: '這張圖片超過 4 MiB 的處理上限，請裁切重點或縮小後重新傳送。',
+    image_unsupported_format: '這份內容不是可辨識的 JPEG/PNG 圖片，請改傳 JPG 或 PNG 截圖。',
+    quoted_content_not_image: 'LINE 回傳的引用內容不是 JPEG/PNG 圖片，請重新傳圖，或回覆一張圖片再提問。',
+    image_unavailable: 'LINE 沒有提供可用圖片；尚不能確認是過期、撤回或引用內容不是圖片。請重新傳圖。',
+    image_download_failed: '這次沒能從 LINE 下載圖片，請稍後重新傳圖再試。',
+    image_unknown_error: '這次圖片分析沒有完成，原因尚未確認，請維護者查看執行紀錄。'
+  };
+  const code = typeof type === 'string' && Object.prototype.hasOwnProperty.call(messages, type) ? type : 'image_unknown_error';
+  const status = normalizeAiOptionalNumber_(failure && failure.httpStatus);
+  return messages[code] + '\n錯誤代碼：' + code.toUpperCase() + (status >= 100 && status <= 599 ? '｜HTTP ' + status : '');
 }
-function getBotTextWebSearchError_(errorType) {
-  if (errorType === 'ai_timeout') {
-    return '這次網路搜尋沒有在回覆時間內完成。我不會改用舊知識假裝查證成功，請稍後再試。';
-  }
-  if (errorType === 'ai_configuration_error' || errorType === 'ai_auth_error') {
-    return '目前網路搜尋服務尚未正確啟用。我不會改用舊知識假裝查證成功，請通知維護者檢查 AI 搜尋設定。';
-  }
-  return '這次網路搜尋沒有完成，可能是搜尋服務暫時異常。我不會改用舊知識假裝查證成功，請稍後再試。';
+function getBotTextWebSearchError_(failure) {
+  const result = failure && failure.aiResult || failure;
+  return (result && result.usedWebSearch === true
+    ? '網路搜尋已執行，但這次完整回覆沒有完成。'
+    : '這次網路搜尋沒有完成。') + '\n' + getBotTextAiError_(failure || 'ai_web_search_failed');
 }
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }
@@ -671,11 +713,70 @@ function getBotTextClearDone_(deletedCount) {
 
 function getBotTextHighlightSaved_() { return '我幫你畫起來了。這段已寫入 TopicHighlights，之後統整、分析、封存都會優先參考。'; }
 function getBotTextHighlightEmpty_() { return ['你要我畫哪一段重點？', '#畫重點 這段內容之後節目可以從平台風險和創作者依賴切入'].join('\n'); }
-function getBotTextArchiveError_() { return '我剛剛封存本週話題時卡住了。可能是對話紀錄太長、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
-function getBotTextAiError_() { return '我剛剛連接 AI、讀取網頁或翻紀錄時卡住了。你可以稍後再叫我一次，或把任務拆小一點給我處理。'; }
-function getBotTextRequiredEvidenceError_() { return '這次沒有完成你指定的資料查詢，還不能確認是否聊過、收過或有相關內容。這不代表沒有找到；請稍後再試。'; }
+function getBotTextArchiveError_(failure) { return '這次封存本週話題沒有完成。\n' + getBotTextAiError_(failure); }
+
+/** 舊無參數／errorType caller 仍可使用；只呈現白名單原因，不輸出 exception 或供應商正文。 */
+function getBotTextAiError_(failure) {
+  const result = failure && failure.aiResult || failure || {};
+  const type = normalizeAiErrorType_(typeof result === 'string' ? result : result.errorType);
+  const reason = normalizeAiErrorReason_(result.errorReason) || type;
+  const messages = {
+    api_no_response: '連接 AI 服務時未取得有效 HTTP 回應；連線原因尚未確認，請稍後重試。',
+    local_time_budget: '本次回覆的執行時間已用完，未能完成處理。請稍後重試，或把任務拆小。',
+    image_download_timeout: '等待 LINE 圖片下載時逾時，尚未送交 AI 分析。請稍後重新傳圖再試。',
+    missing_deepseek_api_key: 'Script Properties 缺少 DEEPSEEK_API_KEY，請維護者補上設定。',
+    missing_gemini_api_key: 'Script Properties 缺少 GEMINI_API_KEY，請維護者檢查手動呼叫的設定。',
+    api_response_not_json: 'AI 服務回應不是預期的 JSON 格式，請維護者檢查服務回傳。',
+    provider_interrupted: 'AI 服務回報生成中斷，沒有完成答案。請稍後重試。',
+    provider_paused: 'AI 服務暫停了這次工具回合，目前流程未續接完成。請維護者檢查工具續接。',
+    provider_protocol_markup: 'AI 回覆混入內部工具協議文字，程式已攔截。請維護者檢查供應商回傳。',
+    search_unavailable: '搜尋工具回報服務不可用，請稍後重試。',
+    search_rate_limit: '搜尋工具回報請求過於頻繁，請稍後重試。',
+    search_limit: '搜尋工具回報本次搜尋次數已達上限，請縮小問題範圍後重試。',
+    search_invalid_input: '搜尋工具回報查詢參數無效，請維護者檢查工具請求。',
+    search_query_too_long: '搜尋工具回報查詢文字太長，請縮短問題後重試。',
+    search_request_too_large: '搜尋工具回報請求過大，請縮小問題範圍後重試。',
+    search_tool_error: '搜尋工具回報錯誤，但錯誤原因未能辨識。請維護者檢查工具回傳。',
+    search_not_executed: '這次要求搜尋，但 AI 服務沒有回傳搜尋執行紀錄。請維護者檢查搜尋設定與協議。',
+    search_pending: 'AI 服務發起搜尋後沒有回傳對應結果，請維護者檢查搜尋工具回合。',
+    search_result_mismatch: '搜尋呼叫與結果無法配對，請維護者檢查搜尋協議。',
+    search_result_duplicate: '搜尋呼叫或結果的識別碼重複，請維護者檢查搜尋協議。',
+    search_result_invalid: '搜尋結果結構不符合預期，程式未採用。請維護者檢查工具回傳。',
+    search_source_url_invalid: '搜尋來源網址未通過格式或安全檢查，請維護者檢查來源欄位。',
+    search_source_title_invalid: '搜尋來源標題的欄位型別不符合預期，請維護者檢查工具回傳。',
+    tool_read_failed: '內部資料讀取工具未完成，原因尚未確認，請維護者檢查資料存取。',
+    tool_url_read_failed: '網址工具未能取得可用正文，尚未確認是頁面或讀取服務問題。',
+    tool_result_too_large: '資料工具的回傳內容超過大小上限，請縮小查詢範圍後重試。',
+    ai_configuration_error: 'AI 任務設定未通過檢查，請維護者檢查模型、能力或 Script Properties。',
+    ai_auth_error: 'AI 服務拒絕驗證或存取，請維護者檢查 API Key 與權限。',
+    ai_rate_limit: 'AI 服務回報請求過於頻繁，請稍後重試。',
+    ai_timeout: '等待 AI 服務回應時逾時，請稍後重試。',
+    ai_provider_http_error: 'AI 服務回傳 HTTP 錯誤，請依狀態碼檢查服務或請求設定。',
+    ai_empty_response: 'AI 服務沒有產生可用答案，請稍後重試。',
+    ai_invalid_json: 'AI 答案無法解析成指定的 JSON 格式，請維護者檢查輸出。',
+    ai_validation_error: 'AI 答案未通過資料格式或內容驗證，請維護者檢查輸出。',
+    ai_invalid_provider_response: 'AI 服務回傳的格式或協議不符合預期，請維護者檢查回傳。',
+    ai_finish_reason_length: 'AI 回覆達到輸出長度上限，請縮小問題範圍後重試。',
+    ai_finish_reason_error: 'AI 沒有正常完成回覆，請維護者檢查生成停止原因。',
+    ai_web_search_failed: '搜尋未完成，現有紀錄不足以確認細項原因，請維護者查看執行紀錄。',
+    ai_required_evidence_failed: '指定資料來源未能完成讀取，請維護者檢查工具與資料存取。',
+    ai_tool_limit: '這次工具呼叫超過流程上限，請縮小問題範圍後重試。',
+    ai_tool_not_allowed: 'AI 要求使用未允許的工具，程式已攔截。請維護者檢查工具呼叫。',
+    ai_invalid_tool_call: 'AI 回傳的工具呼叫格式不符，請維護者檢查工具協議。',
+    ai_invalid_tool_arguments: 'AI 回傳的工具參數格式不符，請維護者檢查工具參數。',
+    ai_unsafe_tool_url: '工具要求讀取的網址未通過安全檢查，程式已攔截。',
+    ai_tool_round_limit: 'AI 要求超過目前允許的工具續接回合，請縮小問題範圍後重試。',
+    ai_tool_data_unavailable: '工具所需資料表或欄位不可用，請維護者檢查資料設定。',
+    ai_unknown_error: '這次處理沒有完成，原因尚未確認。請維護者查看執行紀錄。'
+  };
+  const status = normalizeAiOptionalNumber_(result.httpStatus);
+  return messages[reason] + '\n錯誤代碼：' + reason.toUpperCase() +
+    (status >= 100 && status <= 599 ? '｜HTTP ' + status : '');
+}
+
+function getBotTextRequiredEvidenceError_(failure) { return '這次沒有完成你指定的資料查詢，還不能確認是否聊過、收過或有相關內容；這不代表沒有找到。\n' + getBotTextAiError_(failure || 'ai_required_evidence_failed'); }
 function getBotTextArchiveNoData_() { return '目前還沒有足夠的使用者對話可以封存。等群組多聊一點，我再幫你收進 WeeklySummary。'; }
-function getBotTextNewsArchiveError_() { return '我剛剛封存本週新聞時卡住了。可能是 NewsInbox 素材太多、API 暫時不穩，或資料格式不太聽話。可以稍後再叫我試一次。'; }
+function getBotTextNewsArchiveError_(failure) { return '這次封存本週新聞沒有完成。\n' + getBotTextAiError_(failure); }
 function getBotTextNewsArchiveNoData_() { return '最近 7 天 NewsInbox 還沒有可封存的新聞素材。你可以先貼幾個網址，或用 #新聞補充 手動補素材。'; }
 function getBotTextNoTopicContextForAnalysis_() { return '目前我還翻不到足夠的使用者對話、畫重點、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或用 #畫重點 補一段想討論的脈絡。'; }
 function getBotTextNoTopicContextForIntegration_() { return '目前我還翻不到足夠的使用者聊天、畫重點、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。'; }
@@ -692,8 +793,8 @@ function getBotTextNewsArchiveDone_(archiveJson, recentCount) {
 // 網址快讀結果格式
 // ======================================================
 
-function getBotTextWebTaskFailed_(errorMessage) {
-  return ['我剛剛翻這個網址任務時卡住了。', '', '可能原因：', '・網址擋爬蟲', '・內容需要登入', '・頁面格式太亂', '・API 暫時不穩', '', '錯誤訊息：', String(errorMessage || '未知錯誤').slice(0, 1000)].join('\n');
+function getBotTextWebTaskFailed_(failure) {
+  return '這次網址任務沒有完成。\n' + getBotTextReaderError_(failure);
 }
 
 function getBotTextSingleUrlFailed_(index, url, errorMessage) {

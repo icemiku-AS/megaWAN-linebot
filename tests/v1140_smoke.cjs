@@ -1,4 +1,4 @@
-// v1.16.1 文字引用／人格與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.16.2 回覆診斷／人格與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -261,7 +261,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.16.1'));
+  assert(replies.at(-1).text.includes('v1.16.2'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -386,12 +386,12 @@ check('Search and ordinary Anthropic failures use honest context-specific wordin
   reset();
   fetchImpl = () => response(503, { error: { message: 'provider secret' } });
   context.handleLineEvent(event('text', 'user', { text: '最近有什麼消息' }), now);
-  assert(replies[0].text.includes('連接 AI')); assert(!replies[0].text.includes('網路搜尋')); assert.equal(replies[0].finalText, '');
+  assert(replies[0].text.includes('AI_PROVIDER_HTTP_ERROR｜HTTP 503')); assert(!replies[0].text.includes('網路搜尋')); assert.equal(replies[0].finalText, '');
   assert(!JSON.stringify([...cache.values(), rows, logs, replies]).includes('provider secret'));
   reset();
   fetchImpl = () => { throw new Error('request timed out'); };
   context.handleLineEvent(event('text', 'user', { text: '幫我想五個標題' }), now);
-  assert(replies[0].text.includes('連接 AI')); assert(!replies[0].text.includes('網路搜尋'));
+  assert(replies[0].text.includes('AI_TIMEOUT')); assert(!replies[0].text.includes('網路搜尋'));
 });
 check('Anthropic HTTP and malformed responses keep typed failures private', () => {
   for (const [status, errorType] of [[401, 'ai_auth_error'], [403, 'ai_auth_error'], [408, 'ai_timeout'], [429, 'ai_rate_limit'], [500, 'ai_provider_http_error']]) {
@@ -1827,23 +1827,23 @@ check('tool selection can narrow availability but cannot grant tools or override
 });
 check('image errors separate timeout, Search execution failure and generic service errors', () => {
   for (const [reply, expected] of [
-    [response(408, 'never persist provider error'), context.getBotTextImageError_('ai_timeout')],
-    [response(503, 'never persist provider error'), context.getBotTextAiError_()],
-    [response(401, 'never persist provider error'), context.getBotTextAiError_()],
-    [response(429, 'never persist provider error'), context.getBotTextAiError_()],
-    [response(200, 'never persist invalid JSON'), context.getBotTextAiError_()],
-    [anthropicCompletion('不可採用', { searched: true, searchError: 'unavailable' }), context.getBotTextWebSearchError_('ai_web_search_failed')],
-    [anthropicCompletion('不可採用，未真正搜尋'), context.getBotTextWebSearchError_('ai_web_search_failed')]
+    [response(408, 'never persist provider error'), 'AI_TIMEOUT｜HTTP 408'],
+    [response(503, 'never persist provider error'), 'AI_PROVIDER_HTTP_ERROR｜HTTP 503'],
+    [response(401, 'never persist provider error'), 'AI_AUTH_ERROR｜HTTP 401'],
+    [response(429, 'never persist provider error'), 'AI_RATE_LIMIT｜HTTP 429'],
+    [response(200, 'never persist invalid JSON'), 'API_RESPONSE_NOT_JSON｜HTTP 200'],
+    [anthropicCompletion('不可採用', { searched: true, searchError: 'unavailable' }), 'SEARCH_UNAVAILABLE｜HTTP 200'],
+    [anthropicCompletion('不可採用，未真正搜尋'), 'SEARCH_NOT_EXECUTED｜HTTP 200']
   ]) {
     reset(); fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : reply;
     context.handleLineEvent(event('text', 'user', { text: '幫我查這張圖最新進度', quotedMessageId: '99999' }), now);
-    assert.equal(replies[0].text, expected); assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
+    assert(replies[0].text.includes('錯誤代碼：' + expected)); assert.equal(replies[0].finalText, ''); assert.equal(cache.size, 0);
     assert(!/never persist|不可採用/.test(JSON.stringify([rows, logs, replies])));
   }
   reset();
   withStubs({ runAiMemoryTask: () => ({ ok: false, errorType: 'ai_configuration_error' }) }, () => {
     context.handleLineEvent(event('text', 'user', { text: '幫我查這張圖最新進度', quotedMessageId: '99999' }), now);
-    assert.equal(replies[0].text, context.getBotTextAiError_());
+    assert(replies[0].text.includes('AI_CONFIGURATION_ERROR'));
   });
 });
 check('late first image tool call may continue only with remaining read and final time', () => {
@@ -1861,7 +1861,8 @@ check('late first image tool call may continue only with remaining read and fina
       const started = now;
       context.handleLineEvent(event('text', 'user', { text: '幫我查這張圖最新進度，比對之前收過的新聞', quotedMessageId: '99999' }), started);
       assert.equal(providerCalls, firstSeconds === 20.5 ? 2 : 1); assert.equal(reads, firstSeconds === 20.5 ? 2 : 1);
-      assert.equal(replies[0].text, firstSeconds === 20.5 ? '交叉研究回答' : context.getBotTextImageError_('ai_timeout'));
+      if (firstSeconds === 20.5) assert.equal(replies[0].text, '交叉研究回答');
+      else assert(replies[0].text.includes('LOCAL_TIME_BUDGET'));
       assert(now < started + 30000);
       if (firstSeconds === 22) assert.equal(cache.size, 0);
     });
@@ -1875,7 +1876,7 @@ check('image pending continuation rejects a second client batch after tool gatin
     fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : response(200, turns[providerCalls++]);
     context.handleLineEvent(event('text', 'user', { text: '幫我查這張圖最新進度，比對之前收過的新聞', quotedMessageId: '99999' }), now);
     assert.equal(providerCalls, 2); assert.equal(reads, 2); assert.equal(cache.size, 0);
-    assert.equal(replies[0].text, context.getBotTextAiError_()); assert(logs.some(log => log.includes('ai_tool_round_limit')));
+    assert(replies[0].text.includes('AI_TOOL_ROUND_LIMIT')); assert(logs.some(log => log.includes('ai_tool_round_limit')));
   });
 });
 check('image Search still deducts earlier webhook work and rejects deadline overruns', () => {
@@ -1887,7 +1888,7 @@ check('image Search still deducts earlier webhook work and rejects deadline over
     return anthropicCompletion('晚到回答不可保存', { searched: true });
   };
   context.handleLineEvent(event('text', 'user', { text: '幫我查這張圖最新進度', quotedMessageId: '99999' }), started);
-  assert.equal(replies[0].text, context.getBotTextImageError_('ai_timeout')); assert.equal(cache.size, 0);
+  assert(replies[0].text.includes('LOCAL_TIME_BUDGET')); assert.equal(cache.size, 0);
   assert(!JSON.stringify([rows, logs, replies]).includes('晚到回答不可保存'));
   assert.equal(value('LINE_WEBHOOK_SYNC_WORK_BUDGET_MS'), 40000);
   assert.equal(value('LINE_WEBHOOK_SYNC_AI_TIMEOUT_CAP_SECONDS'), 30);
@@ -2324,12 +2325,12 @@ check('all three DeepSeek transports and dormant Gemini return the same adapter 
   ]) {
     fetchImpl = () => reply;
     const result = run(); assert(result.ok, JSON.stringify(result));
-    assert.deepEqual(Object.keys(result).sort(), adapterFields); assert.equal(result.modelCalls, 1);
+    assert.deepEqual(Object.keys(result).sort(), adapterFields.concat('errorReason').sort()); assert.equal(result.modelCalls, 1);
     assert(Object.values(result.usage).every(n => n === null || Number.isSafeInteger(n)));
     assert.equal(result.finishReason, 'stop'); assert.equal(result.continueWithToolResults, null);
     assert.equal(calls.at(-1).options.followRedirects, false);
     fetchImpl = () => response(503, 'DO_NOT_REFLECT_HTTP_BODY');
-    const failed = run(); assert(!failed.ok); assert.deepEqual(Object.keys(failed).sort(), adapterFields);
+    const failed = run(); assert(!failed.ok); assert.deepEqual(Object.keys(failed).sort(), adapterFields.concat('errorReason').sort());
     assert.equal(failed.modelCalls, 1); assert(!JSON.stringify(failed).includes('DO_NOT_REFLECT'));
   }
 });
@@ -3142,16 +3143,225 @@ check('v1161 review news memory bridge keeps evidence and output contract withou
     assert.equal(calls.length, 1, 'helper failure cannot introduce a second model call');
   });
 });
-check('v1161 review version documents are merge neutral and preserve the real Sheet ID gate', () => {
+check('version documents preserve refs and the inherited real Sheet ID gate', () => {
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('feature/v1161-text-quote-persona')); assert(doc.includes('Git')); assert(doc.includes('refs'));
+    assert(doc.includes('codex/v1162-reply-diagnostics-personality')); assert(doc.includes('v1.16.2')); assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
   }
   const contract = fs.readFileSync(path.join(root, 'CURRENT_VERSION.md'), 'utf8');
   assert(contract.includes('typeof value === "string"')); assert(contract.includes('value === 原始 message.id'));
   assert(contract.includes('value === 原始 quotedMessageId')); assert(contract.includes('未執行 live'));
+});
+// v1.16.2：沿用原 mocks，驗證實際原因從 provider 到 LINE／背景通知不遺失。
+check('v1162 Search tool failures have distinct safe reasons in private, group and room replies', () => {
+  for (const [vendorCode, reason] of Object.entries({ unavailable: 'search_unavailable', too_many_requests: 'search_rate_limit',
+    max_uses_exceeded: 'search_limit', invalid_tool_input: 'search_invalid_input', query_too_long: 'search_query_too_long',
+    request_too_large: 'search_request_too_large', PRIVATE_ERROR_CODE: 'search_tool_error' })) {
+    for (const scope of ['user', 'group', 'room']) {
+      reset(); fetchImpl = () => anthropicCompletion('PRIVATE_PARTIAL', { searched: true, searchError: vendorCode });
+      context.handleLineEvent(event('text', scope, { text: (scope === 'user' ? '' : '#小浣 ') + '幫我查最新消息' }), now);
+      assert.equal(replies.length, 1); assert(replies[0].text.includes(reason.toUpperCase() + '｜HTTP 200'));
+      const metadata = JSON.parse(logs.find(log => log.startsWith('AI_CALL_METADATA ')).slice(17));
+      assert.equal(metadata.errorType, 'ai_web_search_failed'); assert.equal(metadata.errorReason, reason);
+      assert.equal(metadata.usedWebSearch, false); assert.equal(metadata.modelCalls, 1); assert.equal(metadata.retryable, true);
+      assert.equal(cache.size, 0); assert(!/PRIVATE_PARTIAL|PRIVATE_ERROR_CODE/.test(JSON.stringify([rows, logs, replies])));
+    }
+  }
+  for (const code of [42, null, { toString: null, valueOf: null }]) {
+    reset(); const body = JSON.parse(anthropicCompletion('PRIVATE_PARTIAL', { searched: true, searchError: 'unavailable' }).getContentText());
+    body.content.find(b => b.type === 'web_search_tool_result').content.error_code = code;
+    fetchImpl = () => response(200, body);
+    const result = context.runAiTextTask('general_chat', '查最新', { forceWebSearch: true });
+    assert.equal(result.errorReason, 'search_tool_error'); assert.equal(result.errorType, 'ai_web_search_failed');
+    assert(!JSON.stringify([result, logs]).includes('PRIVATE_PARTIAL'));
+  }
+});
+check('v1162 malformed Search, source validation and pending execution remain separate and fail closed', () => {
+  const cases = [
+    ['search_result_mismatch', body => { body.content.find(b => b.type === 'web_search_tool_result').tool_use_id = 'wrong'; }],
+    ['search_result_duplicate', body => { body.content.push(body.content.find(b => b.type === 'server_tool_use')); }],
+    ['search_result_invalid', body => { body.content.find(b => b.type === 'web_search_tool_result').content = 'PRIVATE_BODY'; }],
+    ['search_result_invalid', body => { body.content.find(b => b.type === 'web_search_tool_result').content = [null]; }],
+    ['search_source_url_invalid', body => { body.content.find(b => b.type === 'web_search_tool_result').content[0].url = 'http://127.0.0.1'; }],
+    ['search_source_title_invalid', body => { body.content.find(b => b.type === 'web_search_tool_result').content[0].title = null; }],
+    ['provider_protocol_markup', body => { body.content.find(b => b.type === 'text').text = '<think>PRIVATE_BODY</think>'; }],
+    ['search_pending', body => { body.content = body.content.filter(b => b.type !== 'web_search_tool_result'); }],
+    ['provider_paused', body => { body.content = body.content.filter(b => b.type !== 'web_search_tool_result'); body.stop_reason = 'pause_turn'; }]
+  ];
+  for (const [reason, change] of cases) {
+    reset(); const body = JSON.parse(anthropicCompletion('PRIVATE_PARTIAL', { searched: true, searchResults: [{ ...verifiedSearchSource }] }).getContentText());
+    change(body); fetchImpl = () => response(200, body);
+    const result = context.runAiMemoryTask('general_chat', 'user:test', '查最新', '查最新', { forceWebSearch: true });
+    assert.equal(result.errorType, 'ai_web_search_failed'); assert.equal(result.errorReason, reason);
+    assert.equal(result.usedWebSearch, false); assert.equal(result.sources.length, 0); assert.equal(result.usage.totalTokens, 3800);
+    assert.equal(cache.size, 0); assert(context.getBotTextWebSearchError_(result).includes(reason.toUpperCase()));
+    assert(!JSON.stringify([result, rows, logs]).includes('PRIVATE'));
+  }
+});
+check('v1162 missing Search and completed paused Search do not claim the same execution state', () => {
+  fetchImpl = () => anthropicCompletion('PRIVATE_NO_SEARCH');
+  let result = context.runAiTextTask('general_chat', '查最新', { forceWebSearch: true });
+  assert.equal(result.errorReason, 'search_not_executed'); assert(!result.usedWebSearch);
+  fetchImpl = () => anthropicCompletion('PRIVATE_PARTIAL', { searched: true, searchResults: [verifiedSearchSource], stopReason: 'pause_turn' });
+  result = context.runAiTextTask('general_chat', '查最新', { forceWebSearch: true });
+  assert.equal(result.errorReason, 'provider_paused'); assert(result.usedWebSearch); assert.equal(result.sources.length, 1);
+  assert(context.getBotTextWebSearchError_(result).startsWith('網路搜尋已執行'));
+  assert(!JSON.stringify([result, logs]).includes('PRIVATE'));
+});
+check('v1162 no HTTP response, API timeout and local budget cannot be mistaken for each other', () => {
+  for (const [message, reason] of [['PRIVATE_FETCH_EXCEPTION', 'api_no_response'], ['timed out PRIVATE_BODY', 'ai_timeout']]) {
+    reset(); fetchImpl = () => { throw Error(message); };
+    const result = context.runAiTextTask('general_chat', 'hello');
+    assert.equal(result.errorReason, reason); assert.equal(result.measurement.modelCalls, 1); assert.equal(result.httpStatus, 0);
+    assert(context.getBotTextAiError_(result).includes(reason.toUpperCase())); assert(!logs.join('').includes('PRIVATE'));
+    const dormant = context.callGeminiProvider_(geminiRequest()); assert.equal(dormant.errorReason, reason);
+  }
+  reset(); lockDelay = 2000;
+  const result = context.runAiMemoryTask('general_chat', 'user:test', 'hello', 'hello', { executionDeadlineAtMs: now + 1000 });
+  assert.equal(result.errorType, 'ai_timeout'); assert.equal(result.errorReason, 'local_time_budget'); assert.equal(calls.length, 0);
+  assert(context.getBotTextAiError_(result).includes('LOCAL_TIME_BUDGET'));
+  reset();
+  const downloaded = context.downloadLineImage_('12345', context.createLineWebhookExecutionContext_(now - 120000));
+  assert.equal(downloaded.errorReason, 'local_time_budget'); assert.equal(calls.length, 0);
+  assert(context.getBotTextImageError_(downloaded).includes('LOCAL_TIME_BUDGET'));
+  reset(); fetchImpl = () => { throw Error('timed out PRIVATE_DOWNLOAD'); };
+  const timeout = context.downloadLineImage_('12345', context.createLineWebhookExecutionContext_(now));
+  assert.equal(timeout.errorReason, 'image_download_timeout');
+  const text = context.getBotTextImageError_(timeout);
+  assert(text.includes('IMAGE_DOWNLOAD_TIMEOUT')); assert(text.includes('尚未送交 AI')); assert(!text.includes('PRIVATE_DOWNLOAD'));
+});
+check('v1162 missing active and dormant keys report only the setting name before HTTP', () => {
+  withStubs({ getRequiredScriptProperty_: key => { throw Error('Missing ' + key + ' in Script Properties. PRIVATE_SECRET'); } }, () => {
+    const result = context.runAiTextTask('general_chat', 'hello');
+    assert.equal(result.errorReason, 'missing_deepseek_api_key'); assert.equal(result.measurement.modelCalls, 0);
+    assert(context.getBotTextAiError_(result).includes('DEEPSEEK_API_KEY'));
+    const dormant = context.callGeminiProvider_(geminiRequest()); assert.equal(dormant.errorReason, 'missing_gemini_api_key');
+    assert.equal(calls.length, 0); assert(!JSON.stringify([result, dormant, logs]).includes('PRIVATE_SECRET'));
+  });
+});
+check('v1162 continuation preserves the final failure reason and earlier verified Search', () => {
+  const first = JSON.parse(anthropicToolTurn([toolCall('get_weekly_memory')], true).getContentText());
+  first.content.find(b => b.type === 'web_search_tool_result').content = [verifiedSearchSource];
+  fetchImpl = () => calls.length === 1 ? response(200, first) : anthropicCompletion('PRIVATE_PARTIAL', { searched: true, searchError: 'unavailable' });
+  withStubs({ runAiReadOnlyTool_: call => ({ id: call.id, data: { ok: true, executionStatus: 'SEARCHED_EMPTY', data: {} }, sources: [] }) }, () => {
+    const result = context.runAiMemoryTask('general_chat', 'user:test', '查最新', '查最新', { forceWebSearch: true });
+    assert.equal(result.errorReason, 'search_unavailable'); assert.equal(result.measurement.modelCalls, 2);
+    assert.equal(result.measurement.continuationCount, 1); assert(result.usedWebSearch); assert.equal(result.sources.length, 1);
+    assert.equal(cache.size, 0); assert(!JSON.stringify([result, logs]).includes('PRIVATE_PARTIAL'));
+  });
+});
+check('v1162 diagnostic extension rejects unknown values and accepts the old adapter contract', () => {
+  const old = context.buildAiProviderResult_({ ok: true, text: 'answer', finishReason: 'stop', httpStatus: 200 });
+  delete old.errorReason; assert(context.validateAiProviderResult_(old).ok);
+  for (const reason of ['PRIVATE_REASON', {}, 42, 'search_unavailable']) {
+    const failed = context.validateAiProviderResult_({ ...old, errorReason: reason });
+    assert.equal(failed.errorType, 'ai_invalid_provider_response'); assert.equal(failed.retryable, false);
+    assert(!JSON.stringify(failed).includes('PRIVATE_REASON'));
+  }
+  const result = context.buildAiProviderResult_({ ok: false, errorType: 'ai_web_search_failed', errorReason: 'PRIVATE_REASON' });
+  assert.equal(result.errorReason, 'ai_web_search_failed'); assert(!context.getBotTextAiError_(result).includes('PRIVATE'));
+});
+check('v1162 typed exceptions and legacy Reader retain the diagnostic reason', () => {
+  const failure = context.buildAiProviderResult_({ ok: false, errorType: 'ai_invalid_provider_response', errorReason: 'api_response_not_json', httpStatus: 200 });
+  let typed;
+  try { context.requireAiText_(failure); } catch (error) { typed = error; }
+  assert.equal(typed.errorReason, 'api_response_not_json');
+  assert.equal(context.buildAiFailureFromException_(null, 'general_chat', typed, 0).errorReason, 'api_response_not_json');
+  withStubs({ fetchRawWebPage: () => ({ ok: true, rawHtml: '<html>test</html>', contentType: 'text/html' }),
+    extractRawHtmlWithAi_: () => { throw typed; } }, () => {
+    const reader = context.fetchAndExtractWebPage('https://example.org/article');
+    assert.equal(reader.errorReason, 'api_response_not_json');
+    const error = context.createNewsUrlReaderError_(reader);
+    assert.equal(error.errorReason, 'api_response_not_json'); assert(context.getBotTextReaderError_(error).includes('API_RESPONSE_NOT_JSON｜HTTP 200'));
+  });
+});
+check('v1162 archive and direct news errors surface typed reasons rather than raw messages', () => {
+  const typed = Object.assign(Error('PRIVATE_EXCEPTION'), { errorType: 'ai_auth_error', httpStatus: 401, retryable: false });
+  for (const [command, name] of [['#封存本週話題', 'archiveWeeklyTopics'], ['#封存本週新聞', 'archiveWeeklyNews']]) {
+    reset(); withStubs({ [name]: () => { throw typed; } }, () => {
+      context.handleLineEvent(event('text', 'user', { text: command }), now);
+      assert(replies[0].text.includes('AI_AUTH_ERROR｜HTTP 401')); assert(!replies[0].text.includes('PRIVATE_EXCEPTION'));
+    });
+  }
+  reset(); withStubs({ fetchAndExtractWebPageByReaderLayer_: () => ({ ok: true, mainText: '正文' }),
+    analyzeNewsUrlWithAi_: () => { throw typed; } }, () => {
+    const result = context.handleDirectNewsUrlMessage_(event('text'), 'user:user1', 'https://example.org');
+    assert.equal(result.queued, false); assert(result.replyText.includes('AI_AUTH_ERROR｜HTTP 401'));
+    assert(!result.replyText.includes('PRIVATE_EXCEPTION'));
+  });
+});
+check('v1162 Reader and background notifications keep safe codes without guessing page causes', () => {
+  assert(context.getBotTextImageError_('quoted_content_not_image').includes('QUOTED_CONTENT_NOT_IMAGE'));
+  reset(); fetchImpl = () => response(503, 'PRIVATE_BODY');
+  const imageReply = context.analyzeLineImage_(event('image'), 'user:user1', '12345', '', context.createLineWebhookExecutionContext_(now));
+  assert(imageReply.includes('IMAGE_DOWNLOAD_FAILED｜HTTP 503')); assert(!imageReply.includes('PRIVATE_BODY'));
+  for (const type of ['ptt_access_blocked', 'reader_empty_content', 'unsupported_content_type', 'raw_html_fetch_exception', 'PRIVATE_TYPE']) {
+    const text = context.getBotTextReaderError_({ errorType: type, httpStatus: 403, error: 'PRIVATE_BODY' });
+    assert(text.includes((type === 'PRIVATE_TYPE' ? 'READER_ERROR' : type.toUpperCase()) + '｜HTTP 403'));
+    assert(!/PRIVATE|擋爬蟲|需要登入/.test(text));
+  }
+  const queue = headerSheet(['Status']), pendingSheet = headerSheet([]);
+  const typed = Object.assign(Error('PRIVATE_BODY'), { errorType: 'ai_web_search_failed', errorReason: 'search_limit', httpStatus: 200 });
+  withStubs({ ensureWebTaskQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
+    processWebLazySummaryTask_: () => { throw typed; }, setCellByHeader_: () => {} }, () => {
+    context.processSingleWebTask_({ sheetRowNumber: 2, conversationId: 'user:test', taskId: 'task', taskType: 'web_lazy_summary' });
+    assert(pendingSheet.appended[0][7].includes('SEARCH_LIMIT｜HTTP 200')); assert(!pendingSheet.appended[0][7].includes('PRIVATE_BODY'));
+  });
+});
+check('v1162 required internal tools retain data, read and size causes without exposing their envelope to the model', () => {
+  const q = '有沒有收過 TEST';
+  for (const [reason, getSheet] of [
+    ['ai_tool_data_unavailable', () => readOnlySheet([{ ConversationId: 'group:a', CreatedAt: new Date(now), Status: 'ok' }])],
+    ['tool_read_failed', () => { throw Error('PRIVATE_SHEET'); }]
+  ]) {
+    reset(); withStubs({ getSpreadsheet_: () => ({ getSheetByName: getSheet }) }, () => {
+      const result = context.runAiMemoryTask('general_chat', 'group:a', q, q);
+      assert.equal(result.errorType, 'ai_required_evidence_failed'); assert.equal(result.errorReason, reason);
+      assert(context.getBotTextRequiredEvidenceError_(result).includes(reason.toUpperCase()));
+      assert.equal(calls.length, 0); assert(!JSON.stringify([result, logs]).includes('PRIVATE_SHEET'));
+    });
+  }
+  reset(); withStubs({ runAiReadOnlyTool_: () => { throw context.createAiToolError_('ai_invalid_tool_arguments'); } }, () => {
+    const result = context.runAiMemoryTask('general_chat', 'group:a', q, q);
+    assert.equal(result.errorReason, 'ai_invalid_tool_arguments'); assert.equal(result.errorType, 'ai_required_evidence_failed');
+  });
+  for (const reason of ['tool_result_too_large', 'PRIVATE_REASON']) {
+    reset(); withStubs({ runAiReadOnlyTool_: () => ({ data: { ok: false }, sources: [], errorReason: reason }) }, () => {
+      const result = context.runAiMemoryTask('general_chat', 'group:a', q, q);
+      assert.equal(result.errorReason, reason === 'PRIVATE_REASON' ? 'ai_required_evidence_failed' : reason);
+      assert(!JSON.stringify([result, logs]).includes('PRIVATE_REASON'));
+    });
+  }
+  reset();
+  const imageQuestion = '幫我查最新並讀這張圖的網址內容';
+  fetchImpl = () => calls.length === 1 ? anthropicToolTurn([toolCall('read_url', { url: 'https://example.org' })], true)
+    : anthropicCompletion('PRIVATE_PARTIAL');
+  withStubs({ fetchAndExtractWebPageByReaderLayer_: () => ({ ok: false, error: 'PRIVATE_PAGE' }) }, () => {
+    const result = context.runAiMemoryTask('multimodal_research', 'group:a', imageQuestion,
+      [{ type: 'text', text: imageQuestion }, imagePart], { forceWebSearch: true });
+    assert.equal(result.errorType, 'ai_required_evidence_failed'); assert.equal(result.errorReason, 'tool_url_read_failed');
+    assert.equal(result.measurement.continuationCount, 1); assert.equal(calls.length, 2);
+    const payload = JSON.parse(calls[1].options.payload);
+    assert(!JSON.stringify(payload).includes('errorReason')); assert(!JSON.stringify([result, logs]).includes('PRIVATE'));
+  });
+});
+check('v1162 personality variation stays in human replies and preserves evidence and machine boundaries', () => {
+  for (const task of ['general_chat', 'image_analysis', 'multimodal_research', 'news_question']) {
+    const prompt = context.buildAiSystemPrompt_(task);
+    assert(prompt.includes('不照抄自己上一輪')); assert(prompt.includes('有用的例子、比較'));
+    assert(prompt.includes('不硬插笑話')); assert(prompt.includes('工具執行與背景監控不能虛構'));
+  }
+  for (const task of ['news_analysis', 'web_lazy_summary', 'raw_html_extraction', 'archive_topics', 'archive_news', 'weekly_editorial_digest', 'news_memory_bridge']) {
+    assert(!context.buildAiSystemPrompt_(task).includes('不照抄自己上一輪'));
+  }
+  for (const reply of [context.getBotTextAiError_(), context.getBotTextImageError_('PRIVATE_BODY'), context.getBotTextReaderError_('PRIVATE_BODY')]) {
+    assert(reply.includes('錯誤代碼')); assert(reply.includes('尚未確認')); assert(!reply.includes('PRIVATE_BODY'));
+  }
+  const malformed = { errorType: { toString: null, valueOf: null } };
+  assert(context.getBotTextImageError_(malformed).includes('IMAGE_UNKNOWN_ERROR'));
+  assert(context.getBotTextReaderError_(malformed).includes('READER_ERROR'));
 });
 process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed. No live GAS/LINE/DeepSeek/Gemini/OpenAI calls.\n`);

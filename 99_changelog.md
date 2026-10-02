@@ -1,3 +1,11 @@
+2026-10-02
+v1.16.2 Reply Diagnostics & Personality Edition（工作分支紀錄，部署另行確認）
+- 基於抓取後的 origin/main `fe8860f`，工作分支 codex/v1162-reply-diagnostics-personality。
+- 保留 errorType／retryable 與現有拒絕條件；新增白名單 errorReason，區分 Search 工具、配對／來源、pending／pause、HTTP／連線、缺 key 與本機時間不足，跨 service、continuation、typed Error 與 legacy Reader 保留。
+- LINE 聊天、圖片、封存、同步新聞及背景網址通知顯示固定原因、診斷碼和有效 HTTP 狀態；內部工具保留資料欄位／讀取／大小原因，圖片下載保留逾時／deadline 與非圖片引用差異。未知原因不猜成網路故障，也不顯示供應商正文或 exception。Queue 判斷／backoff 與 PendingReplies 契約不變。
+- 人類回覆 Prompt 增加貼題接梗、句型節奏變化、有用例子與比較；嚴肅情境先處理問題，機器格式與證據規則保留。
+- 23 GAS sources／444 unique functions／245 checks 通過；保留 233 項基線並追加 12 項。無 live GAS／LINE／provider／Reader／Sheet 驗證，人格效果需實際多輪抽樣。本版無新 schema、migration、設定、Trigger、模型呼叫、自動 retry 或 provider fallback；完整 v1.16.1 需同步 12 個修改的 runtime 檔。
+
 2026-09-29
 v1.16.1 PendingReplies 相容性修正（功能分支開發紀錄，部署另行確認）
 - 基於 b90b703，移除群組無 trigger 時跳過 Pending 交付的 gate，恢復 v1.16.0「任何文字可交付」契約；普通 reply 不追加重新引用提醒，真正引用提問的提醒與 intake 排除保持不變，普通網址仍靜默收件。

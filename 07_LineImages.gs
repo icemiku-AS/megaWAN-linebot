@@ -39,7 +39,7 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
           (downloaded.errorType === 'image_unavailable' || downloaded.errorType === 'quoted_content_not_image')) {
         return null;
       }
-      return getBotTextImageError_(downloaded.errorType);
+      return getBotTextImageError_(downloaded);
     }
 
     const needsSearch = isExplicitWebSearchRequest_(safeQuestion) || /最新|查證|來源|即時/.test(safeQuestion);
@@ -54,9 +54,9 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
       currentMessageId: event.message.type === 'text' ? event.message.id : '',
       excludeMessageId: event.message.id, beforeTimestampMs: event.timestamp }));
     if (!result.ok) {
-      if (result.errorType === 'ai_required_evidence_failed') return getBotTextRequiredEvidenceError_();
-      if (result.errorType === 'ai_web_search_failed') return getBotTextWebSearchError_(result.errorType);
-      return result.errorType === 'ai_timeout' ? getBotTextImageError_(result.errorType) : getBotTextAiError_();
+      if (result.errorType === 'ai_required_evidence_failed') return getBotTextRequiredEvidenceError_(result);
+      if (result.errorType === 'ai_web_search_failed') return getBotTextWebSearchError_(result);
+      return result.errorType === 'ai_timeout' ? getBotTextImageError_(result) : getBotTextAiError_(result);
     }
 
     // 可選的純展示 metadata 保持舊 string caller 相容；來源 bubble 不進 ConversationLog。
@@ -67,7 +67,9 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
     return result.text;
   } catch (error) {
     // 不記錄 exception：下載錯誤可能包含 URL/token，序列化錯誤可能包含圖片。
-    return getBotTextImageError_(error && error.errorType);
+    return error && String(error.errorType || '').indexOf('ai_') === 0
+      ? (error.errorType === 'ai_timeout' ? getBotTextImageError_(error) : getBotTextAiError_(error))
+      : getBotTextImageError_(error);
   }
 }
 
@@ -144,7 +146,7 @@ function downloadLineImage_(messageId, executionContext) {
     });
     const status = response.getResponseCode();
     if (status !== 200) {
-      return { ok: false, errorType: status === 408 || status === 429 || status >= 500 ? 'image_download_failed' : 'image_unavailable' };
+      return { ok: false, errorType: status === 408 || status === 429 || status >= 500 ? 'image_download_failed' : 'image_unavailable', httpStatus: status };
     }
     const headers = response.getAllHeaders();
     const contentTypeKey = Object.keys(headers).find(function(key) { return key.toLowerCase() === 'content-type'; });
@@ -174,6 +176,8 @@ function downloadLineImage_(messageId, executionContext) {
     return { ok: true, image: image };
   } catch (error) {
     const isTimeout = error && error.errorType === 'ai_timeout' || /timeout|timed out/i.test(String(error && error.message || ''));
-    return { ok: false, errorType: isTimeout ? 'ai_timeout' : 'image_download_failed' };
+    // 下載階段也保留本機 deadline 原因；不把時間不足一律說成等待 AI 逾時。
+    return { ok: false, errorType: isTimeout ? 'ai_timeout' : 'image_download_failed',
+      errorReason: normalizeAiErrorReason_(error && error.errorReason) || (isTimeout ? 'image_download_timeout' : ''), httpStatus: 0 };
   }
 }
