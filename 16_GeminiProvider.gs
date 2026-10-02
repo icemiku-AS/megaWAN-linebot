@@ -72,7 +72,9 @@ function callGeminiProvider_(request) {
         'Gemini returned a non-JSON HTTP response.',
         statusCode,
         true,
-        Date.now() - startedAt
+        Date.now() - startedAt,
+        null,
+        'api_response_not_json'
       );
     }
 
@@ -107,16 +109,19 @@ function callGeminiProvider_(request) {
     const message = String(error && error.message ? error.message : error || 'Gemini request failed.');
     const lower = message.toLowerCase();
     let errorType = String(error && error.errorType || '') || 'ai_unknown_error';
+    let errorReason = normalizeAiErrorReason_(error && error.errorReason);
     let retryable = error && typeof error.retryable === 'boolean' ? error.retryable : true;
     if (!error || !error.errorType) {
       if (lower.indexOf('missing gemini_api_key') >= 0) {
         errorType = 'ai_configuration_error';
+        errorReason = 'missing_gemini_api_key';
         retryable = false;
       } else if (lower.indexOf('timed out') >= 0 || lower.indexOf('timeout') >= 0) {
         errorType = 'ai_timeout';
       }
     }
-    return Object.assign(buildGeminiProviderFailure_(errorType, '', statusCode, retryable, Date.now() - startedAt), { modelCalls: modelCalls });
+    if (!errorReason && errorType === 'ai_unknown_error' && modelCalls === 1 && statusCode === 0) errorReason = 'api_no_response';
+    return Object.assign(buildGeminiProviderFailure_(errorType, '', statusCode, retryable, Date.now() - startedAt, null, errorReason), { modelCalls: modelCalls });
   }
 }
 
@@ -206,7 +211,7 @@ function classifyGeminiHttpFailure_(statusCode, responseText, elapsedMs) {
   if (status === 401 || status === 403) return buildGeminiProviderFailure_('ai_auth_error', message, status, false, elapsedMs);
   if (status === 408) return buildGeminiProviderFailure_('ai_timeout', message, status, true, elapsedMs);
   if (status === 429) return buildGeminiProviderFailure_('ai_rate_limit', message, status, true, elapsedMs);
-  return buildGeminiProviderFailure_('ai_provider_http_error', message, status, status >= 500, elapsedMs);
+  return buildGeminiProviderFailure_('ai_provider_http_error', message, status, status >= 500, elapsedMs, null, status === 0 ? 'api_no_response' : '');
 }
 
 function extractGeminiErrorMessage_(responseText) {
@@ -214,7 +219,7 @@ function extractGeminiErrorMessage_(responseText) {
   return 'Gemini HTTP request failed.';
 }
 
-function buildGeminiProviderFailure_(errorType, errorMessage, httpStatus, retryable, elapsedMs, usage) {
+function buildGeminiProviderFailure_(errorType, errorMessage, httpStatus, retryable, elapsedMs, usage, errorReason) {
   return buildAiProviderResult_({
     ok: false,
     text: '',
@@ -222,6 +227,7 @@ function buildGeminiProviderFailure_(errorType, errorMessage, httpStatus, retrya
     usage: usage || {},
     elapsedMs: Number(elapsedMs || 0),
     errorType: errorType || 'ai_unknown_error',
+    errorReason: errorReason,
     // dormant path 也不可把 exception／HTTP body 原文交給 service 或 log。
     errorMessage: 'Gemini provider request failed (' + String(errorType || 'ai_unknown_error') + ').',
     httpStatus: Number(httpStatus || 0),

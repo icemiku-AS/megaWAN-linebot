@@ -227,7 +227,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
         createPendingReplyForNewsUrlIntake_(
           event,
           conversationId,
-          getBotTextAiError_(),
+          getBotTextAiError_(error),
           'news_url_intake_error'
         );
       }
@@ -309,7 +309,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
       archiveReply = archiveWeeklyTopics(event, conversationId, aiExecutionContext);
     } catch (error) {
       console.error('archiveWeeklyTopics error:', error && error.stack ? error.stack : error);
-      archiveReply = getBotTextArchiveError_();
+      archiveReply = getBotTextArchiveError_(error);
     }
 
     replyToLine(event.replyToken, archiveReply);
@@ -323,7 +323,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
       archiveNewsReply = archiveWeeklyNews(event, conversationId, aiExecutionContext);
     } catch (error) {
       console.error('archiveWeeklyNews error:', error && error.stack ? error.stack : error);
-      archiveNewsReply = getBotTextNewsArchiveError_();
+      archiveNewsReply = getBotTextNewsArchiveError_(error);
     }
 
     replyToLine(event.replyToken, archiveNewsReply);
@@ -415,8 +415,8 @@ function handleLineEvent(event, webhookStartedAtMs) {
         );
         if (!generalChatResult.ok) {
           const isSearchFailure = generalChatResult.errorType === 'ai_web_search_failed';
-          aiReply = generalChatResult.errorType === 'ai_required_evidence_failed' ? getBotTextRequiredEvidenceError_()
-            : isSearchFailure ? getBotTextWebSearchError_(generalChatResult.errorType) : getBotTextAiError_();
+          aiReply = generalChatResult.errorType === 'ai_required_evidence_failed' ? getBotTextRequiredEvidenceError_(generalChatResult)
+            : isSearchFailure ? getBotTextWebSearchError_(generalChatResult) : getBotTextAiError_(generalChatResult);
           aiReplyMode = isSearchFailure ? 'web_search_error' : 'general_chat_error';
         } else {
           aiReply = generalChatResult.text;
@@ -431,7 +431,7 @@ function handleLineEvent(event, webhookStartedAtMs) {
   } catch (error) {
     console.error('AI call error stack:', error && error.stack ? error.stack : error);
     console.error('AI call error message:', error && error.message ? error.message : String(error));
-    aiReply = getBotTextAiError_();
+    aiReply = getBotTextAiError_(error);
   }
 
   replyToLine(event.replyToken, aiReply, false, aiFinalMessage);

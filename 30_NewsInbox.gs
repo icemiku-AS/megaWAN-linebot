@@ -119,7 +119,7 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText, aiExecutio
     if (isPermanentNewsUrlError_(webResult.errorType, webResult.error) || webResult.retryable === false) {
       return {
         ok: false,
-        replyText: getBotTextDirectNewsSummaryFailed_(url, webResult.error),
+        replyText: getBotTextDirectNewsSummaryFailed_(url, webResult),
         replyMode: 'news_inbox_sync_failed'
       };
     }
@@ -171,7 +171,7 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText, aiExecutio
       return {
         ok: false,
         queued: false,
-        replyText: getBotTextDirectNewsSummaryFailed_(url, error.message || getBotTextAiError_()),
+        replyText: getBotTextDirectNewsSummaryFailed_(url, error),
         replyMode: 'news_inbox_sync_failed'
       };
     }
@@ -475,9 +475,11 @@ function processSingleNewsUrlTask_(task) {
     const retryableHint = error && typeof error.retryable === 'boolean' ? error.retryable : null;
     const httpStatus = Number(error && error.httpStatus || 0);
     const shouldRetry = shouldRetryNewsUrlError_(errorType, errorText, retryableHint, httpStatus);
+    const diagnosticText = getBotTextReaderError_(error);
     console.log('NEWS_URL_TASK_ERROR_METADATA ' + JSON.stringify({
       taskId: task.taskId || '',
       errorType: errorType,
+      errorReason: normalizeAiErrorReason_(error && error.errorReason),
       readerRoute: String(error && error.readerRoute || ''),
       httpStatus: httpStatus,
       retryable: shouldRetry
@@ -486,7 +488,7 @@ function processSingleNewsUrlTask_(task) {
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'RetryCount', retryCount);
     setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorType', errorType);
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorText', truncateForSheet(errorText));
+    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorText', truncateForSheet(diagnosticText));
 
     // 暫時性錯誤才重試；已知永久性錯誤，例如 unsupported_social_platform，不應排回 pending。
     if (shouldRetry && retryCount < MAX_NEWS_QUEUE_RETRY_COUNT) {
@@ -500,7 +502,7 @@ function processSingleNewsUrlTask_(task) {
 
     // failed 後仍需透過 createPendingReplyFromTask() 建立通知，不能只更新 Queue 狀態。
     // 下一次同 conversationId 有訊息時，由主流程 deliverPendingReply_() 安全交付。
-    createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, errorText), 'news_url_failed');
+    createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, error), 'news_url_failed');
   }
 }
 
@@ -512,6 +514,7 @@ function createNewsUrlReaderError_(webResult) {
   const result = webResult || {};
   const error = new Error(result.error || 'fetch failed');
   error.errorType = result.errorType || 'reader_error';
+  error.errorReason = normalizeAiErrorReason_(result.errorReason);
   error.readerRoute = result.readerRoute || '';
   if (typeof result.retryable === 'boolean') error.retryable = result.retryable;
   // 明確的 httpStatus=0 代表沒有 provider HTTP response，不可因 0 為 falsy 而退回 raw page 的 200。

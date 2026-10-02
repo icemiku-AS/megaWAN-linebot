@@ -180,7 +180,7 @@ function processSingleWebTask_(task) {
   } catch (taskError) {
     console.error('processSingleWebTask_ error:', taskError && taskError.stack ? taskError.stack : taskError);
 
-    const errorText = getBotTextWebTaskFailed_(taskError && taskError.message ? taskError.message : taskError);
+    const errorText = getBotTextWebTaskFailed_(taskError);
 
     // 任務失敗也寫入 PendingReplies，讓使用者下次知道失敗原因
     createPendingReplyFromTask(task, errorText, task.taskType);
@@ -240,7 +240,7 @@ function createLazySummaryForUrl_(task, url) {
         topicPotential: '',
         extractionConfidence: 0,
         warnings: webResult.warnings || [],
-        error: webResult.error || '讀取網址失敗'
+        error: getBotTextReaderError_(webResult)
       };
     }
 
@@ -282,7 +282,7 @@ function createLazySummaryForUrl_(task, url) {
       topicPotential: '',
       extractionConfidence: 0,
       warnings: [],
-      error: String(error && error.message ? error.message : error)
+      error: getBotTextReaderError_(error)
     };
   }
 }

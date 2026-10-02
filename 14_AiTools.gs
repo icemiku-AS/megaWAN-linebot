@@ -192,7 +192,8 @@ function runAiReadOnlyTool_(call, trustedContext) {
           deadlineAtMs: trustedContext.deadlineAtMs - AI_TOOL_FINAL_RESERVE_SECONDS * 1000,
           readerTimeoutCapSeconds: 5, readerMinimumRequestSeconds: 1, noAi: true
         });
-        if (!web || !web.ok) return { id: call.id, data: { ok: false, errorCode: 'tool_read_failed' }, sources: [] };
+        if (!web || !web.ok) return { id: call.id, data: { ok: false, errorCode: 'tool_read_failed' },
+          errorReason: 'tool_url_read_failed', sources: [] };
         data = { title: aiToolText_(web.title, 200), url: args.url, text: aiToolText_(web.mainText, 3000), truncated: String(web.mainText || '').length > 3000 };
         sources.push({ title: data.title, url: args.url });
         break;
@@ -202,10 +203,13 @@ function runAiReadOnlyTool_(call, trustedContext) {
     const result = { ok: true, evidenceOnly: true, data: data,
       executionStatus: (Array.isArray(data.records) ? data.records.length : String(data.text || '').trim().length) ? 'SEARCHED_FOUND' : 'SEARCHED_EMPTY' };
     // escaping 可能放大 JSON；超限回固定失敗，不切斷 JSON 或傳出 raw exception。
-    if (JSON.stringify(result).length > AI_TOOL_MAX_RESULT_CHARS) return { id: call.id, data: { ok: false, errorCode: 'tool_result_too_large' }, sources: [] };
+    if (JSON.stringify(result).length > AI_TOOL_MAX_RESULT_CHARS) return { id: call.id, data: { ok: false, errorCode: 'tool_result_too_large' },
+      errorReason: 'tool_result_too_large', sources: [] };
     return { id: call.id, data: result, sources: sources };
   } catch (error) {
-    return { id: call.id, data: { ok: false, errorCode: 'tool_read_failed' }, sources: [] };
+    // 保留已知原因供 service 診斷；模型仍只收到既有 data，不外傳 exception。
+    return { id: call.id, data: { ok: false, errorCode: 'tool_read_failed' }, sources: [],
+      errorReason: normalizeAiErrorReason_(error && error.errorReason) || normalizeAiErrorReason_(error && error.errorType) || 'tool_read_failed' };
   }
 }
 
