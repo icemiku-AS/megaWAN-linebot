@@ -660,9 +660,9 @@ function getBotTextImageError_(failure) {
 }
 function getBotTextWebSearchError_(failure) {
   const result = failure && failure.aiResult || failure;
-  return (result && result.usedWebSearch === true
-    ? '網路搜尋已執行，但這次完整回覆沒有完成。'
-    : '這次網路搜尋沒有完成。') + '\n' + getBotTextAiError_(failure || 'ai_web_search_failed');
+  // 已執行的觀測由共用 helper 組裝，避免重複或矛盾的搜尋狀態提示。
+  return (result && result.usedWebSearch === true ? '' : '這次網路搜尋沒有完成。\n') +
+    getBotTextAiError_(failure || 'ai_web_search_failed');
 }
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }
@@ -770,7 +770,9 @@ function getBotTextAiError_(failure) {
     ai_unknown_error: '這次處理沒有完成，原因尚未確認。請維護者查看執行紀錄。'
   };
   const status = normalizeAiOptionalNumber_(result.httpStatus);
-  return messages[reason] + '\n錯誤代碼：' + reason.toUpperCase() +
+  // 只採信 normalized result 的嚴格布林觀測；與最後錯誤原因獨立，不從來源或搜尋意圖推定。
+  return (result.usedWebSearch === true ? '網路搜尋已執行，但這次完整回覆沒有完成。\n' : '') +
+    messages[reason] + '\n錯誤代碼：' + reason.toUpperCase() +
     (status >= 100 && status <= 599 ? '｜HTTP ' + status : '');
 }
 

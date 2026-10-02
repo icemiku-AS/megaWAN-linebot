@@ -1,4 +1,11 @@
 2026-10-02
+v1.16.2 搜尋後段失敗提示 review fix（部署另行確認）
+- 在 codex/v1162-reply-diagnostics-personality／817676c 確認缺口；共用 getBotTextAiError_ 依可信 usedWebSearch === true 顯示一次搜尋執行觀測，搜尋專用 helper 避免重複前綴，保留原失敗原因及圖片／必要資料／封存提醒。
+- Runtime 僅改 03_ResponseTexts.gs；AiService metadata、Provider／路由、Search 驗證、deadline、retry、continuation、來源 bubble、人格及儲存契約不變。
+- 基線實跑 245 checks；先以新增測試重現缺提示，再修正至 254 checks 通過（新增 9 項參數化回歸）。23 GAS sources／444 unique functions；git diff --check 通過。未執行 live GAS／LINE／Provider 驗證，不宣稱修復間歇搜尋失敗的未知根因。
+- 已同步 817676c 只需追加 03_ResponseTexts.gs；從完整 v1.16.1 升級仍累計 12 個 runtime 檔，無新增 schema／設定／migration。
+
+2026-10-02
 v1.16.2 Reply Diagnostics & Personality Edition（工作分支紀錄，部署另行確認）
 - 基於抓取後的 origin/main `fe8860f`，工作分支 codex/v1162-reply-diagnostics-personality。
 - 保留 errorType／retryable 與現有拒絕條件；新增白名單 errorReason，區分 Search 工具、配對／來源、pending／pause、HTTP／連線、缺 key 與本機時間不足，跨 service、continuation、typed Error 與 legacy Reader 保留。

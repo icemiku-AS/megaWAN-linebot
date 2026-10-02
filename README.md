@@ -34,7 +34,7 @@
 
 回覆中的「錯誤代碼」可直接用於排修，例如 `SEARCH_UNAVAILABLE｜HTTP 200` 是搜尋工具回報不可用，`SEARCH_RESULT_MISMATCH` 是結果配對異常，`AI_AUTH_ERROR｜HTTP 401` 是驗證或存取拒絕，`API_NO_RESPONSE` 是未取得有效 HTTP 回應，`LOCAL_TIME_BUDGET` 是本機回覆時間不足。API 限流與搜尋工具限流也分開顯示。未知原因明確標示，不直接判成使用者網路壞掉。
 
-需要追查時，貼錯誤回覆、發生時間及 GAS 的 `AI_CALL_METADATA`；其中 `errorReason` 是相同代碼的小寫值。請勿提供 API Key、完整請求／回應或工具正文。網址與圖片錯誤使用各自的固定代碼；已執行搜尋但後段失敗時，也會保留這個執行狀態。
+需要追查時，貼錯誤回覆、發生時間及 GAS 的 `AI_CALL_METADATA`；其中 `errorReason` 是相同代碼的小寫值。請勿提供 API Key、完整請求／回應或工具正文。網址與圖片錯誤使用各自的固定代碼。可信 `usedWebSearch === true` 時，包含截斷、空答案、時間不足與指定資料失敗，都會顯示一次「搜尋已執行，但完整回覆沒有完成」，並保留真正失敗原因；只有來源網址或搜尋要求不能推定已搜尋。
 
 ### 文字引用
 
@@ -128,6 +128,7 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 
 1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
    完整 v1.16.1 升級本版只需同步 12 個修改的 runtime 檔，清單見 CURRENT_VERSION；部署基準不確定時同步同版全部 23 檔。
+   已同步 v1.16.2 `817676c` 者，本輪 review fix 只需追加同步 `03_ResponseTexts.gs`，再更新既有 Web App deployment。
 2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
 3. **v1.16.0 → v1.16.1 有 schema 補欄**：先備份 Sheet，再以同版程式執行 `setupLogSheet()`，確認 ConversationLog 新增 `QuotedMessageId`、`QuoteStatus`，舊欄位／資料保留。首次寫入也會補缺欄，但建議部署前明確完成；不回填舊引用、不修復失真 ID。新 ID 以文字 literal 寫入，需在實際 Sheet 驗收超長 ID。既有 Trigger 不重建；首次建置才另外執行 `installWebTaskQueueTrigger()`。
 4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。

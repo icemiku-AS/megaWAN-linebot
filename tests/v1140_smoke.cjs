@@ -3364,4 +3364,179 @@ check('v1162 personality variation stays in human replies and preserves evidence
   assert(context.getBotTextImageError_(malformed).includes('IMAGE_UNKNOWN_ERROR'));
   assert(context.getBotTextReaderError_(malformed).includes('READER_ERROR'));
 });
+// v1.16.2 review：經真實入口與 AiService 驗證搜尋觀測及最終原因是不同維度。
+const reviewSearchNotice = '網路搜尋已執行，但這次完整回覆沒有完成。';
+const runReviewReply = (question, image = false, scope = 'user') => {
+  let result;
+  const run = context.runAiMemoryTask;
+  withStubs({ runAiMemoryTask: (...args) => { result = run(...args); return result; } }, () => {
+    context.handleLineEvent(event('text', scope, {
+      text: (image ? '#小浣 看圖 ' : scope === 'user' ? '' : '#小浣 ') + question,
+      ...(image ? { quotedMessageId: '99999' } : {})
+    }), now);
+  });
+  assert(result, 'actual chat/image entry must reach AiService');
+  assert.equal(replies.length, 1);
+  return result;
+};
+const assertReviewFailure = (result, type, reason, searched) => {
+  assert.equal(result.ok, false); assert.equal(result.text, '');
+  assert.equal(result.errorType, type); assert.equal(result.errorReason, reason);
+  assert.equal(result.usedWebSearch, searched);
+  const reply = replies[0];
+  assert.equal(reply.text.split(reviewSearchNotice).length - 1, searched ? 1 : 0, 'search observation must appear exactly once iff verified');
+  if (searched) assert(!reply.text.includes('這次網路搜尋沒有完成。'));
+  assert(reply.text.includes('錯誤代碼：' + reason.toUpperCase()));
+  assert.equal(reply.finalText, '', 'failed answer does not send a source bubble');
+  const metadata = JSON.parse(logs.filter(log => log.startsWith('AI_CALL_METADATA ')).at(-1).slice(17));
+  assert.equal(metadata.usedWebSearch, searched); assert.equal(metadata.errorType, type); assert.equal(metadata.errorReason, reason);
+  assert.equal(metadata.modelCalls, result.measurement.modelCalls); assert.equal(metadata.totalTokens, result.usage.totalTokens);
+  assert.equal(metadata.retryable, result.retryable); assert.equal(metadata.httpStatus, result.httpStatus);
+  assert.equal(cache.size, 0);
+  assert(rows.some(row => row[6] === 'assistant' && row[9] === reply.text), 'fixed diagnostic is still recorded');
+  assert(!JSON.stringify([result, replies, rows, logs, ...cache.values()]).includes('PRIVATE_REVIEW'));
+};
+for (const [name, type, reason, stop, answer] of [
+  ['length', 'ai_finish_reason_length', 'ai_finish_reason_length', 'max_tokens', 'PRIVATE_REVIEW_PARTIAL'],
+  ['budget', 'ai_timeout', 'local_time_budget', 'end_turn', 'PRIVATE_REVIEW_LATE'],
+  ['empty', 'ai_empty_response', 'ai_empty_response', 'end_turn', '   ']
+]) check('v1162 review completed Search plus ' + name + ' reaches private/group/room text and image replies', () => {
+  for (const scope of ['user', 'group', 'room']) for (const image of [false, true]) {
+    reset(); fetchImpl = url => {
+      if (url.includes('api-data.line.me')) return response(200, '', { 'Content-Type': 'image/png' }, png);
+      if (name === 'budget') now += 31000;
+      return anthropicCompletion(answer, { searched: true, searchResults: [verifiedSearchSource], stopReason: stop });
+    };
+    const result = runReviewReply('幫我查最新資料', image, scope);
+    assertReviewFailure(result, type, reason, true);
+    assert.equal(result.task, image ? 'multimodal_research' : 'general_chat');
+    assert.equal(result.retryable, name !== 'length'); assert.equal(result.httpStatus, 200);
+    assert.equal(result.finishReason, name === 'length' ? 'length' : 'stop');
+    assert.equal(result.usage.inputTokens, 1200); assert.equal(result.usage.outputTokens, 2600); assert.equal(result.usage.totalTokens, 3800);
+    assert.equal(result.measurement.modelCalls, 1); assert.equal(result.measurement.clientToolCalls, 0);
+    assert.equal(result.measurement.requiredEvidenceReads, 0); assert.equal(result.measurement.continuationCount, 0);
+    assert.equal(calls.length, image ? 2 : 1); assert.equal(researchStatus(result, 'web_search'), 'COMPLETED');
+    if (name === 'budget') {
+      assert(!replies[0].text.includes('等待 AI 服務回應時逾時'));
+      if (image) assert(replies[0].text.includes('圖片不會排入背景佇列'));
+    }
+  }
+});
+check('v1162 review required evidence failures keep completed Search and not-found caveat in text and image', () => {
+  let modelCalls = 0;
+  const first = JSON.parse(anthropicToolTurn([toolCall('read_url', { url: 'https://example.org' })], true).getContentText());
+  first.content.find(b => b.type === 'web_search_tool_result').content = [verifiedSearchSource];
+  fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png)
+    : ++modelCalls === 1 ? response(200, first) : anthropicCompletion('PRIVATE_REVIEW_INCOMPLETE');
+  withStubs({ fetchAndExtractWebPageByReaderLayer_: () => ({ ok: false, error: 'PRIVATE_REVIEW_PAGE' }) }, () => {
+    const result = runReviewReply('幫我查最新並讀這張圖的網址內容', true, 'group');
+    assertReviewFailure(result, 'ai_required_evidence_failed', 'tool_url_read_failed', true);
+    assert(replies[0].text.includes('這不代表沒有找到'));
+    assert.equal(researchStatus(result, 'read_url'), 'FAILED'); assert.equal(researchStatus(result, 'web_search'), 'COMPLETED');
+    assert.equal(result.retryable, false); assert.equal(result.httpStatus, 200); assert.equal(result.usage.totalTokens, 7600);
+    assert.equal(result.measurement.modelCalls, 2); assert.equal(result.measurement.clientToolCalls, 1);
+    assert.equal(result.measurement.continuationCount, 1); assert.equal(calls.length, 3);
+  });
+  // 文字入口先讀必要資料；模型在搜尋後精查同一來源時失敗，也不能當成查無資料。
+  reset(); let reads = 0;
+  const execute = context.runAiReadOnlyTool_;
+  const textFirst = JSON.parse(anthropicToolTurn([toolCall('search_conversation_log', { query: 'TEST' })], true).getContentText());
+  textFirst.content.find(b => b.type === 'web_search_tool_result').content = [verifiedSearchSource];
+  fetchImpl = () => calls.length === 1 ? response(200, textFirst) : anthropicCompletion('PRIVATE_REVIEW_INCOMPLETE');
+  withStubs({ runAiReadOnlyTool_: (call, trusted) => {
+    if (++reads === 1) return execute(call, trusted);
+    let evidence;
+    withStubs({ getSpreadsheet_: () => { throw Error('PRIVATE_REVIEW_SHEET'); } }, () => { evidence = execute(call, trusted); });
+    return evidence;
+  } }, () => {
+    const result = runReviewReply('幫我查最新資料，以前有沒有聊過 TEST');
+    assertReviewFailure(result, 'ai_required_evidence_failed', 'tool_read_failed', true);
+    assert(replies[0].text.includes('這不代表沒有找到'));
+    assert.equal(researchStatus(result, 'search_conversation_log'), 'FAILED');
+    assert.equal(result.measurement.requiredEvidenceReads, 1); assert.equal(result.measurement.clientToolCalls, 1);
+    assert.equal(result.measurement.modelCalls, 2); assert.equal(result.measurement.continuationCount, 1);
+    assert.equal(result.usage.totalTokens, 7600); assert.equal(calls.length, 2); assert.equal(reads, 2);
+  });
+});
+check('v1162 review continuation failure keeps earlier Search, final reason and measured cost', () => {
+  for (const failure of ['http', 'search', 'length']) {
+    reset(); const first = JSON.parse(anthropicToolTurn([toolCall('get_weekly_memory')], true).getContentText());
+    first.content.find(b => b.type === 'web_search_tool_result').content = [verifiedSearchSource];
+    fetchImpl = () => calls.length === 1 ? response(200, first) : failure === 'http' ? response(503, 'PRIVATE_REVIEW_BODY')
+      : anthropicCompletion('PRIVATE_REVIEW_PARTIAL', failure === 'search'
+        ? { searched: true, searchError: 'unavailable' } : { stopReason: 'max_tokens' });
+    const result = runReviewReply('幫我查最新資料', false, 'room');
+    const type = failure === 'http' ? 'ai_provider_http_error' : failure === 'search' ? 'ai_web_search_failed' : 'ai_finish_reason_length';
+    assertReviewFailure(result, type, failure === 'search' ? 'search_unavailable' : type, true);
+    assert.equal(result.sources[0].url, verifiedSearchSource.url); assert.equal(result.usage.totalTokens, failure === 'http' ? null : 7600);
+    assert.equal(result.retryable, failure !== 'length'); assert.equal(result.httpStatus, failure === 'http' ? 503 : 200);
+    assert.equal(result.measurement.modelCalls, 2); assert.equal(result.measurement.clientToolCalls, 1);
+    assert.equal(result.measurement.continuationCount, 1); assert.equal(calls.length, 2);
+  }
+});
+check('v1162 review absent, pending, malformed and failed Search never claims execution', () => {
+  for (const state of ['absent', 'pending', 'malformed', 'failed']) for (const image of [false, true]) {
+    reset(); const body = JSON.parse(anthropicCompletion('PRIVATE_REVIEW_PARTIAL', {
+      searched: state !== 'absent', searchResults: [verifiedSearchSource], searchError: state === 'failed' ? 'unavailable' : ''
+    }).getContentText());
+    if (state === 'pending') body.content = body.content.filter(b => b.type !== 'web_search_tool_result');
+    if (state === 'malformed') body.content.find(b => b.type === 'web_search_tool_result').tool_use_id = 'wrong';
+    fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : response(200, body);
+    const result = runReviewReply('幫我查最新資料', image);
+    assertReviewFailure(result, 'ai_web_search_failed', { absent: 'search_not_executed', pending: 'search_pending', malformed: 'search_result_mismatch', failed: 'search_unavailable' }[state], false);
+    assert.equal(result.sources.length, 0); assert.equal(result.measurement.modelCalls, 1); assert.equal(result.measurement.continuationCount, 0);
+  }
+});
+check('v1162 review read_url-only sources do not imply Search and keep existing success bubbles', () => {
+  for (const failed of [true, false]) {
+    reset(); fetchImpl = () => calls.length === 1 ? anthropicToolTurn([toolCall('read_url', { url: 'https://example.org' })])
+      : anthropicCompletion(failed ? 'PRIVATE_REVIEW_PARTIAL' : '完整回答', { stopReason: failed ? 'max_tokens' : 'end_turn' });
+    withStubs({ fetchAndExtractWebPageByReaderLayer_: () => ({ ok: true, mainText: '工具正文', title: '來源' }) }, () => {
+      const result = runReviewReply('解釋這個議題');
+      assert.equal(result.usedWebSearch, false); assert.equal(result.sources.length, 1); assert.equal(calls.length, 2);
+      if (failed) assertReviewFailure(result, 'ai_finish_reason_length', 'ai_finish_reason_length', false);
+      else { assert(result.ok); assert.equal(replies[0].text, '完整回答'); assert(replies[0].finalText.includes('https://example.org')); }
+    });
+  }
+});
+check('v1162 review legacy helpers and typed Errors use strict Search metadata without mutation or duplicate prefixes', () => {
+  const helpers = ['getBotTextAiError_', 'getBotTextWebSearchError_', 'getBotTextRequiredEvidenceError_',
+    'getBotTextArchiveError_', 'getBotTextNewsArchiveError_', 'getBotTextReaderError_', 'getBotTextImageError_'];
+  const base = context.buildAiFailureResponse_({}, 'ai_timeout', 'PRIVATE_REVIEW_BODY', 200, true, 123);
+  base.errorReason = 'local_time_budget';
+  const variants = [undefined, 'ai_timeout', 'PRIVATE_REVIEW_UNKNOWN', Object.assign(Error('PRIVATE_REVIEW_EXCEPTION'), { errorType: 'PRIVATE_REVIEW_TYPE' })];
+  for (const flag of [undefined, false, 'true', true]) {
+    const result = { ...base, ...(flag === undefined ? {} : { usedWebSearch: flag }), sources: [verifiedSearchSource], forceWebSearch: true };
+    if (flag === undefined) delete result.usedWebSearch;
+    variants.push(result);
+    try { context.throwAiResultError_(result); } catch (error) { error.usedWebSearch = flag !== true; variants.push(error); }
+  }
+  variants.push({ ...base, usedWebSearch: true, sources: [] });
+  for (const input of variants) {
+    const expected = !!((input && input.aiResult || input) && (input.aiResult || input).usedWebSearch === true);
+    const snapshot = JSON.stringify(input);
+    for (const name of helpers) {
+      const text = context[name](input);
+      assert.equal(text.split(reviewSearchNotice).length - 1, expected ? 1 : 0, name);
+      assert(!/undefined|PRIVATE_REVIEW/.test(text), name);
+      if (expected) assert(!text.includes('這次網路搜尋沒有完成。'));
+      if (name === 'getBotTextArchiveError_') assert(text.includes('封存本週話題沒有完成'));
+      if (name === 'getBotTextNewsArchiveError_') assert(text.includes('封存本週新聞沒有完成'));
+    }
+    assert.equal(JSON.stringify(input), snapshot, 'formatters do not rewrite normalized metadata');
+  }
+});
+check('v1162 review successful text, image research and plain image replies retain normal delivery', () => {
+  for (const image of [false, true]) {
+    reset(); fetchImpl = url => url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png)
+      : anthropicCompletion('完整搜尋回答', { searched: true, searchResults: [verifiedSearchSource] });
+    const result = runReviewReply('幫我查最新資料', image);
+    assert(result.ok); assert.equal(result.usedWebSearch, true); assert.equal(result.measurement.modelCalls, 1);
+    assert.equal(replies[0].text, '完整搜尋回答'); assert(replies[0].finalText.includes(verifiedSearchSource.url));
+    assert(!replies[0].text.includes(reviewSearchNotice)); assert.equal(calls.length, image ? 2 : 1);
+  }
+  reset(); const result = runReviewReply('描述圖片重點', true);
+  assert(result.ok); assert.equal(result.task, 'image_analysis'); assert.equal(result.usedWebSearch, false);
+  assert.equal(replies[0].finalText, ''); assert(!replies[0].text.includes(reviewSearchNotice));
+});
 process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed. No live GAS/LINE/DeepSeek/Gemini/OpenAI calls.\n`);

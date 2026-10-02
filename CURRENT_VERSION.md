@@ -21,6 +21,7 @@ MEGA浣 / 小浣：**v1.16.2 Reply Diagnostics & Personality Edition**（2026-10
 - LINE 顯示中文原因、處理方向及大寫代碼；取得有效 HTTP 狀態才附上狀態碼。`AI_CALL_METADATA.errorReason` 使用同一代碼的小寫值。HTTP 200 仍可能有工具錯誤；未取得回應與本機時間不足分開，不能據此宣稱使用者網路故障。未知供應商 error_code、exception／body、query、來源 URL、reasoning 或 secret 不進診斷碼與錯誤回覆。
 - Reader 顯示已知錯誤大類及 HTTP 狀態，不再列出登入／擋爬蟲等未確認原因。已完成搜尋後生成失敗時，回覆明示搜尋已執行但完整回覆未完成；失敗答案不保存。原 Queue retry/backoff、群組靜默、PendingReplies 傳送成功才 acknowledge 的契約不變。
 - 內部工具保留欄位不可用、讀取失敗、回傳過大與網址工具失敗；診斷欄留在 service，不加入模型的 tool data。圖片下載保留 HTTP 狀態，下載逾時與本機 deadline 不足分開，確認非圖片引用也有獨立代碼。
+- 本輪 review 修正在共用 `getBotTextAiError_()` 顯示可信 `usedWebSearch === true` 的觀測；長度上限、空答案、本機時間不足及必要資料失敗都交代「搜尋已執行，但完整回覆沒有完成」。搜尋專用 helper 避免重複前綴，保留原診斷碼與圖片／指定資料／封存提醒。沒有 metadata、字串 "true"、只有來源或搜尋意圖都不能推定已搜尋；保留前輪合法觀測與後輪失敗原因，不擴大宣稱完整查證。
 
 | 代碼例子 | 可確認的情況 |
 | --- | --- |
@@ -121,6 +122,8 @@ PTT 已驗證 article 的 HTTPS canonicalization、over18、結構驗證、metad
 
 從完整 v1.16.1 升級需手動同步 **12 個 runtime 檔**：`01_Main.gs`、`03_ResponseTexts.gs`、`07_LineImages.gs`、`10_AiService.gs`、`12_Prompts.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`。若部署基準不確定，使用同版全部 23 個 `.gs`。Markdown、AGENTS 與 tests 不部署至 GAS。
 
+若已同步 v1.16.2 `817676c`，本輪 review fix 只需追加同步 **`03_ResponseTexts.gs`**，再更新既有 Web App deployment。累計清單仍為上述 12 檔；本輪未改人格 Prompt、AiService／Provider、路由、搜尋驗證、呼叫次數或時間預算。
+
 本版不需要 migration；從 v1.16.0 或更早版本升級時，仍須先備份 Sheet 並執行 `setupLogSheet()` 補齊 ConversationLog 的兩個引用欄位。
 
 GAS／LINE 人工驗收（本版未執行 live）：`#版本` 顯示 v1.16.2；私訊／group／room 搜尋與圖片研究正常產生來源；錯誤回覆的代碼對應 `AI_CALL_METADATA.errorReason`，原文與秘密不外傳；封存／直接網址及背景通知保留原因。聊天連續換幾種方式吐槽小浣，再提出認真排錯／深入解釋，檢查笑點不複製、需要時有用例子、排錯優先說清楚。不要為了誘發故障更改正式 API Key。
@@ -136,7 +139,9 @@ GAS／LINE 人工驗收（本版未執行 live）：`#版本` 顯示 v1.16.2；�
 
 ## 驗證與限制
 
-v1.16.2 本機 `node tests/v1140_smoke.cjs`：**23 GAS sources、444 unique functions、245 checks 通過**（保留 233 項基線，追加 12 項診斷／安全／跨流程及 Prompt 邊界檢查）。新增測試包含六種已知 Search tool error 與未知 code、私訊／group／room、pending／pause、來源與配對、零 HTTP、缺 key、時間不足、continuation、舊 adapter 相容、typed Error／Reader、封存／同步新聞／背景通知、圖片下載與內部工具原因。Mock 的 Prompt 斷言不證明真實模型更有趣。
+本輪 review fix：修改前在 `817676c` 實跑 245 checks 通過；先新增測試重現「已搜尋但 length 回覆缺提示」（預期 1 次、實際 0 次），修正後 `node tests/v1140_smoke.cjs` **23 GAS sources、444 unique functions、254 checks 通過**。新增 9 項參數化檢查：實際私訊／group／room 與圖片入口的長度、deadline、空答案；文字／圖片必要資料失敗；continuation 的 HTTP／搜尋／長度錯誤；未搜尋／pending／malformed／工具錯誤；read_url 來源；舊 caller／typed Error／嚴格布林／不改 metadata；成功回覆與來源 bubble。原 245 項有效斷言保留，partial answer 不進 LINE、Cache 或 Sheet，固定診斷紀錄保留。`git diff --check` 通過；未執行 live，仍須正式環境確認後段失敗提示、正常來源 bubble 與既有圖片／查詢提醒。
+
+v1.16.2 `817676c` 基線：**23 GAS sources、444 unique functions、245 checks 通過**（保留 233 項基線，追加 12 項診斷／安全／跨流程及 Prompt 邊界檢查）。新增測試包含六種已知 Search tool error 與未知 code、私訊／group／room、pending／pause、來源與配對、零 HTTP、缺 key、時間不足、continuation、舊 adapter 相容、typed Error／Reader、封存／同步新聞／背景通知、圖片下載與內部工具原因。Mock 的 Prompt 斷言不證明真實模型更有趣。
 
 v1.16.1 基線 `node tests/v1140_smoke.cjs`：**23 GAS sources、441 unique functions、233 checks 通過**。v1.16.0 基線 202，v1.16.1 基礎新增 22，上一輪 review 新增 8；最後一輪修改前實跑 232 通過，將一項錯誤的「未觸發保留 pending」測試替換為兩項原交付契約測試，並擴充 transport 失敗重試覆蓋。原 22 項 v1.16.1 與其他有效 review checks 保留。全程使用 Node 內建模組及既有 GAS／LINE／Sheet／provider mocks；不是新增 Node runtime。保留新聞收件／JSON business validators、週故事線、sidecar、群組 silence／限頻、required evidence、PendingReplies、Reader／PTT、provider registry／contract／deadline／usage 回歸。既有 writer mock 配合表頭寫入，dedup fixture 改以精確作者／ID 驗證，引用加 research 的 fixture 反映各一次 bounded read。
 
