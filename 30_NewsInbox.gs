@@ -1115,36 +1115,42 @@ function removeSpecialTopicTerms_(specialTopic, termsToRemove) {
 }
 
 function appendNewsInboxRow_(item) {
-  const sheet = ensureNewsInboxSheet_();
-  const now = new Date();
-  const valuesByHeader = {
-    NewsId: createSimpleId('news'),
-    CreatedAt: now,
-    ConversationId: item.conversationId || '',
-    SourceType: item.sourceType || '',
-    UserId: item.userId || '',
-    GroupId: item.groupId || '',
-    RoomId: item.roomId || '',
-    Url: item.url || '',
-    Title: truncateForSheet(item.title || ''),
-    Category: item.category || '待分類',
-    Brief: truncateForSheet(item.brief || ''),
-    Angle: truncateForSheet(item.angle || ''),
-    TopicPotential: item.topicPotential || '中',
-    SourceMode: item.sourceMode || '',
-    Status: item.status || 'ok',
-    ErrorText: truncateForSheet(item.errorText || ''),
-    Outline: truncateForSheet(item.outline || ''),
-    SpecialTopic: truncateForSheet(item.specialTopic || '無'),
-    CategoryReason: truncateForSheet(item.categoryReason || ''),
-    CategoryConfidence: item.categoryConfidence === '' || typeof item.categoryConfidence === 'undefined' ? '' : item.categoryConfidence,
-    MatchedEntities: truncateForSheet(item.matchedEntities || '無'),
-    ClassificationWarning: truncateForSheet(item.classificationWarning || ''),
-    StoryKey: truncateForSheet(normalizeStoryKey_(item.storyKey, item))
-  };
+  const result = withDataMutationLock_(function() {
+    const sheet = ensureNewsInboxSheet_();
+    // 時間戳必須在取得鎖後產生，並在釋放前完成寫入，避免落在已封存的取樣之前。
+    const now = new Date();
+    const valuesByHeader = {
+      NewsId: createSimpleId('news'),
+      CreatedAt: now,
+      ConversationId: item.conversationId || '',
+      SourceType: item.sourceType || '',
+      UserId: item.userId || '',
+      GroupId: item.groupId || '',
+      RoomId: item.roomId || '',
+      Url: item.url || '',
+      Title: truncateForSheet(item.title || ''),
+      Category: item.category || '待分類',
+      Brief: truncateForSheet(item.brief || ''),
+      Angle: truncateForSheet(item.angle || ''),
+      TopicPotential: item.topicPotential || '中',
+      SourceMode: item.sourceMode || '',
+      Status: item.status || 'ok',
+      ErrorText: truncateForSheet(item.errorText || ''),
+      Outline: truncateForSheet(item.outline || ''),
+      SpecialTopic: truncateForSheet(item.specialTopic || '無'),
+      CategoryReason: truncateForSheet(item.categoryReason || ''),
+      CategoryConfidence: item.categoryConfidence === '' || typeof item.categoryConfidence === 'undefined' ? '' : item.categoryConfidence,
+      MatchedEntities: truncateForSheet(item.matchedEntities || '無'),
+      ClassificationWarning: truncateForSheet(item.classificationWarning || ''),
+      StoryKey: truncateForSheet(normalizeStoryKey_(item.storyKey, item))
+    };
 
-  // 依實際表頭對位，避免舊 Sheet 補上 Outline 後因欄位位置不同而寫錯資料。
-  appendRowByHeaders_(sheet, valuesByHeader);
+    // 依實際表頭對位，避免舊 Sheet 補上 Outline 後因欄位位置不同而寫錯資料。
+    appendRowByHeaders_(sheet, valuesByHeader);
+    SpreadsheetApp.flush();
+    return { status: 'saved' };
+  });
+  if (result.status === 'busy') throw createAiExecutionBudgetError_('News inbox write lock is busy.');
 }
 
 function classifyNewsUrlError_(errorText) {

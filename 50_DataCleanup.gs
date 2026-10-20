@@ -85,6 +85,17 @@ function getCleanupCommandInfo_(text) {
 }
 
 function deleteRowsByConversationIdFromSheet_(sheet, conversationId, conversationIdHeaderName) {
+  const result = withDataMutationLock_(function() {
+    try {
+      return { count: deleteConversationRowsLocked_(sheet, conversationId, conversationIdHeaderName) };
+    } finally { SpreadsheetApp.flush(); }
+  });
+  if (result.status === 'busy') throw createAiExecutionBudgetError_('Data cleanup lock is busy.');
+  return result.count;
+}
+
+// 僅供已持有 ScriptLock 的清理入口使用，避免讀取列號後被另一個聊天室刪列移位。
+function deleteConversationRowsLocked_(sheet, conversationId, conversationIdHeaderName) {
   const lastRow = sheet.getLastRow();
   if (lastRow <= 1) return 0;
 
@@ -109,6 +120,15 @@ function deleteRowsByConversationIdFromSheet_(sheet, conversationId, conversatio
 }
 
 function performDataCleanup_(cleanupKey, conversationId) {
+  const lockedResult = withDataMutationLock_(function() {
+    try { return performDataCleanupLocked_(cleanupKey, conversationId); }
+    finally { SpreadsheetApp.flush(); }
+  });
+  if (lockedResult.status === 'busy') throw createAiExecutionBudgetError_('Data cleanup lock is busy.');
+  return lockedResult;
+}
+
+function performDataCleanupLocked_(cleanupKey, conversationId) {
   const result = {
     total: 0,
     details: []
@@ -120,26 +140,25 @@ function performDataCleanup_(cleanupKey, conversationId) {
   }
 
   if (cleanupKey === 'conversation_log') {
-    addDetail(SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureLogSheet_(), conversationId));
+    addDetail(SHEET_NAME, deleteConversationRowsLocked_(ensureLogSheet_(), conversationId));
 
   } else if (cleanupKey === 'topic_highlights') {
-    addDetail(TOPIC_HIGHLIGHTS_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureTopicHighlightsSheet_(), conversationId));
+    addDetail(TOPIC_HIGHLIGHTS_SHEET_NAME, deleteConversationRowsLocked_(ensureTopicHighlightsSheet_(), conversationId));
 
   } else if (cleanupKey === 'web_data') {
-    addDetail(WEB_SUMMARY_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureWebSummarySheet_(), conversationId));
-    addDetail(WEB_TASK_QUEUE_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureWebTaskQueueSheet_(), conversationId));
+    addDetail(WEB_SUMMARY_SHEET_NAME, deleteConversationRowsLocked_(ensureWebSummarySheet_(), conversationId));
+    addDetail(WEB_TASK_QUEUE_SHEET_NAME, deleteConversationRowsLocked_(ensureWebTaskQueueSheet_(), conversationId));
 
   } else if (cleanupKey === 'weekly_summary') {
-    addDetail(WEEKLY_SUMMARY_SHEET_NAME, clearNewsArchiveProgress_(conversationId, function() {
-      return deleteRowsByConversationIdFromSheet_(ensureWeeklySummarySheet_(), conversationId);
-    }));
+    clearNewsArchiveProgress_(conversationId);
+    addDetail(WEEKLY_SUMMARY_SHEET_NAME, deleteConversationRowsLocked_(ensureWeeklySummarySheet_(), conversationId));
 
   } else if (cleanupKey === 'news_data') {
-    addDetail(NEWS_INBOX_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureNewsInboxSheet_(), conversationId));
-    addDetail(NEWS_URL_QUEUE_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureNewsUrlQueueSheet_(), conversationId));
+    addDetail(NEWS_INBOX_SHEET_NAME, deleteConversationRowsLocked_(ensureNewsInboxSheet_(), conversationId));
+    addDetail(NEWS_URL_QUEUE_SHEET_NAME, deleteConversationRowsLocked_(ensureNewsUrlQueueSheet_(), conversationId));
 
   } else if (cleanupKey === 'pending_replies') {
-    addDetail(PENDING_REPLIES_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensurePendingRepliesSheet_(), conversationId));
+    addDetail(PENDING_REPLIES_SHEET_NAME, deleteConversationRowsLocked_(ensurePendingRepliesSheet_(), conversationId));
 
   } else {
     throw new Error('Unknown cleanup key: ' + cleanupKey);

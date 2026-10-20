@@ -29,6 +29,7 @@ const context = vm.createContext({
   PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'NEWS_ARCHIVE_CONFIG' ? null : 'test-only-placeholder' }) },
   CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value), remove: key => cache.delete(key) }) },
   LockService: { getScriptLock: () => ({ tryLock: () => { now += lockDelay; return true; }, waitLock: () => { now += lockDelay; }, releaseLock() {} }) },
+  SpreadsheetApp: { flush() {} },
   UrlFetchApp: { fetch: (url, options) => { calls.push({ url, options }); return fetchImpl(url, options); } },
   HtmlService: { createHtmlOutput: value => value }
 });

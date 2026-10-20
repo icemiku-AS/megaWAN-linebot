@@ -135,7 +135,7 @@ const MAX_HISTORY_PAIRS = 6;
 // 本週編輯台設定
 // ======================================================
 
-const WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.13.0';
+const WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.17.0';
 const WEEKLY_EDITORIAL_CACHE_TTL_SECONDS = 600;
 
 const MAX_WEEKLY_EDITORIAL_NEWS_ITEMS = 30;

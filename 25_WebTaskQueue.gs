@@ -507,6 +507,7 @@ function deliverPendingReply_(conversationId, replyToken, buildDeliveryText) {
     replyToLine(replyToken, deliveryText, true);
     // 只有 Reply API 確認 2xx 才 consume；刪除失敗會保留 row，符合 at-least-not-lost。
     deletePendingReplyById_(sheet, pendingReply.pendingId);
+    SpreadsheetApp.flush();
 
     return {
       text: String(deliveryText || ''),

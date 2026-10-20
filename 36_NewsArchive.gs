@@ -77,17 +77,32 @@ function getNewsArchiveState_(config) {
         : state.nextStartAt !== config.firstStartAt)) {
     throw createAiConfigurationError_('Invalid news archive state; reconcile it before resuming.');
   }
+  // 提交鎖持續忙碌時只能寫獨立的 token 失敗收據；唯讀狀態也要立即反映失敗。
+  const failureRaw = state.runId && PropertiesService.getScriptProperties().getProperty(
+    getNewsArchiveStateKey_(config) + '_FAILURE_' + state.runId);
+  if (failureRaw) {
+    let failure;
+    try { failure = JSON.parse(failureRaw); } catch (ignore) { throw createAiConfigurationError_('Invalid news archive failure receipt.'); }
+    if (!failure || typeof failure.retryable !== 'boolean' || !failure.errorCode ||
+        normalizeAiErrorReason_(failure.errorCode) !== failure.errorCode) {
+      throw createAiConfigurationError_('Invalid news archive failure receipt.');
+    }
+    state.runId = ''; state.leaseUntil = 0;
+    state.lastErrorCode = failure.errorCode; state.retryable = failure.retryable;
+  }
   return state;
 }
 
 function saveNewsArchiveState_(config, state) {
-  PropertiesService.getScriptProperties().setProperty(getNewsArchiveStateKey_(config), JSON.stringify(state));
-}
-
-function withNewsArchiveLock_(action) {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) return { status: 'busy' };
-  try { return action(); } finally { lock.releaseLock(); }
+  const properties = PropertiesService.getScriptProperties();
+  const key = getNewsArchiveStateKey_(config);
+  properties.setProperty(key, JSON.stringify(state));
+  // 收據只保存安全失敗碼，不保存模型結果；新進度落盤後移除已失效 token 的收據。
+  try {
+    properties.getKeys().filter(function(name) {
+      return name.indexOf(key + '_FAILURE_') === 0 && name !== key + '_FAILURE_' + state.runId;
+    }).forEach(function(name) { properties.deleteProperty(name); });
+  } catch (ignore) { console.warn('NEWS_ARCHIVE_RECEIPT_CLEANUP_FAILED'); }
 }
 
 function readNewsArchiveSheet_(name, requiredHeaders) {
@@ -171,10 +186,12 @@ function completeNewsArchiveState_(config, state, period, outcome) {
 }
 
 function runFixedNewsArchive_(config, origin, event, aiExecutionContext) {
+  const context = aiExecutionContext || { deadlineAtMs: Date.now() + (origin === 'auto' ? 180000 : 40000),
+    aiTimeoutCapSeconds: origin === 'auto' ? 60 : 30, aiMinimumRequestSeconds: 8 };
   let reservation = null;
   let committing = false;
   try {
-    reservation = withNewsArchiveLock_(function() {
+    reservation = withDataMutationLock_(function() {
       const state = getNewsArchiveState_(config);
       const now = Date.now();
       const period = { startAt: state.nextStartAt, endAt: state.nextStartAt + NEWS_ARCHIVE_WEEK_MS };
@@ -184,9 +201,36 @@ function runFixedNewsArchive_(config, origin, event, aiExecutionContext) {
       }
       if (state.runId && state.leaseUntil > now) return { status: 'processing', period: period };
       const today = formatNewsArchiveTime_(now).slice(0, 10);
+      const blocked = origin === 'auto' && (!state.retryable || state.autoAttempts >= NEWS_ARCHIVE_MAX_AUTO_ATTEMPTS);
+      const blockedErrorCode = state.lastErrorCode || 'ai_timeout';
       // 先恢復已落盤的摘要，不能讓重試上限擋住「寫入成功、進度更新失敗」的修復。
-      let existing;
-      try { existing = findNewsArchiveRow_(config, period); } catch (error) {
+      try {
+        const existing = findNewsArchiveRow_(config, period);
+        if (existing) {
+          completeNewsArchiveState_(config, state, period, 'completed');
+          return { status: 'already_done', period: period, count: existing.count };
+        }
+        if (blocked) {
+          saveNewsArchiveState_(config, state);
+          return { status: 'needs_attention', period: period, errorCode: blockedErrorCode };
+        }
+        if (origin === 'auto' && state.lastAutoDay === today) {
+          saveNewsArchiveState_(config, state);
+          return { status: 'waiting', period: period };
+        }
+        // 與 CreatedAt／append／flush 共用同一把短鎖；空期也不能跳過來源快照的協調。
+        const items = getNewsArchivePeriodItems_(config, period);
+        state.runId = Utilities.getUuid();
+        state.leaseUntil = now + NEWS_ARCHIVE_LEASE_MS;
+        if (origin === 'auto') { state.autoAttempts++; state.lastAutoDay = today; }
+        saveNewsArchiveState_(config, state);
+        return { status: 'reserved', period: period, runId: state.runId, items: items };
+      } catch (error) {
+        // 自動恢復檢查失敗不能把原本不可重試／達上限的狀態改回可重試。
+        if (blocked) {
+          console.warn('NEWS_ARCHIVE_RECOVERY_READ_FAILED');
+          return { status: 'needs_attention', period: period, errorCode: blockedErrorCode };
+        }
         state.runId = ''; state.leaseUntil = 0;
         state.lastErrorCode = normalizeAiErrorReason_(error && error.errorReason) || normalizeAiErrorType_(error && error.errorType);
         state.retryable = !!(error && error.retryable === true);
@@ -196,33 +240,21 @@ function runFixedNewsArchive_(config, origin, event, aiExecutionContext) {
         saveNewsArchiveState_(config, state);
         throw error;
       }
-      if (existing) {
-        completeNewsArchiveState_(config, state, period, 'completed');
-        return { status: 'already_done', period: period, count: existing.count };
-      }
-      if (origin === 'auto' && (!state.retryable || state.autoAttempts >= NEWS_ARCHIVE_MAX_AUTO_ATTEMPTS)) {
-        return { status: 'needs_attention', period: period, errorCode: state.lastErrorCode || 'ai_timeout' };
-      }
-      if (origin === 'auto' && state.lastAutoDay === today) return { status: 'waiting', period: period };
-      state.runId = Utilities.getUuid();
-      state.leaseUntil = now + NEWS_ARCHIVE_LEASE_MS;
-      if (origin === 'auto') { state.autoAttempts++; state.lastAutoDay = today; }
-      saveNewsArchiveState_(config, state);
-      return { status: 'reserved', period: period, runId: state.runId };
     });
     if (reservation.status !== 'reserved') return reservation;
     const period = reservation.period;
-    const items = getNewsArchivePeriodItems_(config, period);
+    const items = reservation.items;
     const archiveJson = items.length ? buildNewsArchiveSummary_(items, {
       start: formatNewsArchiveTime_(period.startAt) + '（含）',
       end: formatNewsArchiveTime_(period.endAt) + '（不含，台灣時間）'
-    }, aiExecutionContext) : null;
+    }, context) : null;
     committing = true;
-    return withNewsArchiveLock_(function() {
+    const result = withDataMutationLock_(function() {
       const state = getNewsArchiveState_(config);
       if (state.runId !== reservation.runId || state.nextStartAt !== period.startAt) {
         return { status: 'cancelled', period: period };
       }
+      if (Date.now() >= context.deadlineAtMs) throw createAiExecutionBudgetError_('News archive commit deadline expired.');
       const existing = findNewsArchiveRow_(config, period);
       if (archiveJson && !existing) {
         const parts = config.conversationId.split(':');
@@ -247,21 +279,33 @@ function runFixedNewsArchive_(config, origin, event, aiExecutionContext) {
       completeNewsArchiveState_(config, state, period, outcome);
       return { status: existing ? 'already_done' : outcome, period: period,
         count: existing ? existing.count : items.length };
-    });
+    }, Math.max(0, Math.min(30000, context.deadlineAtMs - Date.now() - 1000)));
+    if (result.status === 'busy') throw createAiExecutionBudgetError_('News archive commit lock is busy.');
+    return result;
   } catch (error) {
     const code = normalizeAiErrorReason_(error && error.errorReason) || normalizeAiErrorType_(error && error.errorType);
     // 原生 Sheet／Properties 寫入錯誤可隔日補跑；typed validation 的不可重試決定仍保留。
     const retryable = error && typeof error.retryable === 'boolean' ? error.retryable : committing;
     if (reservation && reservation.runId) {
+      let recorded = false;
       try {
-        withNewsArchiveLock_(function() {
+        const update = withDataMutationLock_(function() {
           const state = getNewsArchiveState_(config);
-          if (state.runId !== reservation.runId) return;
+          if (state.runId !== reservation.runId) return { status: 'cancelled' };
           state.runId = ''; state.leaseUntil = 0; state.lastErrorCode = code;
           state.retryable = retryable;
           saveNewsArchiveState_(config, state);
-        });
+          return { status: 'recorded' };
+        }, Math.max(0, Math.min(1000, context.deadlineAtMs - Date.now())));
+        recorded = update && update.status !== 'busy';
       } catch (ignore) { console.error('News archive progress update failed.'); }
+      if (!recorded) {
+        try {
+          PropertiesService.getScriptProperties().setProperty(
+            getNewsArchiveStateKey_(config) + '_FAILURE_' + reservation.runId,
+            JSON.stringify({ errorCode: code, retryable: retryable }));
+        } catch (ignore) { console.error('NEWS_ARCHIVE_FAILURE_RECEIPT_WRITE_FAILED'); }
+      }
     }
     console.error('NEWS_ARCHIVE_FAILURE ' + code);
     return { status: 'failed', period: reservation && reservation.period,
@@ -299,7 +343,7 @@ function previewNewsArchiveSetup() {
     });
     return { conversationId: config.conversationId, firstPeriodStartAt: new Date(config.firstStartAt).toISOString(),
       latestClosedEndAt: new Date(getNewsArchiveClosedEnd_(Date.now())).toISOString(),
-      duePeriods: Math.max(0, Math.floor((getNewsArchiveClosedEnd_(Date.now()) - config.firstStartAt) / NEWS_ARCHIVE_WEEK_MS)),
+      duePeriods: Math.max(0, Math.floor((getNewsArchiveClosedEnd_(Date.now()) - getNewsArchiveState_(config).nextStartAt) / NEWS_ARCHIVE_WEEK_MS)),
       legacyNewsArchiveCount: legacyRows.length,
       // 舊列只有日期，不能證明精確覆蓋；列出期間供維護者選切換點，不猜測 ArchiveKey。
       legacyPeriods: legacyRows.map(function(row) {
@@ -320,7 +364,7 @@ function setupNewsArchiveStorage() {
   const configs = getNewsArchiveConfigs_();
   if (!configs.length) throw createAiConfigurationError_('Configure NEWS_ARCHIVE_CONFIG before setup.');
   readNewsArchiveSheet_(NEWS_INBOX_SHEET_NAME, ['CreatedAt', 'ConversationId', 'Status', 'Title', 'Url', 'Brief']);
-  return withNewsArchiveLock_(function() {
+  return withDataMutationLock_(function() {
     configs.forEach(function(config) { getNewsArchiveState_(config); });
     readNewsArchiveSheet_(WEEKLY_SUMMARY_SHEET_NAME, ['ConversationId', 'ArchiveType', 'Summary', 'SourceItemCount']);
     ensureWeeklySummarySheet_(true);
@@ -370,18 +414,12 @@ function getNewsArchiveStatusText_(conversationId) {
   } catch (ignore) { return '固定週期新聞封存：設定或進度無法讀取，請維護者檢查。'; }
 }
 
-function clearNewsArchiveProgress_(conversationId, deleteRows) {
+// 由 performDataCleanup_ 的外層 ScriptLock 保護，這裡不重複取得鎖。
+function clearNewsArchiveProgress_(conversationId) {
   const config = getNewsArchiveConfig_(conversationId);
-  if (!config) return deleteRows();
-  const result = withNewsArchiveLock_(function() {
-    const state = getNewsArchiveState_(config);
-    const end = Math.max(config.firstStartAt, getNewsArchiveClosedEnd_(Date.now()));
-    // 先取消執行中工作，避免清空後遲到的 AI 結果重新寫回。
-    completeNewsArchiveState_(config, state, { startAt: end - NEWS_ARCHIVE_WEEK_MS, endAt: end }, 'cleared');
-    const count = deleteRows();
-    SpreadsheetApp.flush();
-    return { count: count };
-  });
-  if (result.status === 'busy') throw createAiExecutionBudgetError_('News archive cleanup lock is busy.');
-  return result.count;
+  if (!config) return;
+  const state = getNewsArchiveState_(config);
+  const end = Math.max(config.firstStartAt, getNewsArchiveClosedEnd_(Date.now()));
+  // 先取消執行中工作，避免清空後遲到的 AI 結果重新寫回。
+  completeNewsArchiveState_(config, state, { startAt: end - NEWS_ARCHIVE_WEEK_MS, endAt: end }, 'cleared');
 }

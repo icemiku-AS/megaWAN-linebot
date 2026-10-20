@@ -21,32 +21,38 @@ MEGA浣 / 小浣：**v1.17.0 Weekly News Archive Edition**（2026-10-20），主
 - `processScheduledNewsArchives()` 每日台灣時間中午約 12:00～12:30 檢查，週三新增到期工作，其餘日補跑。使用 `atHour(12).nearMinute(15).everyDays(1).inTimezone('Asia/Taipei')`；GAS 為近似時間，不能保證 12:00 準點。依據：[ClockTriggerBuilder 官方契約](https://developers.google.com/apps-script/reference/script/clock-trigger-builder)。
 - 每次每聊天室最多一個週期，先舊後新；總檢查預算 180 秒、每次 AI cap 60 秒，輪替聊天室先後以免尾端長期等待。維持原 service deadline，AI 前後均短暫持有 ScriptLock，等待 AI 時不鎖住其他工作。
 - ArchiveKey 包含聊天室 SHA-256、news 與精確起迄毫秒，寫入前精確掃描整張 WeeklySummary 防重，不受記憶讀取的最近 100 列限制。摘要寫入／flush 後才推進游標；若進度更新失敗，下次從既有 key 恢復，不再生成摘要。LINE 回覆失敗不撤銷已完成封存。
+- 新聞寫入在取得共用 ScriptLock 後才產生 CreatedAt，append／flush 完成後才放鎖；封存來源快照也在此鎖內讀取。先取得鎖並產生截止前時間戳者歸原週；封存先取得鎖時，後續入庫依當下時間歸期。空期與已有新聞的週期同樣受保護。鎖忙不得宣稱收件成功，同步入口回既有 Queue、背景入口按既有規則重試，人工補件回報未完成。
 - 進度包含目前期間、執行 token／五分鐘 lease、自動嘗試數及最近錯誤。過期 lease 可接手；token／游標不符的遲到結果取消寫入。可重試失敗每日一次，同一期自動最多三次（含首次）；不可重試錯誤或達上限須處理後手動補跑。舊週失敗時不越過它處理新週。
+- 不可重試／達上限的狀態，不會被後續 Sheet 恢復檢查失敗改回可重試；已存在的有效 ArchiveKey 仍優先恢復。AI 結果提交最多等鎖 30 秒，且不得超過原 deadline 的剩餘時間，不再呼叫模型；若仍失敗，清除本次 token 並記安全失敗碼。連失敗狀態鎖也拿不到時，只寫本次 token 專屬的 `NEWS_ARCHIVE_STATE_*_FAILURE_*` 安全收據；讀取立即呈現失敗，下一次持鎖更新進度時消化、清除收據，不保存模型內容。Properties 服務也失效時仍以五分鐘 lease／既有 key 保守恢復，需維護者查核失敗紀錄。
 - 確實沒有資料只記錄 empty 及推進游標，不呼叫 AI、不新增空摘要。缺表、缺欄、讀取失敗、同聊天室有效來源的無效日期、重複 key 或不完整列均是失敗，不當成空期完成。所有來源必需維持現有 Sheet 契約。
 - `#狀態回報` 顯示封存設定、最近完成、待處理週期、嘗試次數及安全錯誤碼。`NEWS_ARCHIVE_STATUS`／`NEWS_ARCHIVE_FAILURE` 僅記安全狀態與代碼，不記素材、Prompt、URL 或完整 exception。自動封存不主動發 LINE 訊息。
 - `#清空封存 確認` 同時清除目前聊天室的話題／新聞摘要，取消執行中 token，游標移至最新已截止邊界（不早於首次起點），避免自動復活舊週。下個新週期正常封存，其他聊天室不受影響。清空未完成時須重試原清理指令；不要手動刪進度來補救。
+- 所有資料清理，不分是否設定固定封存，從讀取列位置、刪列到 flush 都持有同一把外層 ScriptLock；舊 `deleteConversationLogs` 入口同樣保護。Pending Reply 沿用既有外層鎖，LINE 確認成功後才刪列並 flush，不重複取鎖。清理鎖忙或寫入失敗只回報未完成。
 
 ### 上傳 GAS 後的手動啟用順序（本機工作不執行）
 
-1. 先合併 PR，由維護者同步 GAS 原始碼；備份 WeeklySummary、NewsInbox 與現有 Script Properties，備份與真實 ID／secret 留在私有位置。先不要安裝新 Trigger。
+1. 維護者審核並合併 PR 後，再同步 GAS 原始碼；備份 WeeklySummary、NewsInbox 與現有 Script Properties，備份與真實 ID／secret 留在私有位置。切換期間先暫停新聞封存指令，保持自動關閉，不安裝新 Trigger。
 2. 在 GAS Script Properties 新增 `NEWS_ARCHIVE_CONFIG`。起點是「第一個要封存週期的開始」，必須是帶時區的週三 12:00。範例先保持自動關閉；替換聊天室 ID，日期也需依舊封存確認後選定，**不要原樣套用範例**：
 
 ```json
 {"conversations":[{"conversationId":"group:REPLACE_WITH_GROUP_ID","firstPeriodStartAt":"2026-10-21T12:00:00+08:00","autoEnabled":false}]}
 ```
 
-3. 執行 `previewNewsArchiveSetup()`，在執行紀錄查看 `NEWS_ARCHIVE_PREVIEW`：依設定順序顯示 configIndex、第一期起點、最新截止、待跑數及舊封存日期。它不補欄、不寫進度、不呼叫 AI。舊列日期無精確時分與來源快照，無法可靠推定覆蓋，先人工比對，不自動補 key 或刪合併。若選 10/21 中午起點，第一期會於 10/28 中午才到期；若希望 10/21 封存，需選 10/14 中午起點並確認舊資料重疊。移動／處理既有 Sheets 由維護者另外決定。
-4. 起點確認後，執行 `setupNewsArchiveStorage()`。它只在表尾追加 `ArchiveKey / PeriodStartAt / PeriodEndAt / ArchiveOrigin`，保留前 16 欄、舊資料及其他自訂欄位置，初始化已設定聊天室進度，不建立 Trigger。可重複執行；開始處理後若更改 firstPeriodStartAt，驗證會拒絕，不自動重設游標。
-5. 完成測試聊天室驗收後，將該聊天室 `autoEnabled` 改為 true，再執行 `installNewsArchiveTrigger()`。安裝會檢查欄位及進度，只替換 handler=processScheduledNewsArchives 的現有觸發器，保留其他排程。由長期維護帳號授權並核對 GAS 觸發器頁面；若其他帳號曾安裝相同 handler，需各自確認移除多餘觸發器。
-6. 維護者更新既有 Web App deployment，保留 URL；`#版本` 應顯示 v1.17.0。不要刪 NEWS_ARCHIVE_STATE_* 或任意改起點；自動失敗修好原因後用同聊天室 `#封存本週新聞` 補跑。要暫停自動工作，將 autoEnabled 設 false 即可，保留進度與防重資料。
+3. 執行 `previewNewsArchiveSetup()`，在執行紀錄查看 `NEWS_ARCHIVE_PREVIEW`：依設定順序顯示 configIndex、第一期起點、最新截止、依目前游標計算的待跑數及舊封存日期。它不補欄、不寫進度、不呼叫 AI。舊列日期無精確時分與來源快照，無法可靠推定覆蓋，先人工比對，不自動補 key 或刪合併。若選 10/21 中午起點，第一期會於 10/28 中午才到期；若希望 10/21 封存，需選 10/14 中午起點並確認舊資料重疊。移動／處理既有 Sheets 由維護者另外決定。
+4. 起點確認後，保持 `autoEnabled=false`，執行 `setupNewsArchiveStorage()`。它只在表尾追加 `ArchiveKey / PeriodStartAt / PeriodEndAt / ArchiveOrigin`，保留前 16 欄、舊資料及其他自訂欄位置，初始化已設定聊天室進度，不建立 Trigger。可重複執行；開始處理後若更改 firstPeriodStartAt，驗證會拒絕，不自動重設游標。
+5. **先更新 Web App deployment**：建立同版 GAS version，更新既有 Web App deployment 並保留 URL；此時仍保持 `autoEnabled=false`，不要安裝封存觸發器。舊 Web App 仍是滾動七天的手動封存，不能與新自動排程交錯運作。
+6. **再驗證新版手動入口**：由 LINE `#版本` 確認 v1.17.0，確認切換前的舊版執行已結束，再於測試聊天室驗收 `#封存本週新聞`、重複手動防重、狀態與 `#本週新聞` 對話整理。驗收通過後才恢復封存指令使用。
+7. **最後啟用自動封存**：將已驗收聊天室的 `autoEnabled` 改為 true，再執行 `installNewsArchiveTrigger()`。安裝只替換 handler=processScheduledNewsArchives 的現有觸發器，保留其他排程。由長期維護帳號授權並核對 GAS 觸發器頁面；若其他帳號曾安裝相同 handler，需各自確認移除多餘觸發器。不要刪 NEWS_ARCHIVE_STATE_* 或任意改起點；自動失敗修好原因後用同聊天室 `#封存本週新聞` 補跑。要暫停自動工作，將 autoEnabled 設 false 即可，保留進度與防重資料。
 
 此設定只存在 GAS Script Properties；最多 20 個不同聊天室，未列入者自動關閉。設定錯誤採拒絕處理，不能默默降級成已設定聊天室的舊七日封存。停止自動與移除設定不同：若整個移除聊天室設定，其手動入口會恢復 legacy 七日行為，失去新期間防重保證。停用請優先用 autoEnabled=false。
 
 ### 週編輯台修正與現場驗收
 
-共享 LINE splitter 先選完整段落，再用分類／編號界線；不優先把標題內的編號當切點。fitter 不再優先 pop 群組話題，容量不足只省略新聞並明示筆數。對話仍只取原本同聊天室、全表尾端最多 2500 列內的合格使用者文字，最新最多 60 則／每則 240 字元／總計 6000 字元；derived 圖片語意、assistant、指令噪音仍排除。
+共享 LINE splitter 先選完整段落，即使首段少於 1200 字也可採用，再用分類／編號界線；不優先把標題內的編號當切點。fitter 不再優先 pop 群組話題，容量不足只省略新聞並明示筆數。對話仍只取原本同聊天室、全表尾端最多 2500 列內的合格使用者文字，最新最多 60 則／每則 240 字元／總計 6000 字元；derived 圖片語意、assistant、指令噪音仍排除。
 
-成功但無可提煉話題會明示，不補造主題；ConversationLog 缺表／讀取失敗與 AI／驗證失敗分別提示，失敗仍列分類新聞。`WEEKLY_EDITORIAL_STATUS` 記 read 狀態、原始／保留筆數、topicCount、cacheHit、stage 與白名單錯誤碼，不記原文。既有 cache 結果仍重新驗證；LINE 容量修正不改模型資料契約，cache version 不變。
+模型確實回空話題、非空話題全數未通過檢查、部分採納及沒有合格對話，分開呈現，不補造主題；ConversationLog 缺表／讀取失敗與 AI／整體驗證失敗另行提示。話題全數被拒絕仍保留本次有效新聞，不追加 AI 呼叫。`WEEKLY_EDITORIAL_STATUS` 記 read 狀態、原始／保留對話筆數、returnedTopicCount／topicCount／rejectedTopicCount／topicValidation、cacheHit、stage 與白名單錯誤碼；未知 itemId 只記固定碼與位置，不記被拒絕原值。
+
+快取改存已驗證結果與安全話題筆數，命中時重驗契約並保留全拒絕／部分採納差異；因此 `WEEKLY_EDITORIAL_CACHE_VERSION` 升為 `v1.17.0`，舊 key 自然失效，不需要清 Sheet 或 migration。模型輸出 schema 不變，拒絕的話題原文與未知 ID 不進快取。
 
 GAS／LINE 實測待部署後執行：測試聊天室先貼一般使用者討論及新聞，核對 #本週新聞 有話題且每則 URL 完整；長列表與超長單則新聞仍保留話題。用已有話題／無主題／來源不可讀樣本核對狀態差異。固定封存於邊界前不能跑、到期後只一列；自動後再手動及反向操作不重複。核對 12:00 邊界歸期、無資料期無空摘要、狀態失敗補跑與最早週優先；清理只在測試聊天室確認，清空後舊週不復活、其他聊天室保留。排程實際執行時間、API 延遲、Sheets flush／權限及真實模型話題品質均未經本機 mock 證明。
 
@@ -156,9 +162,9 @@ PTT 已驗證 article 的 HTTPS canonicalization、over18、結構驗證、metad
 
 24 個 active `.gs`：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`、`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、`36_NewsArchive.gs`、`40_TopicHighlights.gs`、`45_TopicFeatures.gs`、`50_DataCleanup.gs`。數字前綴僅供導航，不代表 GAS load order。
 
-從完整 v1.16.2 升級需手動同步 **8 個 runtime 檔**：`02_LineCommands.gs`、`03_ResponseTexts.gs`、`05_Storage.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、新增 `36_NewsArchive.gs`、`45_TopicFeatures.gs`、`50_DataCleanup.gs`。若部署基準不確定，使用同版全部 24 個 `.gs`。Markdown、AGENTS 與 tests 不部署至 GAS。
+從完整 v1.16.2 升級需手動同步 **12 個 runtime 檔**：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`25_WebTaskQueue.gs`、`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、新增 `36_NewsArchive.gs`、`45_TopicFeatures.gs`、`50_DataCleanup.gs`。若部署基準不確定，使用同版全部 24 個 `.gs`。Markdown、AGENTS 與 tests 不部署至 GAS。
 
-v1.17.0 必須同步上述檔案，不能只同步新增檔。AiService／Provider、人格 Prompt、webhook router、搜尋驗證與既有 task 預算不變；自動封存只是以原 archive_news 任務執行新到期或待補跑週期，不改其他工作呼叫次數。
+v1.17.0 必須同步上述檔案，不能只同步新增檔。AiService／Provider、人格 Prompt、搜尋驗證與既有 task 預算不變；webhook router 僅補清理失敗回覆，保留二段確認與其他路由。自動封存以原 archive_news 任務執行新到期或待補跑週期，不改其他工作呼叫次數。
 
 固定封存補欄與啟用依前述手動順序，實際 Sheets／Properties／Trigger 尚待維護者處理。從 v1.16.0 或更早版本升級時，另須先備份 Sheet 並執行 `setupLogSheet()` 補齊 ConversationLog 的兩個引用欄位。
 
@@ -175,7 +181,9 @@ v1.17.0 必須同步上述檔案，不能只同步新增檔。AiService／Provid
 
 ## 驗證與限制
 
-v1.17.0 修改前在本機 main `8231700` 實跑既有 254 checks 通過；完成後 `node tests/v1140_smoke.cjs` **24 GAS sources、467 unique functions、254 checks 通過**，`node tests/v1170_archive.cjs` **48 checks 通過**，合計 **302 checks**。新增檢查覆蓋精確邊界、防重與並行、重試／中斷恢復、原生寫入失敗、排程預算與輪替、跨聊天室、schema／讀取失敗、清空取消、手動 setup／installer、實際 AiService／Provider 與 LINE router mock 路徑及非空話題長列表。`git diff --check` 通過。本機測試不連線真實 GAS／LINE／Sheets／AI，不證明排程時間、權限或模型產出品質。
+v1.17.0 修改前在本機 main `8231700` 實跑既有 254 checks 通過；PR 初版 `fcc90c0` 為 302 checks。九項 review 修正後，`node tests/v1140_smoke.cjs` **24 GAS sources、469 unique functions、254 checks 通過**，`node tests/v1170_archive.cjs` **72 checks 通過**，合計 **326 checks**。保留原檢查，追加截止入庫的八種交錯、六類清理及未設定聊天室、Pending Reply 交付互斥、致命／達上限狀態的連續讀取失敗、提交鎖等待與 token 失敗收據、游標預覽、拒絕話題與快取重驗、未知 ID 隱私、短段落完整新聞，以及文件啟用順序。實際 AiService／Provider 與 LINE router 使用 mock 下游；`git diff --check` 通過。本機測試不連線真實 GAS／LINE／Sheets／AI，不證明排程時間、權限或模型產出品質。
+
+另列既存風險：`processSingleNewsUrlTask_` 仍依領取時的 sheetRowNumber 回寫 NewsUrlQueue；若工作執行中刪除前面的任務列，可能回寫其他聊天室的任務。本次以 mock 重現，相關背景回寫流程未修改，須另案處理。維護者清空新聞前，先暫停 processNewsUrlQueue 的背景觸發器並確認既有工作已結束，完成清理後再恢復；本輪沒有執行這些操作。
 
 v1.16.2 前版 review fix：修改前在 `817676c` 實跑 245 checks 通過；先新增測試重現「已搜尋但 length 回覆缺提示」（預期 1 次、實際 0 次），修正後 `node tests/v1140_smoke.cjs` **23 GAS sources、444 unique functions、254 checks 通過**。新增 9 項參數化檢查：實際私訊／group／room 與圖片入口的長度、deadline、空答案；文字／圖片必要資料失敗；continuation 的 HTTP／搜尋／長度錯誤；未搜尋／pending／malformed／工具錯誤；read_url 來源；舊 caller／typed Error／嚴格布林／不改 metadata；成功回覆與來源 bubble。原 245 項有效斷言保留，partial answer 不進 LINE、Cache 或 Sheet，固定診斷紀錄保留。未執行 live，仍須正式環境確認後段失敗提示、正常來源 bubble 與既有圖片／查詢提醒。
 

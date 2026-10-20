@@ -306,9 +306,9 @@ function findLineMessageSplitIndex_(text, maxLength) {
   const safeMax = Math.max(1, Number(maxLength) || LINE_TEXT_MESSAGE_MAX_LENGTH);
   const minSemanticSplitIndex = Math.min(1200, Math.floor(safeMax * 0.35));
 
-  // 先按完整段落分割，避免標題內的編號或分類字樣切開一則新聞。
+  // 完整區塊可能出現在 1200 字以前；先保留整段，避免切開下一則新聞後被 fitter 省略。
   const paragraphIndex = safeText.lastIndexOf('\n\n', safeMax);
-  if (paragraphIndex >= minSemanticSplitIndex) return paragraphIndex;
+  if (paragraphIndex > 0) return paragraphIndex;
 
   const semanticPatterns = [
     /\n【[^】]+】/g,

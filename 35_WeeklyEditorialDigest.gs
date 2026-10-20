@@ -21,7 +21,8 @@ function shouldUseWeeklyEditorialDigest_(queryOptions) {
 
 function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiExecutionContext) {
   const diagnostic = { conversationRead: 'not_started', rawConversationCount: 0, keptConversationCount: 0,
-    topicCount: 0, cacheHit: false, stage: 'prepare', errorCode: '' };
+    returnedTopicCount: 0, topicCount: 0, rejectedTopicCount: 0, topicValidation: 'not_started',
+    cacheHit: false, stage: 'prepare', errorCode: '' };
   let conversationNotice = '';
   try {
     const identifiedItems = assignWeeklyEditorialItemIds_(items);
@@ -58,18 +59,27 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
     const cachedResult = getCachedWeeklyEditorialResult_(cacheKey);
     let normalizedResult = null;
     let partition = null;
+    let topicCounts = null;
     let cacheHit = false;
 
     if (cachedResult) {
       try {
         const cachedValidation = normalizeAndValidateWeeklyEditorialResult_(
-          JSON.stringify(cachedResult),
+          JSON.stringify(cachedResult.result),
           modelItemIds,
           identifiedItems,
           conversationPayload.length > 0
         );
+        const counts = cachedResult.topicCounts;
+        if (!counts || ['returned', 'adopted', 'rejected'].some(function(key) {
+          return !Number.isSafeInteger(counts[key]) || counts[key] < 0;
+        }) || counts.returned !== counts.adopted + counts.rejected ||
+            counts.adopted !== cachedValidation.normalizedResult.conversationTopics.length) {
+          throw new Error('weekly_editorial_invalid_cached_topic_counts');
+        }
         normalizedResult = cachedValidation.normalizedResult;
         partition = cachedValidation.partition;
+        topicCounts = counts;
         cacheHit = true;
       } catch (cacheValidationError) {
         // 快取只是效能最佳化。可解析但契約損壞、ID 不相容或 coverage
@@ -100,16 +110,25 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
       );
       normalizedResult = apiValidation.normalizedResult;
       partition = apiValidation.partition;
-      putCachedWeeklyEditorialResult_(cacheKey, normalizedResult);
+      topicCounts = apiValidation.topicCounts;
+      putCachedWeeklyEditorialResult_(cacheKey, normalizedResult, topicCounts);
     }
 
     diagnostic.cacheHit = cacheHit;
+    diagnostic.returnedTopicCount = topicCounts.returned;
     diagnostic.topicCount = (partition.conversationTopics || []).length;
+    diagnostic.rejectedTopicCount = topicCounts.rejected;
+    diagnostic.topicValidation = !conversationPayload.length ? 'no_input' : !topicCounts.returned ? 'valid_empty' :
+      !diagnostic.topicCount ? 'all_rejected' : topicCounts.rejected ? 'partial' : 'valid';
     diagnostic.stage = 'render';
     if (!conversationNotice && !diagnostic.topicCount) {
-      conversationNotice = conversationPayload.length
-        ? '本週群組話題：已讀取可用對話，本次沒有可提煉的主題。'
-        : '本週群組話題：本次可用範圍內，沒有符合整理條件的對話。';
+      conversationNotice = !conversationPayload.length
+        ? '本週群組話題：本次可用範圍內，沒有符合整理條件的對話。'
+        : topicCounts.returned
+          ? '本週群組話題：本次產生的話題未通過檢查，尚未完成對話整理。'
+          : '本週群組話題：已讀取可用對話，本次沒有可提煉的主題。';
+    } else if (!conversationNotice && diagnostic.topicValidation === 'partial') {
+      conversationNotice = '本週群組話題：部分話題未通過檢查，以下保留已通過的話題。';
     }
     const text = formatWeeklyEditorialDigest_(identifiedItems, partition,
       Object.assign({}, queryOptions, { conversationNotice: conversationNotice }));
@@ -588,11 +607,11 @@ function removeCachedWeeklyEditorialResult_(cacheKey) {
   }
 }
 
-function putCachedWeeklyEditorialResult_(cacheKey, normalizedResult) {
+function putCachedWeeklyEditorialResult_(cacheKey, normalizedResult, topicCounts) {
   try {
     CacheService.getScriptCache().put(
       cacheKey,
-      JSON.stringify(normalizedResult),
+      JSON.stringify({ result: normalizedResult, topicCounts: topicCounts }),
       WEEKLY_EDITORIAL_CACHE_TTL_SECONDS
     );
   } catch (error) {
@@ -625,12 +644,15 @@ function normalizeAndValidateWeeklyEditorialResult_(
   identifiedItems,
   hasConversationPayload
 ) {
-  const normalizedResult = parseAndNormalizeWeeklyEditorialResult_(responseText, modelItemIds);
+  const topicCounts = { returned: 0, adopted: 0, rejected: 0 };
+  const normalizedResult = parseAndNormalizeWeeklyEditorialResult_(responseText, modelItemIds, topicCounts);
 
   // 沒有任何通過 GAS 機械過濾的對話時，即使 cache / 模型意外回傳話題也不採用。
   // 新聞聚類仍可正常繼續，不把空 ConversationLog 視為整體錯誤。
   if (!hasConversationPayload) {
     normalizedResult.conversationTopics = [];
+    topicCounts.adopted = 0;
+    topicCounts.rejected = topicCounts.returned;
   }
 
   const partition = validateWeeklyEditorialPartition_(
@@ -641,11 +663,12 @@ function normalizeAndValidateWeeklyEditorialResult_(
 
   return {
     normalizedResult: normalizedResult,
-    partition: partition
+    partition: partition,
+    topicCounts: topicCounts
   };
 }
 
-function parseAndNormalizeWeeklyEditorialResult_(responseText, knownItemIds) {
+function parseAndNormalizeWeeklyEditorialResult_(responseText, knownItemIds, topicCounts) {
   const parsed = parseJsonObjectLoose(responseText);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('weekly_editorial_invalid_json_object');
@@ -663,13 +686,16 @@ function parseAndNormalizeWeeklyEditorialResult_(responseText, knownItemIds) {
     knownItemIds
   );
 
+  const conversationTopics = normalizeWeeklyEditorialConversationTopics_(parsed.conversationTopics, knownItemIds);
+  if (topicCounts) {
+    topicCounts.returned = parsed.conversationTopics.length;
+    topicCounts.adopted = conversationTopics.length;
+    topicCounts.rejected = topicCounts.returned - topicCounts.adopted;
+  }
   return {
     newsClusters: normalizedNews.newsClusters,
     ungroupedNewsIds: normalizedNews.ungroupedNewsIds,
-    conversationTopics: normalizeWeeklyEditorialConversationTopics_(
-      parsed.conversationTopics,
-      knownItemIds
-    )
+    conversationTopics: conversationTopics
   };
 }
 
@@ -792,10 +818,10 @@ function normalizeWeeklyEditorialIdArray_(rawIds, knownMap, sourceLabel) {
   const seenMap = {};
   const normalized = [];
 
-  rawIds.forEach(function(rawId) {
+  rawIds.forEach(function(rawId, index) {
     const itemId = typeof rawId === 'string' ? rawId.trim() : '';
-    if (!itemId || !knownMap[itemId]) {
-      if (itemId) console.warn('Weekly editorial unknown itemId in ' + sourceLabel + ': ' + itemId);
+    if (!itemId || !Object.prototype.hasOwnProperty.call(knownMap, itemId)) {
+      console.warn('WEEKLY_EDITORIAL_UNKNOWN_ID index=' + index);
       return;
     }
     if (seenMap[itemId]) return;

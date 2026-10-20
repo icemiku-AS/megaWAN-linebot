@@ -866,33 +866,7 @@ function getWeeklyArchiveTypeLabel_(archiveType) {
 // ======================================================
 
 function deleteConversationLogs(conversationId) {
-  const sheet = ensureLogSheet_();
-  const lastRow = sheet.getLastRow();
-
-  if (lastRow <= 1) {
-    return 0;
-  }
-
-  const conversationIdColumn = getHeaderMap_(sheet).ConversationId;
-  if (!conversationIdColumn) throw new Error('Missing ConversationId column.');
-
-  const values = sheet
-    .getRange(2, conversationIdColumn, lastRow - 1, 1)
-    .getValues();
-
-  let deletedCount = 0;
-
-  // 從下面往上刪，避免刪除列後 row index 位移
-  for (let i = values.length - 1; i >= 0; i--) {
-    const rowConversationId = values[i][0];
-
-    if (rowConversationId === conversationId) {
-      sheet.deleteRow(i + 2);
-      deletedCount++;
-    }
-  }
-
-  return deletedCount;
+  return deleteRowsByConversationIdFromSheet_(ensureLogSheet_(), conversationId);
 }
 
 function truncateForSheet(text) {

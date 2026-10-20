@@ -80,7 +80,11 @@ Pending Reply 維持 v1.16.0 契約：任何文字訊息都可優先交付舊結
 
 固定週期是台灣時間「週三 12:00（含）～下週三 12:00（不含）」，按 NewsInbox.CreatedAt 入庫時間、同聊天室及 Status=ok 選取；發表日期不影響歸期。每日中午約 12:00～12:30 檢查，週三處理新到期週期，其餘日補跑；GAS 排程不保證準時。每次每聊天室最多一週，先處理最早未完成週期，可重試失敗每日一次、同一期自動最多三次，設定／資料或不可重試錯誤須處理後手動補跑。沒有資料只記進度，不建立空摘要。`#本週新聞` 查詢仍是滾動最近七天。
 
-週編輯台保留已驗證的群組話題；長訊息按段落分割，容量不足只省略新聞並顯示數量。對話讀取失敗、整體整理失敗及成功但沒有可提煉話題分別提示，不強迫 AI 產生主題。對話仍僅讀同聊天室、全表尾端最多 2500 列內的合格使用者文字，保留既有最多 60 則／每則 240 字元／合計 6000 字元限制。
+週編輯台保留已驗證的群組話題；長訊息可在少於 1200 字的完整段落分割，容量不足只省略新聞並顯示數量。對話讀取失敗、整體整理失敗、模型回空話題，以及話題全數／部分未通過檢查分別提示，不強迫 AI 產生主題；快取也保留差異，版本改為 v1.17.0，舊 key 自然失效。對話仍僅讀同聊天室、全表尾端最多 2500 列內的合格使用者文字，保留既有最多 60 則／每則 240 字元／合計 6000 字元限制。
+
+入庫時間戳與寫入／flush、固定封存來源快照共用短鎖，避免截止時漏封存；AI 在鎖外執行，提交只在原 deadline 內等鎖，失敗保留安全狀態供補跑。清理在同一把外層鎖內讀列、刪列及 flush，包含未設定固定封存的聊天室；鎖忙只回報未完成。Pending Reply 仍在 LINE 成功後才刪除。
+
+已知既存風險：新聞背景任務仍以領取時的列號回寫 Queue。維護者清空新聞前，先暫停 processNewsUrlQueue 觸發器並等既有工作結束，完成後再恢復；執行中刪列可能影響其他聊天室任務，詳見 CURRENT_VERSION 的限制。
 
 ### Help、版本與清理
 
@@ -132,12 +136,13 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 ## Setup、部署與維護
 
 1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
-   從完整 v1.16.2 升級，需同步 8 個 runtime 檔（含新增 36_NewsArchive.gs），清單見 CURRENT_VERSION；部署基準不確定時同步同版全部 24 檔。
+   從完整 v1.16.2 升級，需同步 12 個 runtime 檔（含新增 36_NewsArchive.gs），清單見 CURRENT_VERSION；部署基準不確定時同步同版全部 24 檔。
 2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
 3. **v1.16.0 → v1.16.1 有 schema 補欄**：先備份 Sheet，再以同版程式執行 `setupLogSheet()`，確認 ConversationLog 新增 `QuotedMessageId`、`QuoteStatus`，舊欄位／資料保留。首次寫入也會補缺欄，但建議部署前明確完成；不回填舊引用、不修復失真 ID。新 ID 以文字 literal 寫入，需在實際 Sheet 驗收超長 ID。既有 Trigger 不重建；首次建置才另外執行 `installWebTaskQueueTrigger()`。
-4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。
-5. 部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。具體同步檔案與 manual smoke checklist 見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
-6. **固定週期封存待上傳 GAS 後才手動啟用**：依 CURRENT_VERSION 的啟用順序備份、設定 NEWS_ARCHIVE_CONFIG、預覽舊期間、執行 setupNewsArchiveStorage()，最後才 installNewsArchiveTrigger()。未設定預設關閉；本機修改與 PR 不會調整實際 Sheets 或 Trigger。
+4. **固定封存先只做準備**：依 CURRENT_VERSION 備份、設定 `autoEnabled=false`、預覽舊期間並執行 `setupNewsArchiveStorage()`。切換期間暫停新聞封存指令，不安裝封存觸發器；未設定預設關閉。
+5. **先更新 Web App deployment**：維護者建立 GAS version，更新既有 Web App deployment 並保留 URL，自動封存仍關閉。Git commit／push／merge 不等於 GAS 部署。
+6. **再驗證新版手動入口**：由 LINE `#版本` 確認 v1.17.0，確認舊版執行已結束，完成測試聊天室手動防重、狀態與對話整理驗收。部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。
+7. **最後啟用自動封存**：驗收通過才將該聊天室 autoEnabled 改為 true，再執行 `installNewsArchiveTrigger()`。具體步驟見 [CURRENT_VERSION.md](CURRENT_VERSION.md)；本機修改與 PR 不會調整實際 Sheets 或 Trigger。
 
 必要 production smoke gate：真實 LINE webhook 的 MessageId 與已確認文字 QuotedMessageId，經 writer 寫入及 `SpreadsheetApp getValues()` 回讀後，必須仍為 string 且與原始 ID 完全相等。Mock 不能代替這項實測；目前未執行 live 驗證，完整檢查式見 CURRENT_VERSION。
 

@@ -1,4 +1,12 @@
 2026-10-20
+v1.17.0 PR #54 review 修正（維持原版號，GAS 手動啟用另行處理）
+- 入庫 CreatedAt／append／flush 與封存來源快照共用短鎖；各類清理與舊刪列入口涵蓋未設定聊天室，Pending Reply 成功後刪除並在原鎖內 flush。
+- 保留不可重試／達上限狀態；AI 完成後在原 deadline 內等提交鎖，持續忙碌時以 token 專屬安全失敗收據供狀態與補跑恢復，不存模型內容。
+- 區分空話題、全拒絕與部分採納，快取契約升為 v1.17.0；未知 ID 不記原值，完整短段落可提早分段，preview 待跑數改依目前游標。
+- 啟用順序改為自動關閉下 setup → 更新 Web App → #版本及手動驗收 → 最後啟用／安裝排程。累計需同步 12 個 runtime 檔，Sheets、Properties 與 Trigger 尚未操作。
+- 24 GAS sources／469 unique functions；254 smoke checks＋72 focused checks 共 326 checks 通過。未執行 live GAS／LINE／Sheets／AI 驗收，未合併或部署。
+
+2026-10-20
 v1.17.0 Weekly News Archive Edition（GAS 部署與手動啟用另行處理）
 - 從維護者指定的當時本機 main 8231700 建立 codex/v1170-weekly-news-archive；不合併、不自動部署。
 - 新增 36_NewsArchive.gs：指定聊天室按台灣時間週三 12:00 固定七日週期，手動與每日到期檢查共用 ArchiveKey、防重、短鎖／lease、進度與失敗補跑；空期只記進度，缺表／讀取錯誤不可當空期。

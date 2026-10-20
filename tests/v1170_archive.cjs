@@ -42,8 +42,8 @@ class Sheet {
 }
 
 function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
-  let now = clock, held = false, uuid = 0, busy = false, propertyFailure = null, ai = null, flush = null;
-  const props = new Map(), logs = [], models = [], fetches = [], triggers = [];
+  let now = clock, held = false, uuid = 0, busy = false, busyUntil = 0, propertyFailure = null, ai = null, flush = null;
+  const props = new Map(), logs = [], models = [], fetches = [], triggers = [], lockWaits = [];
   const sheets = new Map([
     ['WeeklySummary', new Sheet(legacy ? legacyHeaders : legacyHeaders.concat(extraHeaders))],
     ['NewsInbox', new Sheet(newsHeaders)],
@@ -57,11 +57,21 @@ function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
     PropertiesService: { getScriptProperties: () => ({
       getProperty: key => props.get(key) ?? (['DEEPSEEK_API_KEY', 'LINE_CHANNEL_ACCESS_TOKEN'].includes(key) ? 'test-only-placeholder' : null),
+      getKeys: () => [...props.keys()],
       setProperty: (key, value) => { if (propertyFailure) propertyFailure(key, value); props.set(key, value); },
       deleteProperty: key => props.delete(key)
     }) },
     LockService: { getScriptLock: () => ({
-      tryLock: () => { if (busy || held) return false; held = true; return true; },
+      tryLock: waitMs => {
+        lockWaits.push(waitMs);
+        if (held) return false;
+        if (busy) { now += waitMs; return false; }
+        if (busyUntil > now) {
+          now += Math.min(waitMs, busyUntil - now);
+          if (busyUntil > now) return false;
+        }
+        held = true; return true;
+      },
       releaseLock: () => { assert(held); held = false; }
     }) },
     SpreadsheetApp: { flush: () => { if (flush) flush(); } },
@@ -104,11 +114,12 @@ function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
     return ai ? ai(...args) : { ok: true, json: structuredClone(archive) };
   };
   const config = () => c.getNewsArchiveConfig_('group:a');
-  const run = (origin = 'manual') => c.runFixedNewsArchive_(config(), origin, event);
+  const run = (origin = 'manual', context) => c.runFixedNewsArchive_(config(), origin, event, context);
   const stateKey = () => c.getNewsArchiveStateKey_(config());
-  return { c, props, logs, models, fetches, triggers, sheets, cache, run, config, stateKey,
+  return { c, props, logs, models, fetches, triggers, sheets, cache, lockWaits, run, config, stateKey,
     state: () => c.getNewsArchiveState_(config()), now: () => now, setNow: value => { now = value; },
     setBusy: value => { busy = value; }, setAi: value => { ai = value; },
+    setBusyUntil: value => { busyUntil = value; },
     setPropertyFailure: value => { propertyFailure = value; }, setFlush: value => { flush = value; },
     restoreAi: () => { c.runAiJsonTask = realRunAiJsonTask; }, held: () => held };
 }
@@ -480,7 +491,7 @@ check('actual AiService/provider/parser shares archive validator, deadline and m
   assert(e.logs.some(line => line.includes('AI_CALL_METADATA')));
 });
 
-const topics = [{ title: '群友討論 AI 改變對話習慣', summary: '甲與乙認為過度依賴制式回覆會影響討論方式。', talkingPoint: '哪些場合仍需要自己的說法？' }];
+const topics = [{ title: '群友討論 AI 改變對話習慣', summary: '甲與乙認為過度依賴制式回覆會影響討論方式。', talkingPoint: '哪些場合仍需要自己的說法？', relatedNewsIds: [] }];
 const query = { viewMode: 'compact', onlyHighPotential: false, categoryFilter: '', days: 7 };
 function editorial(e, count = 23) {
   const items = Array.from({ length: count }, (_, i) => ({
@@ -563,6 +574,326 @@ check('diagnostics contain counts and safe codes, never raw scope, dialogue, URL
   assert.equal(diagnostic.rawConversationCount, 1); assert.equal(diagnostic.keptConversationCount, 1);
   assert.equal(diagnostic.topicCount, 1); assert.equal(diagnostic.stage, 'done');
   for (const word of ['我們可以聊', 'example.org', 'group:a', 'alice']) assert(!JSON.stringify(diagnostic).includes(word));
+});
+
+for (const hasExisting of [false, true]) for (const origin of ['manual', 'auto']) for (const writerFirst of [false, true]) {
+  check('cutoff serialization ' + JSON.stringify({ hasExisting, origin, writerFirst }), () => {
+    const e = env({ clock: writerFirst ? end - 1 : end }), sheet = e.sheets.get('NewsInbox');
+    if (hasExisting) news(e);
+    const item = { conversationId: 'group:a', title: '截止交錯新聞', url: 'https://example.org/cutoff', brief: '摘要' };
+    e.setFlush(() => assert(e.held(), 'writes flush before releasing the data lock'));
+    if (writerFirst) {
+      const append = e.c.appendRowByHeaders_;
+      e.c.appendRowByHeaders_ = (target, values) => {
+        if (target === sheet) {
+          assert(e.held()); assert.equal(values.CreatedAt.getTime(), end - 1);
+          e.setNow(end);
+          assert.equal(e.run(origin).status, 'busy', 'snapshot cannot overtake unflushed writer');
+          assert.equal(e.state().nextStartAt, start);
+        }
+        return append(target, values);
+      };
+      e.c.appendNewsInboxRow_(item);
+      assert.equal(e.run(origin).count, hasExisting ? 2 : 1);
+      assert.equal(e.run().status, 'up_to_date');
+      e.setNow(end + week); assert.equal(e.run(origin).status, 'empty');
+      assert.equal(e.models.length, 1);
+    } else {
+      const snapshot = e.c.getNewsArchivePeriodItems_;
+      e.c.getNewsArchivePeriodItems_ = (...args) => {
+        assert(e.held());
+        assert.throws(() => e.c.appendNewsInboxRow_(item), error => error.errorReason === 'local_time_budget');
+        return snapshot(...args);
+      };
+      assert.equal(e.run(origin).status, hasExisting ? 'completed' : 'empty');
+      e.c.getNewsArchivePeriodItems_ = snapshot;
+      e.c.appendNewsInboxRow_(item);
+      assert.equal(sheet.records().at(-1).CreatedAt.getTime(), end, 'retry timestamps only after acquiring lock');
+      assert.equal(e.run().status, 'up_to_date');
+      e.setNow(end + week); assert.equal(e.run(origin).count, 1);
+      assert.equal(e.models.length, hasExisting ? 2 : 1);
+    }
+    const summaries = e.sheets.get('WeeklySummary').records();
+    assert.equal(summaries.reduce((sum, row) => sum + row.SourceItemCount, 0), hasExisting ? 2 : 1);
+    assert.equal(new Set(summaries.map(row => row.ArchiveKey)).size, summaries.length);
+    assert(!e.held());
+  });
+}
+check('busy news insertion throws, sync queues, background retries, manual never claims saved', () => {
+  const e = env(), analysis = { title: '新聞標題', outline: '完整新聞', brief: '新聞簡介', category: '科技與 AI',
+    angle: '節目切角', topicPotential: '高', specialTopic: '無', categoryConfidence: 90, storyKey: '新聞事件' };
+  e.c.fetchAndExtractWebPageByReaderLayer_ = () => ({ ok: true, mainText: '新聞正文', readerRoute: 'jina_reader' });
+  e.c.analyzeNewsUrlWithAi_ = () => analysis;
+  e.c.isWeakAutoNewsClassification_ = () => false;
+  const fallback = [];
+  e.c.enqueueDirectNewsUrlsForBackground_ = (...args) => { fallback.push(args); return { ok: true, queued: true }; };
+  e.setBusy(true);
+  assert.throws(() => e.c.appendNewsInboxRow_({ conversationId: 'group:a' }));
+  assert.equal(e.c.handleDirectNewsUrlMessage_(event, 'group:a', 'https://example.org/news').queued, true);
+  assert.equal(fallback.length, 1); assert.equal(fallback[0][4], 'news_inbox_write_error');
+  e.c.parseManualNewsSupplement_ = () => analysis;
+  assert.throws(() => e.c.handleManualNewsSupplement_(event, 'group:a', 'https://example.org/news 新聞補件'));
+  const queue = e.c.ensureNewsUrlQueueSheet_();
+  e.c.appendRowByHeaders_(queue, { TaskId: 'task1', ConversationId: 'group:a', Status: 'processing', RetryCount: 0 });
+  e.c.processSingleNewsUrlTask_({ sheetRowNumber: 2, taskId: 'task1', conversationId: 'group:a',
+    url: 'https://example.org/news', retryCount: 0 });
+  assert.equal(queue.records()[0].Status, 'pending'); assert.equal(queue.records()[0].RetryCount, 1);
+  assert.equal(e.sheets.get('NewsInbox').records().length, 0);
+});
+check('all cleanup scopes hold one outer lock through row snapshot, deletion and flush', () => {
+  for (const key of ['conversation_log', 'topic_highlights', 'web_data', 'weekly_summary', 'news_data', 'pending_replies']) {
+    const e = env();
+    const names = { conversation_log: ['ConversationLog'], topic_highlights: ['TopicHighlights'],
+      web_data: ['WebSummary', 'WebTaskQueue'], weekly_summary: ['WeeklySummary'],
+      news_data: ['NewsInbox', 'NewsUrlQueue'], pending_replies: ['PendingReplies'] }[key];
+    for (const name of names) {
+      const sheet = new Sheet(['ConversationId'], ['group:b', 'group:a', 'group:c', 'group:a', 'group:d'].map(scope => [scope]));
+      e.sheets.set(name, sheet);
+      const range = sheet.getRange.bind(sheet), remove = sheet.deleteRow.bind(sheet);
+      let interleaved = false;
+      sheet.getRange = (...args) => {
+        const result = range(...args), read = result.getValues;
+        result.getValues = () => {
+          const values = read();
+          if (args[0] === 2 && !interleaved) {
+            interleaved = true; assert(e.held());
+            assert.throws(() => e.c.performDataCleanup_(key, 'group:b'), error => error.errorReason === 'local_time_budget');
+          }
+          return values;
+        };
+        return result;
+      };
+      sheet.deleteRow = row => { assert(e.held()); remove(row); };
+    }
+    e.setFlush(() => assert(e.held()));
+    assert.equal(e.c.performDataCleanup_(key, 'group:a').total, 2 * names.length);
+    for (const name of names) assert.deepEqual(e.sheets.get(name).records().map(row => row.ConversationId), ['group:b', 'group:c', 'group:d']);
+    assert.equal(e.c.performDataCleanup_(key, 'group:b').total, names.length);
+    for (const name of names) assert.deepEqual(e.sheets.get(name).records().map(row => row.ConversationId), ['group:c', 'group:d']);
+    assert(!e.held());
+  }
+});
+check('legacy public deletion entrypoints serialize and preserve other rooms', () => {
+  const e = env({ configured: false }), sheet = new Sheet(['ConversationId'], [['group:a'], ['group:b'], ['group:a']]);
+  e.c.ensureLogSheet_ = () => sheet;
+  e.setBusy(true);
+  assert.throws(() => e.c.deleteConversationLogs('group:a'));
+  assert.throws(() => e.c.deleteRowsByConversationIdFromSheet_(sheet, 'group:a'));
+  assert.equal(sheet.records().length, 3);
+  e.setBusy(false); e.setFlush(() => assert(e.held()));
+  assert.equal(e.c.deleteConversationLogs('group:a'), 2);
+  assert.deepEqual(sheet.records(), [{ ConversationId: 'group:b' }]);
+});
+check('busy cleanup router retains confirmation and returns incomplete without a success message', () => {
+  const e = env(); e.setBusy(true);
+  e.c.handleLineEvent({ ...event, type: 'message', replyToken: 'reply',
+    message: { type: 'text', id: '1', text: '#清空封存 確認' } }, e.now());
+  const reply = JSON.parse(e.fetches.at(-1).options.payload).messages[0].text;
+  assert(reply.includes('清理未完成')); assert(!reply.includes('已清除'));
+  assert.equal(e.sheets.get('WeeklySummary').records().length, 0); assert.equal(e.models.length, 0);
+  assert(!e.props.has(e.stateKey()), 'busy cleanup never cancels or advances the archive');
+});
+check('pending delivery and cleanup share the same lock, flush before release and consume only after LINE success', () => {
+  for (const succeeds of [false, true]) {
+    const e = env({ configured: false }), sheet = e.c.ensurePendingRepliesSheet_();
+    ['group:b', 'group:a', 'group:c', 'group:a', 'group:d'].forEach((scope, index) => {
+      e.c.appendRowByHeaders_(sheet, { PendingId: 'p' + index, ConversationId: scope, Status: 'pending', ReplyText: '待回覆' });
+    });
+    e.c.replyToLine = () => {
+      assert(e.held());
+      assert.throws(() => e.c.performDataCleanup_('pending_replies', 'group:b'));
+      if (!succeeds) throw Error('PRIVATE_LINE_FAILURE');
+    };
+    let flushes = 0; e.setFlush(() => { assert(e.held()); flushes++; });
+    if (succeeds) {
+      assert(e.c.deliverPendingReply_('group:a', 'reply'));
+      assert.equal(sheet.records().filter(row => row.ConversationId === 'group:a').length, 1);
+      assert.equal(flushes, 1);
+    } else {
+      assert.throws(() => e.c.deliverPendingReply_('group:a', 'reply'), /PRIVATE_LINE_FAILURE/);
+      assert.equal(sheet.records().filter(row => row.ConversationId === 'group:a').length, 2);
+      assert.equal(flushes, 0);
+    }
+    assert(!e.held());
+    assert.equal(e.c.performDataCleanup_('pending_replies', 'group:b').total, 1);
+    assert.equal(sheet.records().filter(row => ['group:c', 'group:d'].includes(row.ConversationId)).length, 2);
+  }
+});
+check('fatal and capped states survive repeated preflight read errors yet recover an existing row', () => {
+  for (const capped of [false, true]) {
+    const e = env(); news(e);
+    e.setAi(() => ({ ok: false, errorType: capped ? 'ai_rate_limit' : 'ai_auth_error', retryable: capped }));
+    if (capped) for (let n = 0; n < 2; n++) { e.run('auto'); e.setNow(e.now() + 86400000); }
+    assert.equal(e.run('auto').status, 'failed');
+    const before = JSON.stringify(e.state()), calls = e.models.length;
+    e.sheets.get('WeeklySummary').failRead = true;
+    for (let n = 0; n < 2; n++) {
+      e.setNow(e.now() + 86400000); assert.equal(e.run('auto').status, 'needs_attention');
+      assert.equal(JSON.stringify(e.state()), before);
+    }
+    e.sheets.get('WeeklySummary').failRead = false; e.setAi(null);
+    assert.equal(e.run('auto').status, 'needs_attention'); assert.equal(e.models.length, calls);
+    seedArchive(e);
+    assert.equal(e.run('auto').status, 'already_done'); assert.equal(e.models.length, calls);
+    assert.equal(e.state().nextStartAt, end); assert.equal(e.state().autoAttempts, 0);
+  }
+});
+check('commit waits for ordinary chat contention within the original deadline and reuses one AI result', () => {
+  for (const origin of ['manual', 'auto']) {
+    const e = env(); news(e); const began = e.now(), deadline = began + 40000;
+    e.setAi(() => { e.setNow(began + 5000); e.setBusyUntil(e.now() + 20000); return { ok: true, json: archive }; });
+    assert.equal(e.run(origin, { deadlineAtMs: deadline, aiTimeoutCapSeconds: 30, aiMinimumRequestSeconds: 8 }).status, 'completed');
+    assert.equal(e.now(), began + 25000); assert(e.now() < deadline);
+    assert.equal(e.models.length, 1); assert.equal(e.sheets.get('WeeklySummary').records().length, 1);
+    assert.equal(e.state().runId, ''); assert(!e.logs.join('').includes('RECEIPT_CLEANUP_FAILED'));
+  }
+});
+check('exhausted commit lock budget records retryable failure instead of a phantom processing lease', () => {
+  for (const origin of ['manual', 'auto']) {
+    const e = env(); news(e); const deadline = e.now() + 40000;
+    e.setAi(() => { e.setNow(deadline - 1500); e.setBusy(true); return { ok: true, json: archive }; });
+    const result = e.run(origin, { deadlineAtMs: deadline, aiTimeoutCapSeconds: 30, aiMinimumRequestSeconds: 8 });
+    assert.equal(result.status, 'failed'); assert.equal(result.failure.errorReason, 'local_time_budget');
+    assert.equal(e.now(), deadline); assert.equal(e.models.length, 1);
+    assert.equal(e.sheets.get('WeeklySummary').records().length, 0);
+    const raw = JSON.parse(e.props.get(e.stateKey()));
+    assert(raw.runId, 'do not overwrite shared progress without the global lock');
+    const receipt = [...e.props].filter(([key]) => key.includes('_FAILURE_'));
+    assert.equal(receipt.length, 1); assert.deepEqual(JSON.parse(receipt[0][1]), { errorCode: 'local_time_budget', retryable: true });
+    assert.equal(e.state().runId, ''); assert.equal(e.state().leaseUntil, 0);
+    const status = e.c.getNewsArchiveStatusText_('group:a');
+    assert(status.includes('LOCAL_TIME_BUDGET')); assert(!status.includes('正在處理'));
+    e.setBusy(false);
+    if (origin === 'auto') {
+      assert.equal(e.run('auto').status, 'waiting');
+      assert.equal(JSON.parse(e.props.get(e.stateKey())).runId, '');
+      e.setNow(e.now() + 86400000);
+    }
+    e.setAi(null); assert.equal(e.run(origin).status, 'completed');
+    assert.equal(e.models.length, 2); assert.equal(e.sheets.get('WeeklySummary').records().length, 1);
+    assert.equal([...e.props.keys()].filter(key => key.includes('_FAILURE_')).length, 0);
+  }
+});
+check('failure receipts are token scoped, cleaned on progress, and cannot unblock fatal or corrupt state', () => {
+  const e = env(); news(e);
+  const state = { ...e.state(), runId: 'active', leaseUntil: e.now() + 300000 };
+  e.props.set(e.stateKey(), JSON.stringify(state));
+  e.props.set(e.stateKey() + '_FAILURE_old', JSON.stringify({ errorCode: 'local_time_budget', retryable: true }));
+  assert.equal(e.run().status, 'processing'); assert.equal(e.state().runId, 'active');
+  e.props.set(e.stateKey() + '_FAILURE_active', '{"errorCode":"PRIVATE_UNKNOWN","retryable":true}');
+  assert.equal(e.run().status, 'failed'); assert.equal(e.models.length, 0);
+  assert(!e.logs.join('').includes('PRIVATE_UNKNOWN'));
+  e.props.set(e.stateKey() + '_FAILURE_active', '{"errorCode":"ai_auth_error","retryable":false}');
+  assert.equal(e.run('auto').status, 'needs_attention'); assert.equal(e.state().retryable, false);
+  assert.equal(e.models.length, 0);
+  assert.equal(e.run().status, 'completed'); assert.equal(e.state().nextStartAt, end);
+  assert.equal([...e.props.keys()].filter(key => key.includes('_FAILURE_')).length, 0);
+});
+check('preview counts only remaining periods after completion, empty and clear, without writes', () => {
+  for (const outcome of ['fresh', 'completed', 'empty', 'cleared']) {
+    const e = env({ clock: end + week });
+    if (outcome === 'completed') { news(e); e.run(); }
+    if (outcome === 'empty') e.run();
+    if (outcome === 'cleared') e.c.performDataCleanup_('weekly_summary', 'group:a');
+    const before = JSON.stringify([...e.props]), sheets = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
+    const due = e.c.previewNewsArchiveSetup()[0].duePeriods, expected = outcome === 'fresh' ? 2 : outcome === 'cleared' ? 0 : 1;
+    assert.equal(due, expected); assert(e.c.getNewsArchiveStatusText_('group:a').includes('待處理週期：' + expected));
+    assert.equal(JSON.stringify([...e.props]), before);
+    assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), sheets);
+  }
+});
+check('unknown news IDs never leak model text, dialogue, URL or arbitrary label to logs', () => {
+  const e = env(), marker = 'PRIVATE_DIALOGUE https://private.example/secret';
+  const ids = e.c.normalizeWeeklyEditorialIdArray_([marker, 'N001', 'N001', '', null, '__proto__', 'constructor', 'toString'], { N001: true }, marker);
+  assert.deepEqual(Array.from(ids), ['N001']);
+  assert(e.logs.some(line => line.startsWith('WEEKLY_EDITORIAL_UNKNOWN_ID index=')));
+  assert(!e.logs.join('').includes('PRIVATE_')); assert(!e.logs.join('').includes('https://'));
+});
+check('all rejected, partial and valid-empty topics keep distinct diagnostics and cache hits', () => {
+  for (const kind of ['all_rejected', 'partial', 'valid_empty', 'no_input']) {
+    const e = env(), { items, ids } = editorial(e, 1), invalid = { ...topics[0], title: '   ' };
+    const returned = kind === 'valid_empty' ? [] : kind === 'partial' ? [invalid, topics[0]] : [invalid];
+    if (kind === 'no_input') e.sheets.get('ConversationLog').data.splice(1);
+    e.setAi(() => ({ ok: true, json: { newsClusters: [], ungroupedNewsIds: ids, conversationTopics: returned } }));
+    const text = e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query);
+    assert.equal(e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query), text); assert.equal(e.models.length, 1);
+    assert(text.includes(items[0].url)); assert(!text.includes('週編輯台整理未完成'));
+    if (kind === 'all_rejected') { assert(text.includes('話題未通過檢查')); assert(!text.includes('沒有可提煉')); }
+    if (kind === 'partial') { assert(text.includes('部分話題未通過檢查')); assert(text.includes(topics[0].title)); }
+    if (kind === 'valid_empty') assert(text.includes('沒有可提煉的主題'));
+    if (kind === 'no_input') { assert(text.includes('沒有符合整理條件的對話')); assert(!text.includes('話題未通過')); }
+    const diagnostics = e.logs.filter(line => line.startsWith('WEEKLY_EDITORIAL_STATUS ')).map(line => JSON.parse(line.slice(24)));
+    assert.equal(diagnostics.length, 2);
+    for (const data of diagnostics) {
+      assert.equal(data.topicValidation, kind);
+      assert.equal(data.returnedTopicCount, returned.length);
+      assert.equal(data.topicCount, kind === 'partial' ? 1 : 0);
+      assert.equal(data.rejectedTopicCount, kind === 'valid_empty' ? 0 : 1);
+      assert.equal(data.stage, 'done'); assert.equal(data.errorCode, '');
+    }
+    assert.equal(diagnostics[1].cacheHit, true);
+    assert([...e.cache.keys()].some(key => key.startsWith('weekly_editorial:v1.17.0:')));
+  }
+});
+check('corrupt topic count cache is discarded and regenerated without storing rejected raw content', () => {
+  const e = env(), { items, ids } = editorial(e, 1);
+  e.setAi(() => ({ ok: true, json: { newsClusters: [], ungroupedNewsIds: ids,
+    conversationTopics: [{ ...topics[0], title: 'https://private.example/PRIVATE_REJECTED' }] } }));
+  e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query);
+  const key = [...e.cache.keys()][0], valid = JSON.parse(e.cache.get(key));
+  assert(!e.cache.get(key).includes('PRIVATE_REJECTED'));
+  for (const topicCounts of [{ returned: -1, adopted: 0, rejected: -1 }, { returned: 1, adopted: 1, rejected: 0 },
+    { returned: 2, adopted: 0, rejected: 1 }, { returned: 1e20, adopted: 0, rejected: 1e20 }]) {
+    e.cache.set(key, JSON.stringify({ ...valid, topicCounts }));
+    const count = e.models.length; e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query);
+    assert.equal(e.models.length, count + 1);
+  }
+  assert(!e.logs.join('').includes('PRIVATE_REJECTED'));
+});
+check('actual AI service preserves rejected topic cause and removes unknown ID text from output and logs', () => {
+  const e = env(), { items, ids } = editorial(e, 1); e.restoreAi();
+  const marker = 'PRIVATE_ID_DIALOGUE https://private.example/url';
+  e.c.UrlFetchApp.fetch = (url, options) => {
+    e.fetches.push({ url, options });
+    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({
+      object: 'response', status: 'completed', output: [{ type: 'message', status: 'completed', role: 'assistant',
+        content: [{ type: 'output_text', text: JSON.stringify({ newsClusters: [], ungroupedNewsIds: [...ids, marker],
+          conversationTopics: [{ ...topics[0], title: '   ' }] }) }] }],
+      usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 }
+    }) };
+  };
+  const text = e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query);
+  assert(text.includes('話題未通過檢查')); assert(text.includes(items[0].url));
+  assert.equal(e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query), text); assert.equal(e.fetches.length, 1);
+  assert(!e.logs.join('').includes('PRIVATE_ID_DIALOGUE')); assert(!text.includes(marker));
+});
+check('short complete paragraph fits three topics and one huge news block in two LINE bubbles', () => {
+  for (const [titleLength, urlLength] of [[1900, 2000], [100, 1000], [100, 2000]]) {
+    const e = env(), topic = { title: '題'.repeat(60), summary: '述'.repeat(160), talkingPoint: '點'.repeat(100), relatedNewsIds: [] };
+    const prefix = 'https://example.org/', item = { title: '新'.repeat(titleLength),
+      url: prefix + 'u'.repeat(urlLength - prefix.length), category: '科技與 AI', topicPotential: '高' };
+    const text = e.c.formatWeeklyEditorialDigest_(e.c.assignWeeklyEditorialItemIds_([item]),
+      { newsClusters: [], otherItemIds: ['N001'], conversationTopics: [topic, topic, topic] }, query);
+    assert(!text.includes('未顯示')); assert.equal(text.split(item.url).length - 1, 1);
+    const split = e.c.splitTextForLineMessagesWithMeta_(text);
+    assert(!split.wasTruncated); assert(split.messages.every(message => message.length <= 4900));
+    assert.equal(split.messages.filter(message => message.includes(item.url)).length, 1);
+    if (titleLength === 1900) { assert.equal(split.messages.length, 2); assert(split.messages[0].length < 1200); }
+  }
+});
+
+check('deployment guides keep auto off through setup, update Web App, verify manual entry, then enable triggers', () => {
+  for (const name of ['CURRENT_VERSION.md', 'README.md']) {
+    const text = fs.readFileSync(path.join(root, name), 'utf8');
+    const start = name === 'CURRENT_VERSION.md' ? text.indexOf('### 上傳 GAS 後的手動啟用順序') : text.indexOf('## Setup、部署與維護');
+    const section = text.slice(start);
+    const setup = section.indexOf('setupNewsArchiveStorage()'), deploy = section.indexOf('**先更新 Web App deployment**'),
+      manual = section.indexOf('**再驗證新版手動入口**'), enable = section.indexOf('**最後啟用自動封存**'),
+      install = section.indexOf('installNewsArchiveTrigger()');
+    assert(start >= 0 && setup > 0 && deploy > setup && manual > deploy && enable > manual && install > enable, name);
+    assert(section.slice(0, deploy).includes('autoEnabled=false'));
+    assert(section.slice(deploy, enable).includes('#版本'));
+  }
 });
 
 process.stdout.write('OK ' + checks + ' v1.17.0 checks; no live GAS/LINE/Sheets/API calls.\n');

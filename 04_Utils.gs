@@ -1,6 +1,6 @@
 // ======================================================
 // 04_Utils.gs
-// 用途：Shared foundation：共用 ID 產生與寬鬆 JSON object 解析。
+// 用途：Shared foundation：共用 ID、資料短鎖與寬鬆 JSON object 解析。
 //
 // 職責與協作：
 // 1. 提供跨功能使用的基礎 helper；特定功能的規則與驗證留在所屬檔案。
@@ -20,6 +20,13 @@ function createSimpleId(prefix) {
     new Date().getTime(),
     Math.floor(Math.random() * 1000000)
   ].join('_');
+}
+
+// 入庫、封存取樣與刪列共用短鎖；外層負責一次取得，AI 等待不得放在 action 內。
+function withDataMutationLock_(action, waitMs) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(typeof waitMs === 'number' ? Math.max(0, waitMs) : 1000)) return { status: 'busy' };
+  try { return action(); } finally { lock.releaseLock(); }
 }
 
 function parseJsonObjectLoose(text) {
