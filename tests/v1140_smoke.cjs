@@ -1,4 +1,4 @@
-// v1.16.2 回覆診斷／人格與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.17.0 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,7 +10,7 @@ const source = files.map(name => {
   new vm.Script(code, { filename: name });
   return code;
 }).join('\n');
-assert.equal(files.length, 23);
+assert.equal(files.length, 24);
 assert(!/deepseek-v4-flash|deepseek_v4_flash/.test(source));
 const functions = [...source.matchAll(/^function (\w+)\(/gm)].map(match => match[1]);
 assert.equal(new Set(functions).size, functions.length, 'duplicate GAS function');
@@ -26,9 +26,10 @@ const context = vm.createContext({
     base64Encode: bytes => { now += encodedDelay; return Buffer.from(bytes).toString('base64'); },
     newBlob: value => ({ getBytes: () => Array.from(typeof value === 'string' ? Buffer.from(value) : Buffer.from(value || [])) })
   },
-  PropertiesService: { getScriptProperties: () => ({ getProperty: () => 'test-only-placeholder' }) },
+  PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'NEWS_ARCHIVE_CONFIG' ? null : 'test-only-placeholder' }) },
   CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value), remove: key => cache.delete(key) }) },
   LockService: { getScriptLock: () => ({ tryLock: () => { now += lockDelay; return true; }, waitLock: () => { now += lockDelay; }, releaseLock() {} }) },
+  SpreadsheetApp: { flush() {} },
   UrlFetchApp: { fetch: (url, options) => { calls.push({ url, options }); return fetchImpl(url, options); } },
   HtmlService: { createHtmlOutput: value => value }
 });
@@ -261,7 +262,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.16.2'));
+  assert(replies.at(-1).text.includes('v1.17.0'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -692,6 +693,12 @@ function headerSheet(headers) {
     },
     appendRow: row => appended.push(Array.from(row))
   };
+}
+
+function queueTaskSheet(task) {
+  return readOnlySheet([{ TaskId: task.taskId, ConversationId: task.conversationId, Status: 'processing',
+    StartedAt: new Date(task.startedAtMs), UpdatedAt: '', FinishedAt: '', ResultText: '', ErrorText: '',
+    RetryCount: task.retryCount || 0, LastErrorType: '', LastErrorText: '', NextRunAt: '' }]);
 }
 
 function pendingReplySheet(records) {
@@ -1125,16 +1132,18 @@ check('synchronous and queued news persist the same analysis in reordered column
   const analysis = { title: '測試新聞', outline: '完整新聞內容'.repeat(20), category: '科技與 AI', brief: '新聞的自然簡介', angle: '可聊切角', topicPotential: '高', specialTopic: '無', categoryReason: '測試分類理由', categoryConfidence: 0, matchedEntities: '測試公司', classificationWarning: '', storyKey: '測試公司產品更新事件' };
   const fieldHeaders = { title: 'Title', outline: 'Outline', category: 'Category', brief: 'Brief', angle: 'Angle', topicPotential: 'TopicPotential', specialTopic: 'SpecialTopic', categoryReason: 'CategoryReason', categoryConfidence: 'CategoryConfidence', matchedEntities: 'MatchedEntities', classificationWarning: 'ClassificationWarning', storyKey: 'StoryKey' };
   const headers = ['SourceMode', 'ConversationId', 'Url', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'Custom'].concat(Object.values(fieldHeaders).reverse());
-  const sheet = headerSheet(headers), queue = headerSheet(['Status']), changes = {};
+  const task = { taskId: 'task', startedAtMs: now, conversationId: 'user:user1', sourceType: 'user',
+    userId: 'user1', groupId: 'group1', roomId: 'room1', url: 'https://example.org/news' };
+  const sheet = headerSheet(headers), queue = queueTaskSheet(task), changes = {};
   const url = 'https://example.org/news';
   fetchImpl = () => responsesCompletion(JSON.stringify(analysis));
-  withStubs({ ensureNewsInboxSheet_: () => sheet, ensureNewsUrlQueueSheet_: () => queue,
+  withStubs({ ensureNewsInboxSheet_: () => sheet, getSpreadsheet_: () => ({ getSheetByName: () => queue }),
     fetchAndExtractWebPageByReaderLayer_: () => ({ ok: true, mainText: '正文', readerRoute: 'jina_reader' }),
     setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
   }, () => {
     const direct = context.handleDirectNewsUrlMessage_(event('text'), 'user:user1', url);
     assert.equal(direct.replyText, analysis.brief); assert.equal(direct.queued, false);
-    context.processSingleNewsUrlTask_({ sheetRowNumber: 2, conversationId: 'user:user1', sourceType: 'user', userId: 'user1', groupId: 'group1', roomId: 'room1', url });
+    context.processSingleNewsUrlTask_(task);
     assert.equal(changes.Status, 'done'); assert.equal(sheet.appended.length, 2);
     for (const [i, row] of sheet.appended.entries()) {
       const record = Object.fromEntries(headers.map((header, j) => [header, row[j]]));
@@ -1147,10 +1156,10 @@ check('synchronous and queued news persist the same analysis in reordered column
 });
 
 check('WebTask success and failure preserve PendingReplies source fields and task type', () => {
-  const queue = headerSheet(['Status']), pendingSheet = headerSheet([]), changes = {};
-  const task = Object.freeze({ sheetRowNumber: 2, taskId: 'task', conversationId: 'room:r', sourceType: 'room', userId: 'u', groupId: '', roomId: 'r', userPrompt: 'prompt', urls: 'https://example.org', taskType: 'web_lazy_summary' });
-  for (const failed of [false, true]) withStubs({ ensureWebTaskQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
-    processWebLazySummaryTask_: () => { if (failed) throw new Error('test failure'); return '快讀完成'; },
+  const task = Object.freeze({ taskId: 'task', startedAtMs: now, conversationId: 'room:r', sourceType: 'room', userId: 'u', groupId: '', roomId: 'r', userPrompt: 'prompt', urls: 'https://example.org', taskType: 'web_lazy_summary' });
+  const queue = queueTaskSheet(task), pendingSheet = headerSheet([]), changes = {};
+  for (const failed of [false, true]) withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => queue }), ensurePendingRepliesSheet_: () => pendingSheet,
+    processWebLazySummaryTask_: () => { if (failed) throw new Error('test failure'); return { status: 'ready', resultText: '快讀完成', summaryResults: [] }; },
     setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
   }, () => {
     context.processSingleWebTask_(task);
@@ -1164,12 +1173,13 @@ check('WebTask success and failure preserve PendingReplies source fields and tas
 
 check('NewsUrlQueue retains permanent failure, retry backoff and retry exhaustion', () => {
   for (const [status, retryCount, shouldRetry] of [[404, 0, false], [408, 0, true], [429, 1, true], [503, 2, false], [0, 0, true]]) {
-    const queue = headerSheet(['Status']), pendingSheet = headerSheet([]), changes = {};
-    withStubs({ ensureNewsUrlQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
+    const task = { taskId: 'task', startedAtMs: now, conversationId: 'group:a', url: 'https://example.org', retryCount };
+    const queue = queueTaskSheet(task), pendingSheet = headerSheet([]), changes = {};
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => queue }), ensurePendingRepliesSheet_: () => pendingSheet,
       fetchAndExtractWebPageByReaderLayer_: () => ({ ok: false, httpStatus: status, statusCode: 200, retryable: true, errorType: 'reader_error', error: 'read failed' }),
       setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
     }, () => {
-      context.processSingleNewsUrlTask_({ sheetRowNumber: 2, conversationId: 'group:a', url: 'https://example.org', retryCount });
+      context.processSingleNewsUrlTask_(task);
       assert.equal(changes.Status, shouldRetry ? 'pending' : 'failed'); assert.equal(changes.RetryCount, retryCount + 1);
       if (shouldRetry) assert.equal(changes.NextRunAt.getTime() - changes.UpdatedAt.getTime(), (retryCount + 1) * 120000);
       assert.equal(pendingSheet.appended.length, shouldRetry ? 0 : 1);
@@ -2530,7 +2540,7 @@ check('protocol symbols stay inside adapters and all active routes remain DeepSe
   }
   assert(Object.values(value('AI_TASK_ROUTES')).every(route => route.provider === 'deepseek'));
   assert.equal(value('AI_PROVIDER_REGISTRY.gemini.status'), 'dormant');
-  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 23);
+  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 24);
   const secretPattern = /(?:sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,})/;
   for (const filename of [...files, 'tests/v1140_smoke.cjs', 'README.md', 'CURRENT_VERSION.md']) {
     assert(!secretPattern.test(fs.readFileSync(path.join(root, filename), 'utf8')), filename + ' credential-shaped literal');
@@ -3147,7 +3157,7 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('codex/v1162-reply-diagnostics-personality')); assert(doc.includes('v1.16.2')); assert(doc.includes('Git')); assert(doc.includes('refs'));
+    assert(doc.includes('codex/v1170-weekly-news-archive')); assert(doc.includes('v1.17.0')); assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
   }
@@ -3303,11 +3313,12 @@ check('v1162 Reader and background notifications keep safe codes without guessin
     assert(text.includes((type === 'PRIVATE_TYPE' ? 'READER_ERROR' : type.toUpperCase()) + '｜HTTP 403'));
     assert(!/PRIVATE|擋爬蟲|需要登入/.test(text));
   }
-  const queue = headerSheet(['Status']), pendingSheet = headerSheet([]);
+  const task = { taskId: 'task', startedAtMs: now, conversationId: 'user:test', taskType: 'web_lazy_summary' };
+  const queue = queueTaskSheet(task), pendingSheet = headerSheet([]);
   const typed = Object.assign(Error('PRIVATE_BODY'), { errorType: 'ai_web_search_failed', errorReason: 'search_limit', httpStatus: 200 });
-  withStubs({ ensureWebTaskQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => queue }), ensurePendingRepliesSheet_: () => pendingSheet,
     processWebLazySummaryTask_: () => { throw typed; }, setCellByHeader_: () => {} }, () => {
-    context.processSingleWebTask_({ sheetRowNumber: 2, conversationId: 'user:test', taskId: 'task', taskType: 'web_lazy_summary' });
+    context.processSingleWebTask_(task);
     assert(pendingSheet.appended[0][7].includes('SEARCH_LIMIT｜HTTP 200')); assert(!pendingSheet.appended[0][7].includes('PRIVATE_BODY'));
   });
 });

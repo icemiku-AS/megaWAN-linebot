@@ -132,6 +132,86 @@ function appendRowByHeaders_(sheet, valuesByHeader) {
   sheet.appendRow(row);
 }
 
+// Queue 讀取不補表／補欄；TaskId 必須唯一，避免刪列或人工改表後寫錯任務。
+function readQueueTaskData_(sheet) {
+  try {
+    if (!sheet || sheet.getLastColumn() < 1) throw createAiValidationError_('Queue sheet is missing.', false);
+    const names = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const headers = Object.create(null);
+    names.forEach(function(value, index) {
+      const name = String(value || '').trim();
+      if (name && headers[name]) throw createAiValidationError_('Duplicate queue header.', false);
+      if (name) headers[name] = index + 1;
+    });
+    if (['TaskId', 'ConversationId', 'Status', 'StartedAt'].some(function(name) { return !headers[name]; })) {
+      throw createAiValidationError_('Queue identity headers are missing.', false);
+    }
+    const count = Math.max(0, sheet.getLastRow() - 1);
+    const rows = count ? sheet.getRange(2, 1, count, sheet.getLastColumn()).getValues() : [];
+    const idCounts = Object.create(null);
+    rows.forEach(function(row) {
+      const id = getRowValueByHeader_(row, headers, 'TaskId');
+      if (typeof id === 'string' && id.trim()) idCounts[id] = (idCounts[id] || 0) + 1;
+    });
+    return { sheet: sheet, headers: headers, rows: rows, idCounts: idCounts };
+  } catch (error) {
+    if (error && error.errorType) throw error;
+    const failure = createAiValidationError_('Queue read failed.', true);
+    failure.errorReason = 'tool_read_failed';
+    throw failure;
+  }
+}
+
+function findCurrentQueueTask_(data, task) {
+  if (!task || typeof task.taskId !== 'string' || !task.taskId.trim() ||
+      typeof task.conversationId !== 'string' || !task.conversationId ||
+      !Number.isFinite(task.startedAtMs) || task.startedAtMs <= 0) {
+    throw createAiValidationError_('Queue task identity is invalid.', false);
+  }
+  if (!data.idCounts[task.taskId]) return null;
+  if (data.idCounts[task.taskId] !== 1) throw createAiValidationError_('Queue task ID is ambiguous.', false);
+  const index = data.rows.findIndex(function(row) { return getRowValueByHeader_(row, data.headers, 'TaskId') === task.taskId; });
+  const row = data.rows[index];
+  if (getRowValueByHeader_(row, data.headers, 'ConversationId') !== task.conversationId ||
+      getRowValueByHeader_(row, data.headers, 'Status') !== 'processing' ||
+      new Date(getRowValueByHeader_(row, data.headers, 'StartedAt')).getTime() !== task.startedAtMs) return null;
+  return { sheet: data.sheet, headers: data.headers, rowNumber: index + 2 };
+}
+
+// null updates 是處理前檢查；提交時先 flush 輸出與欄位，最後才變更 Status。
+function withQueueTaskResult_(sheetName, task, updates, writeOutputs) {
+  let result;
+  try {
+    result = withDataMutationLock_(function() {
+      const current = findCurrentQueueTask_(readQueueTaskData_(getSpreadsheet_().getSheetByName(sheetName)), task);
+      if (!current) return { status: 'cancelled' };
+      if (!updates) return { status: 'ready' };
+      const fields = Object.keys(updates);
+      if (!['done', 'failed', 'pending'].includes(updates.Status) ||
+          fields.some(function(name) { return !current.headers[name]; })) {
+        throw createAiValidationError_('Queue result headers or status are invalid.', false);
+      }
+      try {
+        if (writeOutputs) writeOutputs();
+        fields.filter(function(name) { return name !== 'Status'; }).forEach(function(name) {
+          setCellByHeader_(current.sheet, current.rowNumber, current.headers, name, updates[name]);
+        });
+        SpreadsheetApp.flush();
+        setCellByHeader_(current.sheet, current.rowNumber, current.headers, 'Status', updates.Status);
+        return { status: 'committed' };
+      } finally { SpreadsheetApp.flush(); }
+    }, updates ? 5000 : 1000);
+  } catch (error) {
+    result = { status: 'failed', errorCode: normalizeAiErrorReason_(error && error.errorReason) ||
+      normalizeAiErrorType_(error && error.errorType) };
+  }
+  if (result.status === 'busy') result.errorCode = 'local_time_budget';
+  if (updates || result.status !== 'ready') console.log('QUEUE_TASK_STATUS ' + JSON.stringify({
+    queue: sheetName, status: result.status, errorCode: result.errorCode || ''
+  }));
+  return result;
+}
+
 // ======================================================
 // 各資料表初始化
 // ======================================================
@@ -155,7 +235,7 @@ function ensureLogSheet_() {
   return ensureSheetWithHeaders_(SHEET_NAME, headers);
 }
 
-function ensureWeeklySummarySheet_() {
+function ensureWeeklySummarySheet_(includeArchiveHeaders) {
   const headers = [
     'ArchivedAt',
     'ConversationId',
@@ -175,7 +255,9 @@ function ensureWeeklySummarySheet_() {
     'SourceItemCount'
   ];
 
-  return ensureSheetWithHeaders_(WEEKLY_SUMMARY_SHEET_NAME, headers);
+  // 固定週期欄位只由維護者執行 setup 時追加，普通讀寫不代替啟用程序。
+  return ensureSheetWithHeaders_(WEEKLY_SUMMARY_SHEET_NAME,
+    includeArchiveHeaders === true ? headers.concat(NEWS_ARCHIVE_EXTRA_HEADERS) : headers);
 }
 
 function appendWeeklySummaryRow_(item) {
@@ -199,7 +281,11 @@ function appendWeeklySummaryRow_(item) {
     ArchiveType: item.archiveType || WEEKLY_ARCHIVE_TYPE_TOPIC,
     PeriodStart: item.periodStart || '',
     PeriodEnd: item.periodEnd || '',
-    SourceItemCount: sourceItemCount
+    SourceItemCount: sourceItemCount,
+    ArchiveKey: item.archiveKey || '',
+    PeriodStartAt: item.periodStartAt || '',
+    PeriodEndAt: item.periodEndAt || '',
+    ArchiveOrigin: item.archiveOrigin || ''
   };
 
   // WeeklySummary 同時保存話題封存與新聞封存。
@@ -444,7 +530,8 @@ function saveWebSummary_(task, summaryResult) {
     ]);
 
   } catch (error) {
-    console.error('saveWebSummary_ error:', error && error.stack ? error.stack : error);
+    console.error('WEB_SUMMARY_WRITE_FAILED');
+    throw error;
   }
 }
 
@@ -563,9 +650,9 @@ function isWeeklyEditorialConversationModeAllowed_(mode) {
 }
 
 function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxScanRows) {
-  const sheet = ensureLogSheet_();
+  const sheet = getSpreadsheet_().getSheetByName(SHEET_NAME);
+  if (!sheet) throw createAiValidationError_('Weekly editorial ConversationLog is missing.', false);
   const lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return [];
 
   const headerMap = getHeaderMap_(sheet);
   const requiredHeaders = ['Timestamp', 'ConversationId', 'Role', 'Mode', 'UserId', 'Text'];
@@ -574,6 +661,7 @@ function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxSca
       throw new Error('ConversationLog 缺少必要欄位：' + header);
     }
   });
+  if (lastRow <= 1) return [];
 
   const safeDays = Math.max(1, Number(days) || DEFAULT_WEEKLY_NEWS_DAYS);
   const cutoffTime = new Date().getTime() - safeDays * 24 * 60 * 60 * 1000;
@@ -783,6 +871,8 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly
       const followUpQuestions = getRowValueByHeader_(row, headerMap, 'FollowUpQuestions');
       const periodStart = getRowValueByHeader_(row, headerMap, 'PeriodStart');
       const periodEnd = getRowValueByHeader_(row, headerMap, 'PeriodEnd');
+      const periodStartAt = getRowValueByHeader_(row, headerMap, 'PeriodStartAt');
+      const periodEndAt = getRowValueByHeader_(row, headerMap, 'PeriodEndAt');
       const sourceItemCount = getRowValueByHeader_(row, headerMap, 'SourceItemCount') ||
         getRowValueByHeader_(row, headerMap, 'RawMessageCount');
 
@@ -807,6 +897,8 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly
         archiveType: rowArchiveType,
         periodStart: periodStart,
         periodEnd: periodEnd,
+        periodStartAt: periodStartAt,
+        periodEndAt: periodEndAt,
         sourceItemCount: sourceItemCount
       });
 
@@ -818,10 +910,17 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly
     matched.reverse();
 
     return matched.map(function(item, index) {
+      const preciseStart = new Date(item.periodStartAt).getTime();
+      const preciseEnd = new Date(item.periodEndAt).getTime();
+      const hasPrecisePeriod = !!item.periodStartAt && !!item.periodEndAt &&
+        isFinite(preciseStart) && isFinite(preciseEnd) && preciseStart < preciseEnd;
       return [
         '【封存記憶 ' + (index + 1) + '】',
         '類型：' + getWeeklyArchiveTypeLabel_(item.archiveType),
-        item.periodStart || item.periodEnd ? '期間：' + (item.periodStart || '未記錄') + ' ～ ' + (item.periodEnd || '未記錄') : '',
+        hasPrecisePeriod
+          ? '期間：' + formatNewsArchiveTime_(preciseStart) + '（含） ～ ' +
+            formatNewsArchiveTime_(preciseEnd) + '（不含，台灣時間）'
+          : item.periodStart || item.periodEnd ? '期間：' + (item.periodStart || '未記錄') + ' ～ ' + (item.periodEnd || '未記錄') : '',
         item.sourceItemCount ? '來源筆數：' + item.sourceItemCount : '',
         '主題：' + item.topicTitle,
         '關鍵字：' + item.keywords,
@@ -848,33 +947,7 @@ function getWeeklyArchiveTypeLabel_(archiveType) {
 // ======================================================
 
 function deleteConversationLogs(conversationId) {
-  const sheet = ensureLogSheet_();
-  const lastRow = sheet.getLastRow();
-
-  if (lastRow <= 1) {
-    return 0;
-  }
-
-  const conversationIdColumn = getHeaderMap_(sheet).ConversationId;
-  if (!conversationIdColumn) throw new Error('Missing ConversationId column.');
-
-  const values = sheet
-    .getRange(2, conversationIdColumn, lastRow - 1, 1)
-    .getValues();
-
-  let deletedCount = 0;
-
-  // 從下面往上刪，避免刪除列後 row index 位移
-  for (let i = values.length - 1; i >= 0; i--) {
-    const rowConversationId = values[i][0];
-
-    if (rowConversationId === conversationId) {
-      sheet.deleteRow(i + 2);
-      deletedCount++;
-    }
-  }
-
-  return deletedCount;
+  return deleteRowsByConversationIdFromSheet_(ensureLogSheet_(), conversationId);
 }
 
 function truncateForSheet(text) {

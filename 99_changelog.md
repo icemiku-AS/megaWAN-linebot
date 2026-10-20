@@ -1,3 +1,46 @@
+2026-10-20
+v1.17.0 PR #54 話題欄位 Unicode 裁切補修（維持原版號，部署另行處理）
+- 共用週編輯台裁切函式沿用 LINE 安全切點，話題標題／摘要／可聊點、故事線標題及新聞／對話模型輸入補省略號時不切斷 UTF-16 配對字元；既有長度、去空白、URL 移除與快取契約不變。
+- 原 379 項回歸保留，新增 4 項涵蓋各欄位邊界、正規化與新聞 ID、模型輸入、三個超長話題的快取與實際 LINE payload／完整網址／省略數；254 smoke checks＋129 focused checks 共 383 checks 通過，24 GAS sources／474 unique functions。
+- Runtime 僅修改 35_WeeklyEditorialDigest.gs；未合併、部署或操作實際 Sheets／Properties／觸發器，未新增依賴、欄位、設定或 migration；累計仍為 12 個 runtime 同步檔。
+
+2026-10-20
+v1.17.0 PR #54 LINE Unicode 邊界補修（維持原版號，部署另行處理）
+- 硬切、來源訊息及省略提示截斷共用 UTF-16 配對字元邊界，必要時退一個單位；分段 metadata 同步實際切點，保留 4900 字／五則與來源名額，真正超限仍明示省略。
+- 原 374 項回歸保留，新增 5 項涵蓋切點兩側、LINE payload、來源／省略提示、容量邊界、Queue 交付與週編輯台話題／網址；254 smoke checks＋125 focused checks 共 379 checks 通過，24 GAS sources／474 unique functions。
+- 未合併、部署或操作實際 Sheets／Properties／觸發器，未增加依賴、欄位或設定；累計仍為 12 個 runtime 同步檔。
+
+2026-10-20
+v1.17.0 PR #54 三項 review 補修（維持原版號，部署另行處理）
+- 首次領取與後續封存進度寫入的原生例外可隔日補跑；保留明確不可重試錯誤、自動三次上限、既有 key 恢復與手動防重。
+- 共用 LINE 分段檢查剩餘容量，避免短前言耗掉名額而截斷原本可完整送出的長回覆；週編輯台仍保留話題、完整新聞區塊與精確省略數。
+- 自動封存關閉時，失敗狀態明確提示手動補跑，不再宣稱隔日自動處理。
+- 原 366 項回歸保留，新增 8 項：254 smoke checks＋120 focused checks 共 374 checks 通過；24 GAS sources／473 unique functions。未合併、部署或操作實際 Sheets／Properties／觸發器，累計仍為 12 個 runtime 同步檔。
+
+2026-10-20
+v1.17.0 PR #54 Queue 安全提交補修（維持原版號，部署另行處理）
+- 新聞與 Web／快讀／網址節目分析不再攜帶舊列號回寫；領取 flush 並回讀 StartedAt，提交以唯一 TaskId、ConversationId、processing 與本次時間識別重新核對。
+- Reader／AI 在資料鎖外執行；結果、待回覆、Queue 欄位與最終狀態在同一把短鎖內保存、flush。快讀延後保存各網址結果，清空後的舊工作取消，不重建素材或通知；其他聊天室及新任務保留。
+- 保留 Reader／AI 重試與退避；提交最多等鎖 5 秒，鎖忙／寫入錯誤不重跑模型或追加第二份通知。多表中斷仍需人工查核，不新增自動接手機制、欄位、Properties 或 Trigger。
+- 24 GAS sources／473 unique functions；254 smoke checks＋112 focused checks 共 366 checks 通過。未操作實際 Sheets／觸發器，未執行 live GAS／LINE／AI，未合併或部署；累計仍為 12 個 runtime 同步檔。
+
+2026-10-20
+v1.17.0 PR #54 review 修正（維持原版號，GAS 手動啟用另行處理）
+- 入庫 CreatedAt／append／flush 與封存來源快照共用短鎖；各類清理與舊刪列入口涵蓋未設定聊天室，Pending Reply 成功後刪除並在原鎖內 flush。
+- 保留不可重試／達上限狀態；AI 完成後在原 deadline 內等提交鎖，持續忙碌時以 token 專屬安全失敗收據供狀態與補跑恢復，不存模型內容。
+- 區分空話題、全拒絕與部分採納，快取契約升為 v1.17.0；未知 ID 不記原值，完整短段落可提早分段，preview 待跑數改依目前游標。
+- 啟用順序改為自動關閉下 setup → 更新 Web App → #版本及手動驗收 → 最後啟用／安裝排程。累計需同步 12 個 runtime 檔，Sheets、Properties 與 Trigger 尚未操作。
+- 24 GAS sources／469 unique functions；254 smoke checks＋72 focused checks 共 326 checks 通過。未執行 live GAS／LINE／Sheets／AI 驗收，未合併或部署。
+
+2026-10-20
+v1.17.0 Weekly News Archive Edition（GAS 部署與手動啟用另行處理）
+- 從維護者指定的當時本機 main 8231700 建立 codex/v1170-weekly-news-archive；不合併、不自動部署。
+- 新增 36_NewsArchive.gs：指定聊天室按台灣時間週三 12:00 固定七日週期，手動與每日到期檢查共用 ArchiveKey、防重、短鎖／lease、進度與失敗補跑；空期只記進度，缺表／讀取錯誤不可當空期。
+- WeeklySummary 手動 setup 只追加 ArchiveKey／PeriodStartAt／PeriodEndAt／ArchiveOrigin 四欄，不改歷史列；Script Properties 設定缺省關閉。待維護者上傳 GAS 後再預覽舊期間、補欄、選切換點與安裝新 Trigger，不自動搬移、刪除或合併舊摘要。
+- LINE splitter 先選段落；週編輯台不再優先刪群組話題，容量不足明示新聞省略筆數，讀取／整理失敗與成功無話題分開提示並記安全 metadata。
+- #清空封存 確認取消目前聊天室執行中工作並停止回補舊週期；其他聊天室及下一個新週期保留。沿用原 provider／JSON／deadline／Reader／webhook 契約。
+- 24 GAS sources／467 unique functions；既有 254 checks 與新增 48 checks 共 302 checks 通過，git diff --check 通過。未執行 live GAS／LINE／Sheets／AI 驗收。
+
 2026-10-02
 v1.16.2 搜尋後段失敗提示 review fix（部署另行確認）
 - 在 codex/v1162-reply-diagnostics-personality／817676c 確認缺口；共用 getBotTextAiError_ 依可信 usedWebSearch === true 顯示一次搜尋執行觀測，搜尋專用 helper 避免重複前綴，保留原失敗原因及圖片／必要資料／封存提醒。

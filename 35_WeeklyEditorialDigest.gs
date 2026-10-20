@@ -20,6 +20,10 @@ function shouldUseWeeklyEditorialDigest_(queryOptions) {
 }
 
 function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiExecutionContext) {
+  const diagnostic = { conversationRead: 'not_started', rawConversationCount: 0, keptConversationCount: 0,
+    returnedTopicCount: 0, topicCount: 0, rejectedTopicCount: 0, topicValidation: 'not_started',
+    cacheHit: false, stage: 'prepare', errorCode: '' };
+  let conversationNotice = '';
   try {
     const identifiedItems = assignWeeklyEditorialItemIds_(items);
     const selection = selectWeeklyEditorialNewsItems_(identifiedItems);
@@ -33,12 +37,12 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
         (queryOptions && queryOptions.days) || DEFAULT_WEEKLY_NEWS_DAYS,
         MAX_WEEKLY_EDITORIAL_CONVERSATION_SCAN_ROWS
       );
+      diagnostic.conversationRead = 'ok';
+      diagnostic.rawConversationCount = rawConversationItems.length;
     } catch (conversationError) {
       // ConversationLog 失敗不應阻止新聞聚類；以空對話繼續同一次模型任務。
-      console.error(
-        'Weekly editorial ConversationLog read failed:',
-        conversationError && conversationError.stack ? conversationError.stack : conversationError
-      );
+      diagnostic.conversationRead = 'failed';
+      conversationNotice = '本次對話紀錄讀取失敗，先列新聞整理；群組話題尚未完成。';
       rawConversationItems = [];
     }
 
@@ -46,6 +50,8 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
       rawConversationItems,
       identifiedItems
     );
+    diagnostic.keptConversationCount = conversationPayload.length;
+    diagnostic.stage = 'cache';
     const modelItemIds = selection.selectedItems.map(function(entry) {
       return entry.itemId;
     });
@@ -53,28 +59,32 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
     const cachedResult = getCachedWeeklyEditorialResult_(cacheKey);
     let normalizedResult = null;
     let partition = null;
+    let topicCounts = null;
     let cacheHit = false;
 
     if (cachedResult) {
       try {
         const cachedValidation = normalizeAndValidateWeeklyEditorialResult_(
-          JSON.stringify(cachedResult),
+          JSON.stringify(cachedResult.result),
           modelItemIds,
           identifiedItems,
           conversationPayload.length > 0
         );
+        const counts = cachedResult.topicCounts;
+        if (!counts || ['returned', 'adopted', 'rejected'].some(function(key) {
+          return !Number.isSafeInteger(counts[key]) || counts[key] < 0;
+        }) || counts.returned !== counts.adopted + counts.rejected ||
+            counts.adopted !== cachedValidation.normalizedResult.conversationTopics.length) {
+          throw new Error('weekly_editorial_invalid_cached_topic_counts');
+        }
         normalizedResult = cachedValidation.normalizedResult;
         partition = cachedValidation.partition;
+        topicCounts = counts;
         cacheHit = true;
       } catch (cacheValidationError) {
         // 快取只是效能最佳化。可解析但契約損壞、ID 不相容或 coverage
         // 失敗時一律視為 miss，移除失敗也不能阻止本次 API 呼叫。
-        console.warn(
-          'Weekly editorial cache revalidation failed; treating as miss:',
-          cacheValidationError && cacheValidationError.message
-            ? cacheValidationError.message
-            : String(cacheValidationError)
-        );
+        console.warn('WEEKLY_EDITORIAL_CACHE_INVALID');
         removeCachedWeeklyEditorialResult_(cacheKey);
         normalizedResult = null;
         partition = null;
@@ -82,6 +92,7 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
     }
 
     if (!cacheHit) {
+      diagnostic.stage = 'ai';
       const prompt = buildWeeklyEditorialDigestPrompt_(newsPayload, conversationPayload);
       // HIGH JSON 的 itemId、partition 與 rendered coverage 仍由保守 validator 驗證；
       // 使用共用 webhook deadline，失敗走分類 fallback，不在 webhook 內 retry。
@@ -90,6 +101,7 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
         prompt,
         requireAiCallOptionsForExecutionContext_(aiExecutionContext)
       ));
+      diagnostic.stage = 'validation';
       const apiValidation = normalizeAndValidateWeeklyEditorialResult_(
         JSON.stringify(responseJson),
         modelItemIds,
@@ -98,13 +110,39 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
       );
       normalizedResult = apiValidation.normalizedResult;
       partition = apiValidation.partition;
-      putCachedWeeklyEditorialResult_(cacheKey, normalizedResult);
+      topicCounts = apiValidation.topicCounts;
+      putCachedWeeklyEditorialResult_(cacheKey, normalizedResult, topicCounts);
     }
 
-    return formatWeeklyEditorialDigest_(identifiedItems, partition, queryOptions);
+    diagnostic.cacheHit = cacheHit;
+    diagnostic.returnedTopicCount = topicCounts.returned;
+    diagnostic.topicCount = (partition.conversationTopics || []).length;
+    diagnostic.rejectedTopicCount = topicCounts.rejected;
+    diagnostic.topicValidation = !conversationPayload.length ? 'no_input' : !topicCounts.returned ? 'valid_empty' :
+      !diagnostic.topicCount ? 'all_rejected' : topicCounts.rejected ? 'partial' : 'valid';
+    diagnostic.stage = 'render';
+    if (!conversationNotice && !diagnostic.topicCount) {
+      conversationNotice = !conversationPayload.length
+        ? '本週群組話題：本次可用範圍內，沒有符合整理條件的對話。'
+        : topicCounts.returned
+          ? '本週群組話題：本次產生的話題未通過檢查，尚未完成對話整理。'
+          : '本週群組話題：已讀取可用對話，本次沒有可提煉的主題。';
+    } else if (!conversationNotice && diagnostic.topicValidation === 'partial') {
+      conversationNotice = '本週群組話題：部分話題未通過檢查，以下保留已通過的話題。';
+    }
+    const text = formatWeeklyEditorialDigest_(identifiedItems, partition,
+      Object.assign({}, queryOptions, { conversationNotice: conversationNotice }));
+    diagnostic.stage = 'done';
+    return text;
   } catch (error) {
-    console.error('Weekly editorial digest failed:', error && error.stack ? error.stack : error);
-    return '';
+    diagnostic.errorCode = normalizeAiErrorReason_(error && error.errorReason) || normalizeAiErrorType_(error && error.errorType);
+    const failureNotice = (diagnostic.conversationRead === 'failed' ? conversationNotice + '\n' : '') +
+      '本次週編輯台整理未完成，先列分類新聞；群組話題尚未完成。' +
+      '（代碼：' + diagnostic.errorCode.toUpperCase() + '）';
+    return formatWeeklyEditorialFallbackDigest_(items,
+      Object.assign({}, queryOptions, { conversationNotice: failureNotice }));
+  } finally {
+    console.log('WEEKLY_EDITORIAL_STATUS ' + JSON.stringify(diagnostic));
   }
 }
 
@@ -449,7 +487,9 @@ function truncateWeeklyEditorialText_(value, maxLength) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   const safeMaxLength = Math.max(0, Number(maxLength) || 0);
   if (!safeMaxLength || text.length <= safeMaxLength) return text;
-  return text.slice(0, Math.max(0, safeMaxLength - 1)).trim() + '…';
+  // 與 LINE 分段共用配對字元邊界，避免話題、模型輸入及快取留下半個字元。
+  const sliceIndex = getLineMessageSafeSliceIndex_(text, Math.max(0, safeMaxLength - 1));
+  return text.slice(0, sliceIndex).trim() + '…';
 }
 
 function containsWeeklyEditorialUrl_(value) {
@@ -539,7 +579,7 @@ function getCachedWeeklyEditorialResult_(cacheKey) {
   try {
     raw = CacheService.getScriptCache().get(cacheKey);
   } catch (error) {
-    console.warn('Weekly editorial cache read failed:', error && error.stack ? error.stack : error);
+    console.warn('WEEKLY_EDITORIAL_CACHE_READ_FAILED');
     return null;
   }
 
@@ -565,20 +605,20 @@ function removeCachedWeeklyEditorialResult_(cacheKey) {
     CacheService.getScriptCache().remove(cacheKey);
   } catch (error) {
     // 壞 cache 移除失敗不能阻止後續 API 呼叫或安全 fallback。
-    console.warn('Weekly editorial cache remove failed:', error && error.stack ? error.stack : error);
+    console.warn('WEEKLY_EDITORIAL_CACHE_REMOVE_FAILED');
   }
 }
 
-function putCachedWeeklyEditorialResult_(cacheKey, normalizedResult) {
+function putCachedWeeklyEditorialResult_(cacheKey, normalizedResult, topicCounts) {
   try {
     CacheService.getScriptCache().put(
       cacheKey,
-      JSON.stringify(normalizedResult),
+      JSON.stringify({ result: normalizedResult, topicCounts: topicCounts }),
       WEEKLY_EDITORIAL_CACHE_TTL_SECONDS
     );
   } catch (error) {
     // 快取不是正確性依賴；寫入失敗仍使用本次已驗證結果。
-    console.warn('Weekly editorial cache write failed:', error && error.stack ? error.stack : error);
+    console.warn('WEEKLY_EDITORIAL_CACHE_WRITE_FAILED');
   }
 }
 
@@ -606,12 +646,15 @@ function normalizeAndValidateWeeklyEditorialResult_(
   identifiedItems,
   hasConversationPayload
 ) {
-  const normalizedResult = parseAndNormalizeWeeklyEditorialResult_(responseText, modelItemIds);
+  const topicCounts = { returned: 0, adopted: 0, rejected: 0 };
+  const normalizedResult = parseAndNormalizeWeeklyEditorialResult_(responseText, modelItemIds, topicCounts);
 
   // 沒有任何通過 GAS 機械過濾的對話時，即使 cache / 模型意外回傳話題也不採用。
   // 新聞聚類仍可正常繼續，不把空 ConversationLog 視為整體錯誤。
   if (!hasConversationPayload) {
     normalizedResult.conversationTopics = [];
+    topicCounts.adopted = 0;
+    topicCounts.rejected = topicCounts.returned;
   }
 
   const partition = validateWeeklyEditorialPartition_(
@@ -622,11 +665,12 @@ function normalizeAndValidateWeeklyEditorialResult_(
 
   return {
     normalizedResult: normalizedResult,
-    partition: partition
+    partition: partition,
+    topicCounts: topicCounts
   };
 }
 
-function parseAndNormalizeWeeklyEditorialResult_(responseText, knownItemIds) {
+function parseAndNormalizeWeeklyEditorialResult_(responseText, knownItemIds, topicCounts) {
   const parsed = parseJsonObjectLoose(responseText);
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('weekly_editorial_invalid_json_object');
@@ -644,13 +688,16 @@ function parseAndNormalizeWeeklyEditorialResult_(responseText, knownItemIds) {
     knownItemIds
   );
 
+  const conversationTopics = normalizeWeeklyEditorialConversationTopics_(parsed.conversationTopics, knownItemIds);
+  if (topicCounts) {
+    topicCounts.returned = parsed.conversationTopics.length;
+    topicCounts.adopted = conversationTopics.length;
+    topicCounts.rejected = topicCounts.returned - topicCounts.adopted;
+  }
   return {
     newsClusters: normalizedNews.newsClusters,
     ungroupedNewsIds: normalizedNews.ungroupedNewsIds,
-    conversationTopics: normalizeWeeklyEditorialConversationTopics_(
-      parsed.conversationTopics,
-      knownItemIds
-    )
+    conversationTopics: conversationTopics
   };
 }
 
@@ -773,10 +820,10 @@ function normalizeWeeklyEditorialIdArray_(rawIds, knownMap, sourceLabel) {
   const seenMap = {};
   const normalized = [];
 
-  rawIds.forEach(function(rawId) {
+  rawIds.forEach(function(rawId, index) {
     const itemId = typeof rawId === 'string' ? rawId.trim() : '';
-    if (!itemId || !knownMap[itemId]) {
-      if (itemId) console.warn('Weekly editorial unknown itemId in ' + sourceLabel + ': ' + itemId);
+    if (!itemId || !Object.prototype.hasOwnProperty.call(knownMap, itemId)) {
+      console.warn('WEEKLY_EDITORIAL_UNKNOWN_ID index=' + index);
       return;
     }
     if (seenMap[itemId]) return;
@@ -969,9 +1016,9 @@ function buildWeeklyEditorialOutputBlocks_(identifiedItems, partition, queryOpti
     !String(options.categoryFilter || '').trim();
 
   return {
-    intro: isPlainCompact
+    intro: (isPlainCompact
       ? '我把最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天可聊的素材整理好了：'
-      : buildWeeklyNewsDigestHeader_(options),
+      : buildWeeklyNewsDigestHeader_(options)) + (options.conversationNotice ? '\n\n' + options.conversationNotice : ''),
     topics: (partition.conversationTopics || []).slice(),
     clusters: clusters,
     otherItems: otherItems,
@@ -1148,12 +1195,7 @@ function fitWeeklyEditorialOutputBlocks_(outputState) {
       return rendered.text;
     }
 
-    // 先移除最低順位的群組話題，不增加新聞省略數。
-    if (state.topics.length) {
-      state.topics.pop();
-      continue;
-    }
-
+    // 已驗證的群組話題保留；容量不足只省略新聞，並明示省略筆數。
     const omissionCandidate = getWeeklyEditorialOmissionCandidate_(state);
     if (!omissionCandidate || omittedMap[omissionCandidate.itemId]) {
       throw new Error('weekly_editorial_line_capacity_unresolved');

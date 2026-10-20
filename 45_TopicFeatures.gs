@@ -273,6 +273,9 @@ function archiveWeeklyTopics(event, conversationId, aiExecutionContext) {
 // ======================================================
 
 function archiveWeeklyNews(event, conversationId, aiExecutionContext) {
+  const config = getNewsArchiveConfig_(conversationId);
+  if (config) return formatNewsArchiveResult_(runFixedNewsArchive_(config, 'manual', event, aiExecutionContext));
+
   const items = getRecentNewsInboxItems_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
 
   if (!items.length) {
@@ -280,6 +283,31 @@ function archiveWeeklyNews(event, conversationId, aiExecutionContext) {
   }
 
   const period = getWeeklyArchivePeriod_(DEFAULT_WEEKLY_NEWS_DAYS);
+  const archiveJson = buildNewsArchiveSummary_(items, period, aiExecutionContext);
+  const source = event.source || {};
+
+  appendWeeklySummaryRow_({
+    conversationId: conversationId,
+    sourceType: source.type || '',
+    userId: source.userId || '',
+    groupId: source.groupId || '',
+    roomId: source.roomId || '',
+    topicTitle: archiveJson.topicTitle || '',
+    keywords: archiveJson.keywords.join(', '),
+    summary: archiveJson.summary || '',
+    reusableAngles: archiveJson.reusableAngles.join('\n'),
+    followUpQuestions: archiveJson.followUpQuestions.join('\n'),
+    rawMessageCount: items.length,
+    archiveType: WEEKLY_ARCHIVE_TYPE_NEWS,
+    periodStart: period.start,
+    periodEnd: period.end,
+    sourceItemCount: items.length
+  });
+
+  return getBotTextNewsArchiveDone_(archiveJson, items.length);
+}
+
+function buildNewsArchiveSummary_(items, period, aiExecutionContext) {
   const newsText = formatNewsInboxItemsForArchivePrompt_(items);
 
   const prompt = [
@@ -323,7 +351,7 @@ function archiveWeeklyNews(event, conversationId, aiExecutionContext) {
     newsText
   ].join('\n');
 
-  const archiveJson = validateArchiveJsonContract_(
+  return validateArchiveJsonContract_(
     requireAiJson_(runAiJsonTask(
       'archive_news',
       prompt,
@@ -331,27 +359,6 @@ function archiveWeeklyNews(event, conversationId, aiExecutionContext) {
     )),
     'news_archive'
   );
-  const source = event.source || {};
-
-  appendWeeklySummaryRow_({
-    conversationId: conversationId,
-    sourceType: source.type || '',
-    userId: source.userId || '',
-    groupId: source.groupId || '',
-    roomId: source.roomId || '',
-    topicTitle: archiveJson.topicTitle || '',
-    keywords: Array.isArray(archiveJson.keywords) ? archiveJson.keywords.join(', ') : '',
-    summary: archiveJson.summary || '',
-    reusableAngles: Array.isArray(archiveJson.reusableAngles) ? archiveJson.reusableAngles.join('\n') : '',
-    followUpQuestions: Array.isArray(archiveJson.followUpQuestions) ? archiveJson.followUpQuestions.join('\n') : '',
-    rawMessageCount: items.length,
-    archiveType: WEEKLY_ARCHIVE_TYPE_NEWS,
-    periodStart: period.start,
-    periodEnd: period.end,
-    sourceItemCount: items.length
-  });
-
-  return getBotTextNewsArchiveDone_(archiveJson, items.length);
 }
 
 function formatNewsInboxItemsForArchivePrompt_(items) {

@@ -88,16 +88,14 @@ function processWebTaskQueue() {
 
   try {
     const sheet = ensureWebTaskQueueSheet_();
-    const headerMap = getHeaderMap_(sheet);
-    const lastRow = sheet.getLastRow();
-
-    if (lastRow <= 1) {
+    const data = readQueueTaskData_(sheet);
+    const headerMap = data.headers;
+    if (!data.rows.length) {
       console.log('processWebTaskQueue: no tasks');
       return;
     }
 
-    const lastCol = sheet.getLastColumn();
-    const values = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+    const values = data.rows;
 
     for (let i = 0; i < values.length; i++) {
       if (tasksToProcess.length >= MAX_WEB_TASKS_PER_RUN) {
@@ -112,18 +110,25 @@ function processWebTaskQueue() {
       if (status !== 'pending') {
         continue;
       }
+      const taskId = getRowValueByHeader_(row, headerMap, 'TaskId');
+      const conversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
+      if (typeof taskId !== 'string' || !taskId.trim() || data.idCounts[taskId] !== 1 ||
+          typeof conversationId !== 'string' || !conversationId) {
+        console.warn('QUEUE_TASK_INVALID_ID'); continue;
+      }
 
       const now = new Date();
 
       // 先標記 processing，避免下一輪排程重複處理
       setCellByHeader_(sheet, sheetRowNumber, headerMap, 'UpdatedAt', now);
-      setCellByHeader_(sheet, sheetRowNumber, headerMap, 'Status', 'processing');
       setCellByHeader_(sheet, sheetRowNumber, headerMap, 'StartedAt', now);
+      setCellByHeader_(sheet, sheetRowNumber, headerMap, 'Status', 'processing');
+      SpreadsheetApp.flush();
+      const startedAtMs = new Date(sheet.getRange(sheetRowNumber, headerMap.StartedAt).getValues()[0][0]).getTime();
+      if (!Number.isFinite(startedAtMs) || startedAtMs <= 0) throw createAiValidationError_('Queue claim timestamp could not be read back.', false);
 
       tasksToProcess.push({
-        sheetRowNumber: sheetRowNumber,
-        taskId: getRowValueByHeader_(row, headerMap, 'TaskId'),
-        conversationId: getRowValueByHeader_(row, headerMap, 'ConversationId'),
+        taskId: taskId, conversationId: conversationId, startedAtMs: startedAtMs,
         sourceType: getRowValueByHeader_(row, headerMap, 'SourceType'),
         userId: getRowValueByHeader_(row, headerMap, 'UserId'),
         groupId: getRowValueByHeader_(row, headerMap, 'GroupId'),
@@ -135,7 +140,7 @@ function processWebTaskQueue() {
     }
 
   } finally {
-    queueLock.releaseLock();
+    try { SpreadsheetApp.flush(); } finally { queueLock.releaseLock(); }
   }
 
   if (tasksToProcess.length === 0) {
@@ -151,45 +156,33 @@ function processWebTaskQueue() {
 }
 
 function processSingleWebTask_(task) {
-  const sheet = ensureWebTaskQueueSheet_();
-  const headerMap = getHeaderMap_(sheet);
-
+  const check = withQueueTaskResult_(WEB_TASK_QUEUE_SHEET_NAME, task, null);
+  if (check.status !== 'ready') return check;
+  let resultText = '';
+  let summaryResults = [];
+  let failed = false;
   try {
-    console.log('Processing web task:', task.taskId, 'taskType:', task.taskType);
-
-    let resultText = '';
-
     if (task.taskType === TASK_TYPE_PROGRAM_TOPIC_ANALYSIS) {
-      resultText = processProgramTopicAnalysisTask_(task);
-
+      const prepared = processProgramTopicAnalysisTask_(task);
+      if (prepared && prepared.queueTaskResult) return prepared.queueTaskResult;
+      resultText = prepared;
     } else {
-      // 預設全部走快讀摘要
-      resultText = processWebLazySummaryTask_(task);
+      const prepared = processWebLazySummaryTask_(task);
+      if (prepared.status !== 'ready') return prepared;
+      resultText = prepared.resultText;
+      summaryResults = prepared.summaryResults;
     }
-
-    // 任務成功：寫入 PendingReplies，等待下次訊息交付
-    createPendingReplyFromTask(task, resultText, task.taskType);
-
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', new Date());
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'done');
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'ResultText', truncateForSheet(resultText));
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'FinishedAt', new Date());
-
-    console.log('Web task done:', task.taskId);
-
   } catch (taskError) {
-    console.error('processSingleWebTask_ error:', taskError && taskError.stack ? taskError.stack : taskError);
-
-    const errorText = getBotTextWebTaskFailed_(taskError);
-
-    // 任務失敗也寫入 PendingReplies，讓使用者下次知道失敗原因
-    createPendingReplyFromTask(task, errorText, task.taskType);
-
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', new Date());
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'failed');
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'ErrorText', truncateForSheet(errorText));
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'FinishedAt', new Date());
+    failed = true;
+    resultText = getBotTextWebTaskFailed_(taskError);
   }
+  const updates = { UpdatedAt: new Date(), FinishedAt: new Date(), Status: failed ? 'failed' : 'done' };
+  updates[failed ? 'ErrorText' : 'ResultText'] = truncateForSheet(resultText);
+  // 提交失敗不當成 AI 失敗再建一次通知；已刪除的任務也不得重建素材。
+  return withQueueTaskResult_(WEB_TASK_QUEUE_SHEET_NAME, task, updates, function() {
+    summaryResults.forEach(function(result) { saveWebSummary_(task, result); });
+    createPendingReplyFromTask(task, resultText, task.taskType);
+  });
 }
 
 // ======================================================
@@ -209,17 +202,15 @@ function processWebLazySummaryTask_(task) {
 
   const summaryResults = [];
 
-  urls.forEach(function(url, index) {
-    const result = createLazySummaryForUrl_(task, url);
-
+  for (let index = 0; index < urls.length; index++) {
+    const check = withQueueTaskResult_(WEB_TASK_QUEUE_SHEET_NAME, task, null);
+    if (check.status !== 'ready') return check;
+    const result = createLazySummaryForUrl_(task, urls[index]);
+    if (result.queueTaskResult) return result.queueTaskResult;
     summaryResults.push(result);
-
-    // 無論成功或失敗，都寫入 WebSummary。
-    // 這樣未來回顧時可以知道某篇網址抓失敗，而不是完全消失。
-    saveWebSummary_(task, result);
-  });
-
-  return formatLazySummaryResultsForReply_(summaryResults);
+  }
+  // 先保留記憶體結果，確認任務未取消後再一起保存各網址的成功／失敗紀錄。
+  return { status: 'ready', resultText: formatLazySummaryResultsForReply_(summaryResults), summaryResults: summaryResults };
 }
 
 function createLazySummaryForUrl_(task, url) {
@@ -244,6 +235,8 @@ function createLazySummaryForUrl_(task, url) {
       };
     }
 
+    const afterRead = withQueueTaskResult_(WEB_TASK_QUEUE_SHEET_NAME, task, null);
+    if (afterRead.status !== 'ready') return { queueTaskResult: afterRead };
     const summary = runWebLazySummaryAi_(
       url,
       webResult.mainText,
@@ -442,9 +435,14 @@ function formatLazySummaryResultsForReply_(summaryResults) {
 
 function processProgramTopicAnalysisTask_(task) {
   const urls = extractUrls(task.userPrompt).slice(0, MAX_URLS_PER_MESSAGE);
-  const webResults = urls.map(function(url) {
-    return fetchAndExtractWebPageByReaderLayer_(url);
-  });
+  const webResults = [];
+  for (let index = 0; index < urls.length; index++) {
+    const check = withQueueTaskResult_(WEB_TASK_QUEUE_SHEET_NAME, task, null);
+    if (check.status !== 'ready') return { queueTaskResult: check };
+    webResults.push(fetchAndExtractWebPageByReaderLayer_(urls[index]));
+  }
+  const afterRead = withQueueTaskResult_(WEB_TASK_QUEUE_SHEET_NAME, task, null);
+  if (afterRead.status !== 'ready') return { queueTaskResult: afterRead };
   const prompt = buildWebReadingPrompt(task.userPrompt, webResults, 'program_topic_analysis');
 
   // 節目話題分析需要跨正文判斷脈絡、爭議與切角，route 固定 thinking_high。
@@ -507,6 +505,7 @@ function deliverPendingReply_(conversationId, replyToken, buildDeliveryText) {
     replyToLine(replyToken, deliveryText, true);
     // 只有 Reply API 確認 2xx 才 consume；刪除失敗會保留 row，符合 at-least-not-lost。
     deletePendingReplyById_(sheet, pendingReply.pendingId);
+    SpreadsheetApp.flush();
 
     return {
       text: String(deliveryText || ''),

@@ -90,12 +90,12 @@ Codex 不需要把 CURRENT_VERSION.md 當成操作規則；操作規則以本 AG
 
 ### 現行 `.gs` 導航與建議閱讀順序
 
-目前專案有 23 個 active runtime source，依領域區段排列：
+目前專案有 24 個 active runtime source，依領域區段排列：
 
 1. Core／LINE transport／Shared foundation：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs`
 2. AI configuration／orchestration／schemas／read-only tools／providers：`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`
 3. Reader／Web workflows／background jobs：`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`
-4. News／Editorial：`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`
+4. News／Editorial：`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、`36_NewsArchive.gs`
 5. Topic／material workflows：`40_TopicHighlights.gs`、`45_TopicFeatures.gs`
 6. Data operations／maintenance：`50_DataCleanup.gs`
 

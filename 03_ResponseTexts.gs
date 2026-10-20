@@ -12,11 +12,23 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.16.2 Reply Diagnostics & Personality Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-10-02';
+const BOT_CURRENT_VERSION = 'v1.17.0 Weekly News Archive Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-10-20';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v1.17.0 Weekly News Archive Edition',
+    date: '2026-10-20',
+    summary: '新聞按週三中午固定期間封存，手動與自動共用防重與失敗補跑；週編輯台保留群組話題。',
+    changes: [
+      '指定聊天室啟用後，按台灣時間週三中午切週，封存最早尚未完成的到期週期。',
+      '期間識別碼防止手動與自動重複封存；失敗每日補跑，需處理的錯誤會保留狀態。',
+      '長訊息不再優先刪群組話題；對話讀取失敗、整理失敗與沒有可提煉話題分開提示。',
+      '入庫與清理共用短鎖；快取保留話題採納／拒絕筆數，完整段落可提早分段。',
+      '需維護者在 GAS 備份、補欄、設定聊天室及安裝觸發器；未設定時維持原手動封存。'
+    ]
+  },
   {
     version: 'v1.16.2 Reply Diagnostics & Personality Edition',
     date: '2026-10-02',
@@ -780,6 +792,21 @@ function getBotTextRequiredEvidenceError_(failure) { return '這次沒有完成�
 function getBotTextArchiveNoData_() { return '目前還沒有足夠的使用者對話可以封存。等群組多聊一點，我再幫你收進 WeeklySummary。'; }
 function getBotTextNewsArchiveError_(failure) { return '這次封存本週新聞沒有完成。\n' + getBotTextAiError_(failure); }
 function getBotTextNewsArchiveNoData_() { return '最近 7 天 NewsInbox 還沒有可封存的新聞素材。你可以先貼幾個網址，或用 #新聞補充 手動補素材。'; }
+
+function formatNewsArchiveResult_(result) {
+  const period = result.period ? '\n期間：' + formatNewsArchiveTime_(result.period.startAt) + '（含） ～ ' +
+    formatNewsArchiveTime_(result.period.endAt) + '（不含，台灣時間）' : '';
+  if (result.status === 'completed') return '新聞封存完成，已放進 WeeklySummary，參考了 ' + result.count + ' 則素材。' + period;
+  if (result.status === 'empty') return '這個到期週期沒有可封存新聞，已記錄完成，不建立空摘要。' + period;
+  if (result.status === 'already_done') return '這個週期已封存，已恢復完成進度，不重複寫入。' + period;
+  if (result.status === 'up_to_date') return (result.period
+    ? '目前到期週期已處理，不重複封存。' : '目前還沒有到期週期，週三中午截止後才能封存。') + period;
+  if (result.status === 'processing' || result.status === 'busy') return '新聞封存正在處理中，請稍後用 #狀態回報 查看。' + period;
+  if (result.status === 'cancelled') return '這次封存工作已取消或由後續工作接手，沒有寫入遲到的結果。' + period;
+  if (result.status === 'waiting') return '本日已自動嘗試，將於下次每日檢查補跑；也可手動補跑。' + period;
+  if (result.status === 'needs_attention') return '這個週期需要維護者處理後，再用 #封存本週新聞 補跑。' + period;
+  return getBotTextNewsArchiveError_(result.failure) + period;
+}
 function getBotTextNoTopicContextForAnalysis_() { return '目前我還翻不到足夠的使用者對話、畫重點、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或用 #畫重點 補一段想討論的脈絡。'; }
 function getBotTextNoTopicContextForIntegration_() { return '目前我還翻不到足夠的使用者聊天、畫重點、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。'; }
 

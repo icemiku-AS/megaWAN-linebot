@@ -275,7 +275,16 @@ function handleLineEvent(event, webhookStartedAtMs) {
       return;
     }
 
-    const cleanupResult = performDataCleanup_(cleanupInfo.key, conversationId);
+    let cleanupResult;
+    try {
+      cleanupResult = performDataCleanup_(cleanupInfo.key, conversationId);
+    } catch (cleanupError) {
+      const failedText = '本次清理未完成，請稍後再試，並用狀態指令確認目前資料。';
+      replyToLine(event.replyToken, failedText);
+      logAssistantReplyToSheet(event, conversationId, failedText, 'cleanup_failed');
+      console.error('DATA_CLEANUP_FAILED');
+      return;
+    }
 
     if (cleanupInfo.key === 'conversation_log') {
       clearConversationHistory(conversationId);

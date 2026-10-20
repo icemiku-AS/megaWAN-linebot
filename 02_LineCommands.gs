@@ -159,14 +159,15 @@ function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
   const mainMessageLimit = LINE_REPLY_MAX_MESSAGE_COUNT - (finalText ? 1 : 0);
   const messageTexts = splitTextForLineMessagesWithMeta_(text, mainMessageLimit).messages;
   const safeMessageTexts = messageTexts.length ? messageTexts : [getBotTextEmptyReply_()];
-  if (finalText) safeMessageTexts.push(finalText.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH));
+  if (finalText) safeMessageTexts.push(finalText.slice(0, getLineMessageSafeSliceIndex_(finalText, LINE_TEXT_MESSAGE_MAX_LENGTH)));
 
   const payload = {
     replyToken: replyToken,
     messages: safeMessageTexts.slice(0, LINE_REPLY_MAX_MESSAGE_COUNT).map(function(messageText) {
+      const safeText = String(messageText || getBotTextEmptyReply_());
       return {
         type: 'text',
-        text: String(messageText || getBotTextEmptyReply_()).slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH)
+        text: safeText.slice(0, getLineMessageSafeSliceIndex_(safeText, LINE_TEXT_MESSAGE_MAX_LENGTH))
       };
     })
   };
@@ -197,6 +198,11 @@ function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
     // 保留既有拋錯行為，但不讓含 request/token 的外部例外流入上層 stack log。
     throw new Error('LINE Reply API request failed.');
   }
+}
+
+// UTF-16 配對字元不可跨訊息或截斷邊界，切點必要時退一個單位。
+function getLineMessageSafeSliceIndex_(text, index) {
+  return /[\uD800-\uDBFF][\uDC00-\uDFFF]/.test(text.slice(index - 1, index + 1)) ? index - 1 : index;
 }
 
 function splitTextForLineMessages_(text) {
@@ -235,7 +241,12 @@ function splitTextForLineMessagesWithMeta_(text, maxMessageCount) {
       break;
     }
 
-    const splitIndex = findLineMessageSplitIndex_(remainingText, maxLength);
+    let splitIndex = findLineMessageSplitIndex_(remainingText, maxLength);
+    // 短段落不能耗盡後續訊息容量；週編輯台仍由 fitter 驗證完整區塊。
+    if (remainingText.slice(splitIndex).trim().length > (maxCount - messages.length - 1) * maxLength) {
+      splitIndex = maxLength;
+    }
+    splitIndex = getLineMessageSafeSliceIndex_(remainingText, splitIndex);
     const chunk = remainingText.slice(0, splitIndex).trim();
     messages.push(chunk || remainingText.slice(0, maxLength).trim());
     splitIndexes.push(remainingOffset + splitIndex);
@@ -260,7 +271,8 @@ function splitTextForLineMessagesWithMeta_(text, maxMessageCount) {
 
     // 第 5 則如果已接近上限，先裁出空間再補省略提示，避免 LINE payload 被拒。
     if (lastMessage.length + suffix.length > maxLength) {
-      lastMessage = lastMessage.slice(0, Math.max(0, maxLength - suffix.length)).trim();
+      lastMessage = lastMessage.slice(0,
+        getLineMessageSafeSliceIndex_(lastMessage, Math.max(0, maxLength - suffix.length))).trim();
     }
 
     nonEmptyMessages[lastIndex] = (lastMessage ? lastMessage + suffix : omittedNotice).slice(0, maxLength);
@@ -306,6 +318,10 @@ function findLineMessageSplitIndex_(text, maxLength) {
   const safeMax = Math.max(1, Number(maxLength) || LINE_TEXT_MESSAGE_MAX_LENGTH);
   const minSemanticSplitIndex = Math.min(1200, Math.floor(safeMax * 0.35));
 
+  // 完整區塊可能出現在 1200 字以前；先保留整段，避免切開下一則新聞後被 fitter 省略。
+  const paragraphIndex = safeText.lastIndexOf('\n\n', safeMax);
+  if (paragraphIndex > 0) return paragraphIndex;
+
   const semanticPatterns = [
     /\n【[^】]+】/g,
     /\n(?:科技與 AI|社群輿論|ACG娛樂|商業財經|國際政治|公共政策|生活文化|體育娛樂|待分類)[：:]/g,
@@ -316,9 +332,6 @@ function findLineMessageSplitIndex_(text, maxLength) {
     const index = findLastRegexIndexBefore_(safeText, semanticPatterns[i], safeMax, minSemanticSplitIndex);
     if (index > 0) return index;
   }
-
-  const paragraphIndex = safeText.lastIndexOf('\n\n', safeMax);
-  if (paragraphIndex >= minSemanticSplitIndex) return paragraphIndex;
 
   const lineIndex = safeText.lastIndexOf('\n', safeMax);
   if (lineIndex >= minSemanticSplitIndex) return lineIndex;
@@ -386,9 +399,9 @@ function getHelpText() {
     '・#本週新聞：整合最近 7 天群組話題、焦點故事線與其他分類新聞。',
     '・#本週新聞 高潛力：只看高潛力素材，依分類精簡顯示。',
     '・#新聞問答 <問題>：根據最近 7 天新聞素材回答並附原文網址。',
-    '・#狀態回報：查看最近 7 天網址收件、入庫、佇列與失敗狀態。',
+    '・#狀態回報：查看最近 7 天收件、佇列及固定週期新聞封存進度。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
-    '・#封存本週新聞：把最近 7 天 NewsInbox 摘要封存成新聞記憶。',
+    '・#封存本週新聞：已設定聊天室補存最早到期的週三中午週期；未設定時封存最近 7 天。',
     '',
     '更多說明：',
     '・#help 進階',
