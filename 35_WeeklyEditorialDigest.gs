@@ -20,6 +20,9 @@ function shouldUseWeeklyEditorialDigest_(queryOptions) {
 }
 
 function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiExecutionContext) {
+  const diagnostic = { conversationRead: 'not_started', rawConversationCount: 0, keptConversationCount: 0,
+    topicCount: 0, cacheHit: false, stage: 'prepare', errorCode: '' };
+  let conversationNotice = '';
   try {
     const identifiedItems = assignWeeklyEditorialItemIds_(items);
     const selection = selectWeeklyEditorialNewsItems_(identifiedItems);
@@ -33,12 +36,12 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
         (queryOptions && queryOptions.days) || DEFAULT_WEEKLY_NEWS_DAYS,
         MAX_WEEKLY_EDITORIAL_CONVERSATION_SCAN_ROWS
       );
+      diagnostic.conversationRead = 'ok';
+      diagnostic.rawConversationCount = rawConversationItems.length;
     } catch (conversationError) {
       // ConversationLog 失敗不應阻止新聞聚類；以空對話繼續同一次模型任務。
-      console.error(
-        'Weekly editorial ConversationLog read failed:',
-        conversationError && conversationError.stack ? conversationError.stack : conversationError
-      );
+      diagnostic.conversationRead = 'failed';
+      conversationNotice = '本次對話紀錄讀取失敗，先列新聞整理；群組話題尚未完成。';
       rawConversationItems = [];
     }
 
@@ -46,6 +49,8 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
       rawConversationItems,
       identifiedItems
     );
+    diagnostic.keptConversationCount = conversationPayload.length;
+    diagnostic.stage = 'cache';
     const modelItemIds = selection.selectedItems.map(function(entry) {
       return entry.itemId;
     });
@@ -69,12 +74,7 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
       } catch (cacheValidationError) {
         // 快取只是效能最佳化。可解析但契約損壞、ID 不相容或 coverage
         // 失敗時一律視為 miss，移除失敗也不能阻止本次 API 呼叫。
-        console.warn(
-          'Weekly editorial cache revalidation failed; treating as miss:',
-          cacheValidationError && cacheValidationError.message
-            ? cacheValidationError.message
-            : String(cacheValidationError)
-        );
+        console.warn('WEEKLY_EDITORIAL_CACHE_INVALID');
         removeCachedWeeklyEditorialResult_(cacheKey);
         normalizedResult = null;
         partition = null;
@@ -82,6 +82,7 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
     }
 
     if (!cacheHit) {
+      diagnostic.stage = 'ai';
       const prompt = buildWeeklyEditorialDigestPrompt_(newsPayload, conversationPayload);
       // HIGH JSON 的 itemId、partition 與 rendered coverage 仍由保守 validator 驗證；
       // 使用共用 webhook deadline，失敗走分類 fallback，不在 webhook 內 retry。
@@ -90,6 +91,7 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
         prompt,
         requireAiCallOptionsForExecutionContext_(aiExecutionContext)
       ));
+      diagnostic.stage = 'validation';
       const apiValidation = normalizeAndValidateWeeklyEditorialResult_(
         JSON.stringify(responseJson),
         modelItemIds,
@@ -101,10 +103,27 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
       putCachedWeeklyEditorialResult_(cacheKey, normalizedResult);
     }
 
-    return formatWeeklyEditorialDigest_(identifiedItems, partition, queryOptions);
+    diagnostic.cacheHit = cacheHit;
+    diagnostic.topicCount = (partition.conversationTopics || []).length;
+    diagnostic.stage = 'render';
+    if (!conversationNotice && !diagnostic.topicCount) {
+      conversationNotice = conversationPayload.length
+        ? '本週群組話題：已讀取可用對話，本次沒有可提煉的主題。'
+        : '本週群組話題：本次可用範圍內，沒有符合整理條件的對話。';
+    }
+    const text = formatWeeklyEditorialDigest_(identifiedItems, partition,
+      Object.assign({}, queryOptions, { conversationNotice: conversationNotice }));
+    diagnostic.stage = 'done';
+    return text;
   } catch (error) {
-    console.error('Weekly editorial digest failed:', error && error.stack ? error.stack : error);
-    return '';
+    diagnostic.errorCode = normalizeAiErrorReason_(error && error.errorReason) || normalizeAiErrorType_(error && error.errorType);
+    const failureNotice = (diagnostic.conversationRead === 'failed' ? conversationNotice + '\n' : '') +
+      '本次週編輯台整理未完成，先列分類新聞；群組話題尚未完成。' +
+      '（代碼：' + diagnostic.errorCode.toUpperCase() + '）';
+    return formatWeeklyEditorialFallbackDigest_(items,
+      Object.assign({}, queryOptions, { conversationNotice: failureNotice }));
+  } finally {
+    console.log('WEEKLY_EDITORIAL_STATUS ' + JSON.stringify(diagnostic));
   }
 }
 
@@ -539,7 +558,7 @@ function getCachedWeeklyEditorialResult_(cacheKey) {
   try {
     raw = CacheService.getScriptCache().get(cacheKey);
   } catch (error) {
-    console.warn('Weekly editorial cache read failed:', error && error.stack ? error.stack : error);
+    console.warn('WEEKLY_EDITORIAL_CACHE_READ_FAILED');
     return null;
   }
 
@@ -565,7 +584,7 @@ function removeCachedWeeklyEditorialResult_(cacheKey) {
     CacheService.getScriptCache().remove(cacheKey);
   } catch (error) {
     // 壞 cache 移除失敗不能阻止後續 API 呼叫或安全 fallback。
-    console.warn('Weekly editorial cache remove failed:', error && error.stack ? error.stack : error);
+    console.warn('WEEKLY_EDITORIAL_CACHE_REMOVE_FAILED');
   }
 }
 
@@ -578,7 +597,7 @@ function putCachedWeeklyEditorialResult_(cacheKey, normalizedResult) {
     );
   } catch (error) {
     // 快取不是正確性依賴；寫入失敗仍使用本次已驗證結果。
-    console.warn('Weekly editorial cache write failed:', error && error.stack ? error.stack : error);
+    console.warn('WEEKLY_EDITORIAL_CACHE_WRITE_FAILED');
   }
 }
 
@@ -969,9 +988,9 @@ function buildWeeklyEditorialOutputBlocks_(identifiedItems, partition, queryOpti
     !String(options.categoryFilter || '').trim();
 
   return {
-    intro: isPlainCompact
+    intro: (isPlainCompact
       ? '我把最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天可聊的素材整理好了：'
-      : buildWeeklyNewsDigestHeader_(options),
+      : buildWeeklyNewsDigestHeader_(options)) + (options.conversationNotice ? '\n\n' + options.conversationNotice : ''),
     topics: (partition.conversationTopics || []).slice(),
     clusters: clusters,
     otherItems: otherItems,
@@ -1148,12 +1167,7 @@ function fitWeeklyEditorialOutputBlocks_(outputState) {
       return rendered.text;
     }
 
-    // 先移除最低順位的群組話題，不增加新聞省略數。
-    if (state.topics.length) {
-      state.topics.pop();
-      continue;
-    }
-
+    // 已驗證的群組話題保留；容量不足只省略新聞，並明示省略筆數。
     const omissionCandidate = getWeeklyEditorialOmissionCandidate_(state);
     if (!omissionCandidate || omittedMap[omissionCandidate.itemId]) {
       throw new Error('weekly_editorial_line_capacity_unresolved');

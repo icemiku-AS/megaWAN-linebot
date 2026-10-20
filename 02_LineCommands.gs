@@ -306,6 +306,10 @@ function findLineMessageSplitIndex_(text, maxLength) {
   const safeMax = Math.max(1, Number(maxLength) || LINE_TEXT_MESSAGE_MAX_LENGTH);
   const minSemanticSplitIndex = Math.min(1200, Math.floor(safeMax * 0.35));
 
+  // 先按完整段落分割，避免標題內的編號或分類字樣切開一則新聞。
+  const paragraphIndex = safeText.lastIndexOf('\n\n', safeMax);
+  if (paragraphIndex >= minSemanticSplitIndex) return paragraphIndex;
+
   const semanticPatterns = [
     /\n【[^】]+】/g,
     /\n(?:科技與 AI|社群輿論|ACG娛樂|商業財經|國際政治|公共政策|生活文化|體育娛樂|待分類)[：:]/g,
@@ -316,9 +320,6 @@ function findLineMessageSplitIndex_(text, maxLength) {
     const index = findLastRegexIndexBefore_(safeText, semanticPatterns[i], safeMax, minSemanticSplitIndex);
     if (index > 0) return index;
   }
-
-  const paragraphIndex = safeText.lastIndexOf('\n\n', safeMax);
-  if (paragraphIndex >= minSemanticSplitIndex) return paragraphIndex;
 
   const lineIndex = safeText.lastIndexOf('\n', safeMax);
   if (lineIndex >= minSemanticSplitIndex) return lineIndex;
@@ -386,9 +387,9 @@ function getHelpText() {
     '・#本週新聞：整合最近 7 天群組話題、焦點故事線與其他分類新聞。',
     '・#本週新聞 高潛力：只看高潛力素材，依分類精簡顯示。',
     '・#新聞問答 <問題>：根據最近 7 天新聞素材回答並附原文網址。',
-    '・#狀態回報：查看最近 7 天網址收件、入庫、佇列與失敗狀態。',
+    '・#狀態回報：查看最近 7 天收件、佇列及固定週期新聞封存進度。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
-    '・#封存本週新聞：把最近 7 天 NewsInbox 摘要封存成新聞記憶。',
+    '・#封存本週新聞：已設定聊天室補存最早到期的週三中午週期；未設定時封存最近 7 天。',
     '',
     '更多說明：',
     '・#help 進階',

@@ -2,7 +2,7 @@
 
 住在群組裡的浣熊夥伴：陪群友聊天、查資料，也協助 Podcast「現正熱潮中」整理新聞與節目素材。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
 
-本文件描述 **v1.16.2 Reply Diagnostics & Personality Edition** 的版本契約。工作分支 `codex/v1162-reply-diagnostics-personality`，以抓取後的 origin/main / v1.16.1 / `fe8860f` 為開發基準；實際 Git 提交、推送與 merge 狀態以 repository refs 為準，GAS production deployment 與驗收由維護者另外確認。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+本文件描述 **v1.17.0 Weekly News Archive Edition** 的版本契約。工作分支 `codex/v1170-weekly-news-archive`，以當時本機 main / `8231700` 為開發基準；實際 Git 提交、推送與 merge 狀態以 repository refs 為準，GAS production deployment 與驗收由維護者另外確認。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
@@ -14,6 +14,7 @@
 - 保留多輪文字記憶、人工畫重點、明確封存與二段確認清理。
 - 文字引用由程式精確查找原文並區分說話者；一般聊天不再預設延伸節目企劃。
 - 出錯時直接顯示已確認的原因、處理方向與診斷碼；正常聊天依話題換句型、接梗，深入問題補有用例子。
+- 指定聊天室可啟用週三中午固定週期新聞封存；手動與每日排程共用防重、進度及失敗補跑，未設定時維持舊行為。
 
 ## 使用方式
 
@@ -66,16 +67,20 @@ Pending Reply 維持 v1.16.0 契約：任何文字訊息都可優先交付舊結
 | `#本週新聞 分類 <分類名>` | 指定分類，例如科技與 AI |
 | `#本週新聞 診斷` | 分類信心、故事線與重複素材檢查 |
 | `#新聞問答 <問題>` | 根據 NewsInbox 與新聞封存回答，附原文網址；不自行查外部資料 |
-| `#狀態回報` | 最近七天收件、Queue、失敗及待交付狀態 |
+| `#狀態回報` | 最近七天收件、Queue、失敗及待交付狀態；固定週期封存進度與失敗原因 |
 | `#新聞補充 <網址與內容>` | 使用者明確新增素材；解析失敗保留人工補件 fallback |
 | `#懶人包 <網址>` | 背景快讀，保存至 WebSummary |
 | `#節目話題分析 <問題或網址>` | 有網址走背景分析；無網址參考近期對話與素材 |
 | `#統整話題` | 整合對話、人工重點、新聞大綱、快讀及封存脈絡 |
 | `#畫重點 <內容>` | 保存人工釘選內容至 TopicHighlights |
 | `#封存本週話題` | 只封存 ConversationLog 使用者對話 |
-| `#封存本週新聞` | 將 NewsInbox 整理為 WeeklySummary 新聞索引 |
+| `#封存本週新聞` | 已設定聊天室補存最早到期的固定週期；未設定時仍封存最近七天 NewsInbox |
 
 一般網站顯示 raw Title；X/Twitter 單篇 status 優先顯示 `X｜Brief`，缺資料再回退。這只是展示規則，不修改 Title、Brief、StoryKey、排序、cache 或封存契約。
+
+固定週期是台灣時間「週三 12:00（含）～下週三 12:00（不含）」，按 NewsInbox.CreatedAt 入庫時間、同聊天室及 Status=ok 選取；發表日期不影響歸期。每日中午約 12:00～12:30 檢查，週三處理新到期週期，其餘日補跑；GAS 排程不保證準時。每次每聊天室最多一週，先處理最早未完成週期，可重試失敗每日一次、同一期自動最多三次，設定／資料或不可重試錯誤須處理後手動補跑。沒有資料只記進度，不建立空摘要。`#本週新聞` 查詢仍是滾動最近七天。
+
+週編輯台保留已驗證的群組話題；長訊息按段落分割，容量不足只省略新聞並顯示數量。對話讀取失敗、整體整理失敗及成功但沒有可提煉話題分別提示，不強迫 AI 產生主題。對話仍僅讀同聊天室、全表尾端最多 2500 列內的合格使用者文字，保留既有最多 60 則／每則 240 字元／合計 6000 字元限制。
 
 ### Help、版本與清理
 
@@ -88,7 +93,7 @@ Pending Reply 維持 v1.16.0 契約：任何文字訊息都可優先交付舊結
 | `#清空紀錄` | ConversationLog（含圖片衍生文字）與短期記憶 |
 | `#清空重點` | TopicHighlights |
 | `#清空快讀` | WebSummary、WebTaskQueue |
-| `#清空封存` | WeeklySummary |
+| `#清空封存` | 目前聊天室的話題與新聞 WeeklySummary；固定週期進度跳到最新已截止邊界並取消執行中工作，舊週不回補，下週照常 |
 | `#清空新聞` | NewsInbox、NewsUrlQueue |
 | `#清空待回覆` | PendingReplies |
 
@@ -103,11 +108,11 @@ Pending Reply 維持 v1.16.0 契約：任何文字訊息都可優先交付舊結
 | JSON Schema、只讀工具 | `13_AiSchemas.gs`、`14_AiTools.gs` |
 | Provider adapters | `15_DeepSeekProvider.gs`、`16_GeminiProvider.gs` |
 | Reader、背景任務 | `20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs` |
-| 新聞、編輯台 | `30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs` |
+| 新聞、編輯台、固定封存 | `30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、`36_NewsArchive.gs` |
 | 重點、話題 | `40_TopicHighlights.gs`、`45_TopicFeatures.gs` |
 | 資料維護 | `50_DataCleanup.gs` |
 
-共 23 個 runtime `.gs`，共用 GAS global namespace；數字只供導航，不是載入順序。
+共 24 個 runtime `.gs`，共用 GAS global namespace；數字只供導航，不是載入順序。
 
 DeepSeek 依能力選擇 Chat Completions（普通文字／Vision／legacy extraction）、Responses（JSON Schema）或 Anthropic Messages（Search／只讀工具／圖片研究）。Gemini 保持 dormant，沒有自動 provider fallback。業務層不建立 vendor payload。
 
@@ -127,16 +132,16 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 ## Setup、部署與維護
 
 1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
-   完整 v1.16.1 升級本版只需同步 12 個修改的 runtime 檔，清單見 CURRENT_VERSION；部署基準不確定時同步同版全部 23 檔。
-   已同步 v1.16.2 `817676c` 者，本輪 review fix 只需追加同步 `03_ResponseTexts.gs`，再更新既有 Web App deployment。
+   從完整 v1.16.2 升級，需同步 8 個 runtime 檔（含新增 36_NewsArchive.gs），清單見 CURRENT_VERSION；部署基準不確定時同步同版全部 24 檔。
 2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
 3. **v1.16.0 → v1.16.1 有 schema 補欄**：先備份 Sheet，再以同版程式執行 `setupLogSheet()`，確認 ConversationLog 新增 `QuotedMessageId`、`QuoteStatus`，舊欄位／資料保留。首次寫入也會補缺欄，但建議部署前明確完成；不回填舊引用、不修復失真 ID。新 ID 以文字 literal 寫入，需在實際 Sheet 驗收超長 ID。既有 Trigger 不重建；首次建置才另外執行 `installWebTaskQueueTrigger()`。
 4. 維護者手動建立 GAS version，更新既有 Web App deployment，保留 URL。Git commit／push／merge 不等於 GAS 部署。
 5. 部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。具體同步檔案與 manual smoke checklist 見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+6. **固定週期封存待上傳 GAS 後才手動啟用**：依 CURRENT_VERSION 的啟用順序備份、設定 NEWS_ARCHIVE_CONFIG、預覽舊期間、執行 setupNewsArchiveStorage()，最後才 installNewsArchiveTrigger()。未設定預設關閉；本機修改與 PR 不會調整實際 Sheets 或 Trigger。
 
 必要 production smoke gate：真實 LINE webhook 的 MessageId 與已確認文字 QuotedMessageId，經 writer 寫入及 `SpreadsheetApp getValues()` 回讀後，必須仍為 string 且與原始 ID 完全相等。Mock 不能代替這項實測；目前未執行 live 驗證，完整檢查式見 CURRENT_VERSION。
 
-本機檢查：`node tests/v1140_smoke.cjs`。這只是既有開發 smoke test，使用 Node 內建模組，沒有新增 runtime dependency。測試不會呼叫真實 GAS／LINE／DeepSeek；目前結果及 live 限制見 CURRENT_VERSION。
+本機檢查：`node tests/v1140_smoke.cjs` 及 `node tests/v1170_archive.cjs`。使用 Node 內建模組與記憶體 mock，沒有新增 runtime dependency；不會呼叫真實 GAS／LINE／DeepSeek／Sheets。目前結果及 live 限制見 CURRENT_VERSION。
 
 修改規則見 [AGENTS.md](AGENTS.md)：先看現行 caller 與契約、在非 main 工作分支修改、檢查 diff，發布與 GAS 同步由維護者處理。
 
@@ -159,3 +164,4 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 | v1.16 | Provider Architecture Foundation：registry dispatch、model reasoning policy、統一 adapter 契約、secret 與 metadata hardening；未接入 Luna／OpenAI |
 | v1.16.1 | 使用者文字引用、作者脈絡、跨作者去重修正與人格／task 分層；ConversationLog 補兩欄，部署需另行驗收 |
 | v1.16.2 | AI／搜尋／Reader／圖片錯誤診斷碼與自然聊天變化；無新資料欄位、設定或模型呼叫 |
+| v1.17.0 | 固定週三新聞封存、手動／自動防重與補跑；保留週編輯台話題，啟用需補四欄、設定與手動安裝 Trigger |

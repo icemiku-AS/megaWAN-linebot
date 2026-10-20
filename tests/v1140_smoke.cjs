@@ -1,4 +1,4 @@
-// v1.16.2 回覆診斷／人格與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// v1.17.0 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -10,7 +10,7 @@ const source = files.map(name => {
   new vm.Script(code, { filename: name });
   return code;
 }).join('\n');
-assert.equal(files.length, 23);
+assert.equal(files.length, 24);
 assert(!/deepseek-v4-flash|deepseek_v4_flash/.test(source));
 const functions = [...source.matchAll(/^function (\w+)\(/gm)].map(match => match[1]);
 assert.equal(new Set(functions).size, functions.length, 'duplicate GAS function');
@@ -26,7 +26,7 @@ const context = vm.createContext({
     base64Encode: bytes => { now += encodedDelay; return Buffer.from(bytes).toString('base64'); },
     newBlob: value => ({ getBytes: () => Array.from(typeof value === 'string' ? Buffer.from(value) : Buffer.from(value || [])) })
   },
-  PropertiesService: { getScriptProperties: () => ({ getProperty: () => 'test-only-placeholder' }) },
+  PropertiesService: { getScriptProperties: () => ({ getProperty: key => key === 'NEWS_ARCHIVE_CONFIG' ? null : 'test-only-placeholder' }) },
   CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value), remove: key => cache.delete(key) }) },
   LockService: { getScriptLock: () => ({ tryLock: () => { now += lockDelay; return true; }, waitLock: () => { now += lockDelay; }, releaseLock() {} }) },
   UrlFetchApp: { fetch: (url, options) => { calls.push({ url, options }); return fetchImpl(url, options); } },
@@ -261,7 +261,7 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v1.16.2'));
+  assert(replies.at(-1).text.includes('v1.17.0'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : anthropicCompletion('一般文字回答');
@@ -2530,7 +2530,7 @@ check('protocol symbols stay inside adapters and all active routes remain DeepSe
   }
   assert(Object.values(value('AI_TASK_ROUTES')).every(route => route.provider === 'deepseek'));
   assert.equal(value('AI_PROVIDER_REGISTRY.gemini.status'), 'dormant');
-  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 23);
+  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 24);
   const secretPattern = /(?:sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,})/;
   for (const filename of [...files, 'tests/v1140_smoke.cjs', 'README.md', 'CURRENT_VERSION.md']) {
     assert(!secretPattern.test(fs.readFileSync(path.join(root, filename), 'utf8')), filename + ' credential-shaped literal');
@@ -3147,7 +3147,7 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('codex/v1162-reply-diagnostics-personality')); assert(doc.includes('v1.16.2')); assert(doc.includes('Git')); assert(doc.includes('refs'));
+    assert(doc.includes('codex/v1170-weekly-news-archive')); assert(doc.includes('v1.17.0')); assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
   }

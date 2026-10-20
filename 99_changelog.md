@@ -1,3 +1,12 @@
+2026-10-20
+v1.17.0 Weekly News Archive Edition（GAS 部署與手動啟用另行處理）
+- 從維護者指定的當時本機 main 8231700 建立 codex/v1170-weekly-news-archive；不合併、不自動部署。
+- 新增 36_NewsArchive.gs：指定聊天室按台灣時間週三 12:00 固定七日週期，手動與每日到期檢查共用 ArchiveKey、防重、短鎖／lease、進度與失敗補跑；空期只記進度，缺表／讀取錯誤不可當空期。
+- WeeklySummary 手動 setup 只追加 ArchiveKey／PeriodStartAt／PeriodEndAt／ArchiveOrigin 四欄，不改歷史列；Script Properties 設定缺省關閉。待維護者上傳 GAS 後再預覽舊期間、補欄、選切換點與安裝新 Trigger，不自動搬移、刪除或合併舊摘要。
+- LINE splitter 先選段落；週編輯台不再優先刪群組話題，容量不足明示新聞省略筆數，讀取／整理失敗與成功無話題分開提示並記安全 metadata。
+- #清空封存 確認取消目前聊天室執行中工作並停止回補舊週期；其他聊天室及下一個新週期保留。沿用原 provider／JSON／deadline／Reader／webhook 契約。
+- 24 GAS sources／467 unique functions；既有 254 checks 與新增 48 checks 共 302 checks 通過，git diff --check 通過。未執行 live GAS／LINE／Sheets／AI 驗收。
+
 2026-10-02
 v1.16.2 搜尋後段失敗提示 review fix（部署另行確認）
 - 在 codex/v1162-reply-diagnostics-personality／817676c 確認缺口；共用 getBotTextAiError_ 依可信 usedWebSearch === true 顯示一次搜尋執行觀測，搜尋專用 helper 避免重複前綴，保留原失敗原因及圖片／必要資料／封存提醒。

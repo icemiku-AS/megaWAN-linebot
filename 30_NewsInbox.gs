@@ -1433,28 +1433,7 @@ function getRecentNewsInboxItems_(conversationId, days) {
   const cutoffTime = new Date().getTime() - days * 24 * 60 * 60 * 1000;
 
   return values.map(function(row) {
-    const rawStoryKey = getRowValueByHeader_(row, headerMap, 'StoryKey');
-    const item = {
-      createdAt: getRowValueByHeader_(row, headerMap, 'CreatedAt'),
-      conversationId: getRowValueByHeader_(row, headerMap, 'ConversationId'),
-      url: getRowValueByHeader_(row, headerMap, 'Url'),
-      title: getRowValueByHeader_(row, headerMap, 'Title'),
-      category: getRowValueByHeader_(row, headerMap, 'Category'),
-      brief: getRowValueByHeader_(row, headerMap, 'Brief'),
-      outline: getRowValueByHeader_(row, headerMap, 'Outline'),
-      angle: getRowValueByHeader_(row, headerMap, 'Angle'),
-      topicPotential: getRowValueByHeader_(row, headerMap, 'TopicPotential'),
-      specialTopic: getRowValueByHeader_(row, headerMap, 'SpecialTopic'),
-      categoryReason: getRowValueByHeader_(row, headerMap, 'CategoryReason'),
-      categoryConfidence: getRowValueByHeader_(row, headerMap, 'CategoryConfidence'),
-      matchedEntities: getRowValueByHeader_(row, headerMap, 'MatchedEntities'),
-      classificationWarning: getRowValueByHeader_(row, headerMap, 'ClassificationWarning'),
-      storyKeyRaw: rawStoryKey,
-      storyKeyWasMissing: !String(rawStoryKey || '').trim(),
-      status: getRowValueByHeader_(row, headerMap, 'Status')
-    };
-    item.storyKey = normalizeStoryKey_(rawStoryKey, item);
-    return item;
+    return newsInboxRowToItem_(row, headerMap);
   }).filter(function(item) {
     const createdAtTime = item.createdAt ? new Date(item.createdAt).getTime() : 0;
     return item.conversationId === conversationId &&
@@ -1463,6 +1442,31 @@ function getRecentNewsInboxItems_(conversationId, days) {
   }).sort(function(a, b) {
     return compareNewsItemsForDisplay_(a, b);
   });
+}
+
+function newsInboxRowToItem_(row, headerMap) {
+  const rawStoryKey = getRowValueByHeader_(row, headerMap, 'StoryKey');
+  const item = {
+    createdAt: getRowValueByHeader_(row, headerMap, 'CreatedAt'),
+    conversationId: getRowValueByHeader_(row, headerMap, 'ConversationId'),
+    url: getRowValueByHeader_(row, headerMap, 'Url'),
+    title: getRowValueByHeader_(row, headerMap, 'Title'),
+    category: getRowValueByHeader_(row, headerMap, 'Category'),
+    brief: getRowValueByHeader_(row, headerMap, 'Brief'),
+    outline: getRowValueByHeader_(row, headerMap, 'Outline'),
+    angle: getRowValueByHeader_(row, headerMap, 'Angle'),
+    topicPotential: getRowValueByHeader_(row, headerMap, 'TopicPotential'),
+    specialTopic: getRowValueByHeader_(row, headerMap, 'SpecialTopic'),
+    categoryReason: getRowValueByHeader_(row, headerMap, 'CategoryReason'),
+    categoryConfidence: getRowValueByHeader_(row, headerMap, 'CategoryConfidence'),
+    matchedEntities: getRowValueByHeader_(row, headerMap, 'MatchedEntities'),
+    classificationWarning: getRowValueByHeader_(row, headerMap, 'ClassificationWarning'),
+    storyKeyRaw: rawStoryKey,
+    storyKeyWasMissing: !String(rawStoryKey || '').trim(),
+    status: getRowValueByHeader_(row, headerMap, 'Status')
+  };
+  item.storyKey = normalizeStoryKey_(rawStoryKey, item);
+  return item;
 }
 
 // 週新聞的 X status 判定與 Reader routing 共用同一套 URL semantics。
@@ -2049,7 +2053,7 @@ function formatNewsItemsForMemoryBridge_(items) {
 
 function handleNewsStatusReport_(event, conversationId) {
   const stats = collectNewsStatusStats_(conversationId, DEFAULT_WEEKLY_NEWS_DAYS);
-  return formatNewsStatusReport_(stats);
+  return formatNewsStatusReport_(stats) + '\n\n' + getNewsArchiveStatusText_(conversationId);
 }
 
 function collectNewsStatusStats_(conversationId, days) {

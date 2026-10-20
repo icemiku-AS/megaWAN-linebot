@@ -155,7 +155,7 @@ function ensureLogSheet_() {
   return ensureSheetWithHeaders_(SHEET_NAME, headers);
 }
 
-function ensureWeeklySummarySheet_() {
+function ensureWeeklySummarySheet_(includeArchiveHeaders) {
   const headers = [
     'ArchivedAt',
     'ConversationId',
@@ -175,7 +175,9 @@ function ensureWeeklySummarySheet_() {
     'SourceItemCount'
   ];
 
-  return ensureSheetWithHeaders_(WEEKLY_SUMMARY_SHEET_NAME, headers);
+  // 固定週期欄位只由維護者執行 setup 時追加，普通讀寫不代替啟用程序。
+  return ensureSheetWithHeaders_(WEEKLY_SUMMARY_SHEET_NAME,
+    includeArchiveHeaders === true ? headers.concat(NEWS_ARCHIVE_EXTRA_HEADERS) : headers);
 }
 
 function appendWeeklySummaryRow_(item) {
@@ -199,7 +201,11 @@ function appendWeeklySummaryRow_(item) {
     ArchiveType: item.archiveType || WEEKLY_ARCHIVE_TYPE_TOPIC,
     PeriodStart: item.periodStart || '',
     PeriodEnd: item.periodEnd || '',
-    SourceItemCount: sourceItemCount
+    SourceItemCount: sourceItemCount,
+    ArchiveKey: item.archiveKey || '',
+    PeriodStartAt: item.periodStartAt || '',
+    PeriodEndAt: item.periodEndAt || '',
+    ArchiveOrigin: item.archiveOrigin || ''
   };
 
   // WeeklySummary 同時保存話題封存與新聞封存。
@@ -563,9 +569,9 @@ function isWeeklyEditorialConversationModeAllowed_(mode) {
 }
 
 function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxScanRows) {
-  const sheet = ensureLogSheet_();
+  const sheet = getSpreadsheet_().getSheetByName(SHEET_NAME);
+  if (!sheet) throw createAiValidationError_('Weekly editorial ConversationLog is missing.', false);
   const lastRow = sheet.getLastRow();
-  if (lastRow <= 1) return [];
 
   const headerMap = getHeaderMap_(sheet);
   const requiredHeaders = ['Timestamp', 'ConversationId', 'Role', 'Mode', 'UserId', 'Text'];
@@ -574,6 +580,7 @@ function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxSca
       throw new Error('ConversationLog 缺少必要欄位：' + header);
     }
   });
+  if (lastRow <= 1) return [];
 
   const safeDays = Math.max(1, Number(days) || DEFAULT_WEEKLY_NEWS_DAYS);
   const cutoffTime = new Date().getTime() - safeDays * 24 * 60 * 60 * 1000;
@@ -783,6 +790,8 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly
       const followUpQuestions = getRowValueByHeader_(row, headerMap, 'FollowUpQuestions');
       const periodStart = getRowValueByHeader_(row, headerMap, 'PeriodStart');
       const periodEnd = getRowValueByHeader_(row, headerMap, 'PeriodEnd');
+      const periodStartAt = getRowValueByHeader_(row, headerMap, 'PeriodStartAt');
+      const periodEndAt = getRowValueByHeader_(row, headerMap, 'PeriodEndAt');
       const sourceItemCount = getRowValueByHeader_(row, headerMap, 'SourceItemCount') ||
         getRowValueByHeader_(row, headerMap, 'RawMessageCount');
 
@@ -807,6 +816,8 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly
         archiveType: rowArchiveType,
         periodStart: periodStart,
         periodEnd: periodEnd,
+        periodStartAt: periodStartAt,
+        periodEndAt: periodEndAt,
         sourceItemCount: sourceItemCount
       });
 
@@ -818,10 +829,17 @@ function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly
     matched.reverse();
 
     return matched.map(function(item, index) {
+      const preciseStart = new Date(item.periodStartAt).getTime();
+      const preciseEnd = new Date(item.periodEndAt).getTime();
+      const hasPrecisePeriod = !!item.periodStartAt && !!item.periodEndAt &&
+        isFinite(preciseStart) && isFinite(preciseEnd) && preciseStart < preciseEnd;
       return [
         '【封存記憶 ' + (index + 1) + '】',
         '類型：' + getWeeklyArchiveTypeLabel_(item.archiveType),
-        item.periodStart || item.periodEnd ? '期間：' + (item.periodStart || '未記錄') + ' ～ ' + (item.periodEnd || '未記錄') : '',
+        hasPrecisePeriod
+          ? '期間：' + formatNewsArchiveTime_(preciseStart) + '（含） ～ ' +
+            formatNewsArchiveTime_(preciseEnd) + '（不含，台灣時間）'
+          : item.periodStart || item.periodEnd ? '期間：' + (item.periodStart || '未記錄') + ' ～ ' + (item.periodEnd || '未記錄') : '',
         item.sourceItemCount ? '來源筆數：' + item.sourceItemCount : '',
         '主題：' + item.topicTitle,
         '關鍵字：' + item.keywords,

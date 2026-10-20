@@ -54,7 +54,7 @@ function getCleanupCommandInfo_(text) {
       key: 'weekly_summary',
       label: 'WeeklySummary 封存記憶',
       sheets: ['WeeklySummary'],
-      description: '清除目前聊天室由 #封存本週話題 產生的長期封存記憶。'
+      description: '清除目前聊天室的話題與新聞封存記憶；已設定固定週期者，同時取消執行中工作並停止回補舊週期，下個新週期照常。'
     },
     '#清空新聞': {
       key: 'news_data',
@@ -130,7 +130,9 @@ function performDataCleanup_(cleanupKey, conversationId) {
     addDetail(WEB_TASK_QUEUE_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureWebTaskQueueSheet_(), conversationId));
 
   } else if (cleanupKey === 'weekly_summary') {
-    addDetail(WEEKLY_SUMMARY_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureWeeklySummarySheet_(), conversationId));
+    addDetail(WEEKLY_SUMMARY_SHEET_NAME, clearNewsArchiveProgress_(conversationId, function() {
+      return deleteRowsByConversationIdFromSheet_(ensureWeeklySummarySheet_(), conversationId);
+    }));
 
   } else if (cleanupKey === 'news_data') {
     addDetail(NEWS_INBOX_SHEET_NAME, deleteRowsByConversationIdFromSheet_(ensureNewsInboxSheet_(), conversationId));
