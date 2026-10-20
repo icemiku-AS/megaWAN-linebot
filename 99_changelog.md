@@ -1,4 +1,11 @@
 2026-10-20
+v1.17.0 PR #54 Queue 安全提交補修（維持原版號，部署另行處理）
+- 新聞與 Web／快讀／網址節目分析不再攜帶舊列號回寫；領取 flush 並回讀 StartedAt，提交以唯一 TaskId、ConversationId、processing 與本次時間識別重新核對。
+- Reader／AI 在資料鎖外執行；結果、待回覆、Queue 欄位與最終狀態在同一把短鎖內保存、flush。快讀延後保存各網址結果，清空後的舊工作取消，不重建素材或通知；其他聊天室及新任務保留。
+- 保留 Reader／AI 重試與退避；提交最多等鎖 5 秒，鎖忙／寫入錯誤不重跑模型或追加第二份通知。多表中斷仍需人工查核，不新增自動接手機制、欄位、Properties 或 Trigger。
+- 24 GAS sources／473 unique functions；254 smoke checks＋112 focused checks 共 366 checks 通過。未操作實際 Sheets／觸發器，未執行 live GAS／LINE／AI，未合併或部署；累計仍為 12 個 runtime 同步檔。
+
+2026-10-20
 v1.17.0 PR #54 review 修正（維持原版號，GAS 手動啟用另行處理）
 - 入庫 CreatedAt／append／flush 與封存來源快照共用短鎖；各類清理與舊刪列入口涵蓋未設定聊天室，Pending Reply 成功後刪除並在原鎖內 flush。
 - 保留不可重試／達上限狀態；AI 完成後在原 deadline 內等提交鎖，持續忙碌時以 token 專屬安全失敗收據供狀態與補跑恢復，不存模型內容。

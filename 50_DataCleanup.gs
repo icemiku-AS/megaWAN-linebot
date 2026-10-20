@@ -48,7 +48,7 @@ function getCleanupCommandInfo_(text) {
       key: 'web_data',
       label: 'WebSummary / WebTaskQueue 快讀資料',
       sheets: ['WebSummary', 'WebTaskQueue'],
-      description: '清除目前聊天室的網址快讀摘要，以及尚未完成或歷史保留的快讀任務。'
+      description: '清除目前聊天室的網址快讀摘要與快讀／網址分析任務；處理中的舊任務取消，不再寫入素材或待回覆。'
     },
     '#清空封存': {
       key: 'weekly_summary',
@@ -60,7 +60,7 @@ function getCleanupCommandInfo_(text) {
       key: 'news_data',
       label: 'NewsInbox / NewsUrlQueue 新聞素材',
       sheets: ['NewsInbox', 'NewsUrlQueue'],
-      description: '清除目前聊天室直接貼網址收集到的新聞素材，以及尚未處理的新聞網址佇列。'
+      description: '清除目前聊天室的新聞素材與新聞網址佇列；處理中的舊任務取消，不再寫入素材或失敗通知。'
     },
     '#清空待回覆': {
       key: 'pending_replies',

@@ -132,6 +132,86 @@ function appendRowByHeaders_(sheet, valuesByHeader) {
   sheet.appendRow(row);
 }
 
+// Queue 讀取不補表／補欄；TaskId 必須唯一，避免刪列或人工改表後寫錯任務。
+function readQueueTaskData_(sheet) {
+  try {
+    if (!sheet || sheet.getLastColumn() < 1) throw createAiValidationError_('Queue sheet is missing.', false);
+    const names = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    const headers = Object.create(null);
+    names.forEach(function(value, index) {
+      const name = String(value || '').trim();
+      if (name && headers[name]) throw createAiValidationError_('Duplicate queue header.', false);
+      if (name) headers[name] = index + 1;
+    });
+    if (['TaskId', 'ConversationId', 'Status', 'StartedAt'].some(function(name) { return !headers[name]; })) {
+      throw createAiValidationError_('Queue identity headers are missing.', false);
+    }
+    const count = Math.max(0, sheet.getLastRow() - 1);
+    const rows = count ? sheet.getRange(2, 1, count, sheet.getLastColumn()).getValues() : [];
+    const idCounts = Object.create(null);
+    rows.forEach(function(row) {
+      const id = getRowValueByHeader_(row, headers, 'TaskId');
+      if (typeof id === 'string' && id.trim()) idCounts[id] = (idCounts[id] || 0) + 1;
+    });
+    return { sheet: sheet, headers: headers, rows: rows, idCounts: idCounts };
+  } catch (error) {
+    if (error && error.errorType) throw error;
+    const failure = createAiValidationError_('Queue read failed.', true);
+    failure.errorReason = 'tool_read_failed';
+    throw failure;
+  }
+}
+
+function findCurrentQueueTask_(data, task) {
+  if (!task || typeof task.taskId !== 'string' || !task.taskId.trim() ||
+      typeof task.conversationId !== 'string' || !task.conversationId ||
+      !Number.isFinite(task.startedAtMs) || task.startedAtMs <= 0) {
+    throw createAiValidationError_('Queue task identity is invalid.', false);
+  }
+  if (!data.idCounts[task.taskId]) return null;
+  if (data.idCounts[task.taskId] !== 1) throw createAiValidationError_('Queue task ID is ambiguous.', false);
+  const index = data.rows.findIndex(function(row) { return getRowValueByHeader_(row, data.headers, 'TaskId') === task.taskId; });
+  const row = data.rows[index];
+  if (getRowValueByHeader_(row, data.headers, 'ConversationId') !== task.conversationId ||
+      getRowValueByHeader_(row, data.headers, 'Status') !== 'processing' ||
+      new Date(getRowValueByHeader_(row, data.headers, 'StartedAt')).getTime() !== task.startedAtMs) return null;
+  return { sheet: data.sheet, headers: data.headers, rowNumber: index + 2 };
+}
+
+// null updates 是處理前檢查；提交時先 flush 輸出與欄位，最後才變更 Status。
+function withQueueTaskResult_(sheetName, task, updates, writeOutputs) {
+  let result;
+  try {
+    result = withDataMutationLock_(function() {
+      const current = findCurrentQueueTask_(readQueueTaskData_(getSpreadsheet_().getSheetByName(sheetName)), task);
+      if (!current) return { status: 'cancelled' };
+      if (!updates) return { status: 'ready' };
+      const fields = Object.keys(updates);
+      if (!['done', 'failed', 'pending'].includes(updates.Status) ||
+          fields.some(function(name) { return !current.headers[name]; })) {
+        throw createAiValidationError_('Queue result headers or status are invalid.', false);
+      }
+      try {
+        if (writeOutputs) writeOutputs();
+        fields.filter(function(name) { return name !== 'Status'; }).forEach(function(name) {
+          setCellByHeader_(current.sheet, current.rowNumber, current.headers, name, updates[name]);
+        });
+        SpreadsheetApp.flush();
+        setCellByHeader_(current.sheet, current.rowNumber, current.headers, 'Status', updates.Status);
+        return { status: 'committed' };
+      } finally { SpreadsheetApp.flush(); }
+    }, updates ? 5000 : 1000);
+  } catch (error) {
+    result = { status: 'failed', errorCode: normalizeAiErrorReason_(error && error.errorReason) ||
+      normalizeAiErrorType_(error && error.errorType) };
+  }
+  if (result.status === 'busy') result.errorCode = 'local_time_budget';
+  if (updates || result.status !== 'ready') console.log('QUEUE_TASK_STATUS ' + JSON.stringify({
+    queue: sheetName, status: result.status, errorCode: result.errorCode || ''
+  }));
+  return result;
+}
+
 // ======================================================
 // 各資料表初始化
 // ======================================================
@@ -450,7 +530,8 @@ function saveWebSummary_(task, summaryResult) {
     ]);
 
   } catch (error) {
-    console.error('saveWebSummary_ error:', error && error.stack ? error.stack : error);
+    console.error('WEB_SUMMARY_WRITE_FAILED');
+    throw error;
   }
 }
 

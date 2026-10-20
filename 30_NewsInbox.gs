@@ -391,12 +391,10 @@ function processNewsUrlQueue() {
   let tasksToProcess = [];
   try {
     const sheet = ensureNewsUrlQueueSheet_();
-    const headerMap = getHeaderMap_(sheet);
-    const lastRow = sheet.getLastRow();
-    if (lastRow <= 1) return;
-
+    const data = readQueueTaskData_(sheet);
+    const headerMap = data.headers;
     const now = new Date();
-    const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+    const values = data.rows;
 
     for (let i = 0; i < values.length; i++) {
       if (tasksToProcess.length >= MAX_NEWS_QUEUE_TASKS_PER_RUN) break;
@@ -405,16 +403,23 @@ function processNewsUrlQueue() {
       const nextRunAt = getRowValueByHeader_(row, headerMap, 'NextRunAt');
       if (status !== 'pending') continue;
       if (nextRunAt && new Date(nextRunAt).getTime() > now.getTime()) continue;
+      const taskId = getRowValueByHeader_(row, headerMap, 'TaskId');
+      const conversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
+      if (typeof taskId !== 'string' || !taskId.trim() || data.idCounts[taskId] !== 1 ||
+          typeof conversationId !== 'string' || !conversationId) {
+        console.warn('QUEUE_TASK_INVALID_ID'); continue;
+      }
 
       const sheetRowNumber = i + 2;
       setCellByHeader_(sheet, sheetRowNumber, headerMap, 'UpdatedAt', now);
-      setCellByHeader_(sheet, sheetRowNumber, headerMap, 'Status', 'processing');
       setCellByHeader_(sheet, sheetRowNumber, headerMap, 'StartedAt', now);
+      setCellByHeader_(sheet, sheetRowNumber, headerMap, 'Status', 'processing');
+      SpreadsheetApp.flush();
+      const startedAtMs = new Date(sheet.getRange(sheetRowNumber, headerMap.StartedAt).getValues()[0][0]).getTime();
+      if (!Number.isFinite(startedAtMs) || startedAtMs <= 0) throw createAiValidationError_('Queue claim timestamp could not be read back.', false);
 
       tasksToProcess.push({
-        sheetRowNumber: sheetRowNumber,
-        taskId: getRowValueByHeader_(row, headerMap, 'TaskId'),
-        conversationId: getRowValueByHeader_(row, headerMap, 'ConversationId'),
+        taskId: taskId, conversationId: conversationId, startedAtMs: startedAtMs,
         sourceType: getRowValueByHeader_(row, headerMap, 'SourceType'),
         userId: getRowValueByHeader_(row, headerMap, 'UserId'),
         groupId: getRowValueByHeader_(row, headerMap, 'GroupId'),
@@ -425,7 +430,7 @@ function processNewsUrlQueue() {
       });
     }
   } finally {
-    queueLock.releaseLock();
+    try { SpreadsheetApp.flush(); } finally { queueLock.releaseLock(); }
   }
 
   tasksToProcess.forEach(function(task) {
@@ -434,23 +439,31 @@ function processNewsUrlQueue() {
 }
 
 function processSingleNewsUrlTask_(task) {
-  const sheet = ensureNewsUrlQueueSheet_();
-  const headerMap = getHeaderMap_(sheet);
+  const check = withQueueTaskResult_(NEWS_URL_QUEUE_SHEET_NAME, task, null);
+  if (check.status !== 'ready') return check;
   const now = new Date();
-
+  let analysis;
+  let failure;
+  let failed = false;
   try {
     const webResult = fetchAndExtractWebPageByReaderLayer_(task.url);
     if (!webResult.ok) {
       throw createNewsUrlReaderError_(webResult);
     }
 
-    const analysis = analyzeNewsUrlWithAi_(task.url, webResult);
+    const afterRead = withQueueTaskResult_(NEWS_URL_QUEUE_SHEET_NAME, task, null);
+    if (afterRead.status !== 'ready') return afterRead;
+    analysis = analyzeNewsUrlWithAi_(task.url, webResult);
 
     if (isWeakAutoNewsClassification_(analysis, task.url)) {
       throw createAiValidationError_('weak_auto_classification: AI classification is insufficient for NewsInbox', true);
     }
+  } catch (error) { failed = true; failure = error; }
 
-    appendNewsInboxRow_(Object.assign({}, analysis, {
+  if (!failed) return withQueueTaskResult_(NEWS_URL_QUEUE_SHEET_NAME, task, {
+    UpdatedAt: now, FinishedAt: now, LastErrorType: '', LastErrorText: '', Status: 'done'
+  }, function() {
+    appendNewsInboxRowLocked_(Object.assign({}, analysis, {
       conversationId: task.conversationId,
       sourceType: task.sourceType,
       userId: task.userId,
@@ -461,49 +474,33 @@ function processSingleNewsUrlTask_(task) {
       status: 'ok',
       errorText: ''
     }));
+  });
 
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'done');
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'FinishedAt', now);
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorType', '');
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorText', '');
+  const error = failure;
+  const errorText = error && error.message ? error.message : String(error);
+  const errorType = error && error.errorType ? error.errorType : classifyNewsUrlError_(errorText);
+  const retryCount = Number(task.retryCount || 0) + 1;
+  const retryableHint = error && typeof error.retryable === 'boolean' ? error.retryable : null;
+  const httpStatus = Number(error && error.httpStatus || 0);
+  const shouldRetry = shouldRetryNewsUrlError_(errorType, errorText, retryableHint, httpStatus);
+  const diagnosticText = getBotTextReaderError_(error);
+  console.log('NEWS_URL_TASK_ERROR_METADATA ' + JSON.stringify({
+    errorType: errorType,
+    errorReason: normalizeAiErrorReason_(error && error.errorReason),
+    readerRoute: String(error && error.readerRoute || ''),
+    httpStatus: httpStatus,
+    retryable: shouldRetry
+  }));
 
-  } catch (error) {
-    const errorText = error && error.message ? error.message : String(error);
-    const errorType = error && error.errorType ? error.errorType : classifyNewsUrlError_(errorText);
-    const retryCount = Number(task.retryCount || 0) + 1;
-    const retryableHint = error && typeof error.retryable === 'boolean' ? error.retryable : null;
-    const httpStatus = Number(error && error.httpStatus || 0);
-    const shouldRetry = shouldRetryNewsUrlError_(errorType, errorText, retryableHint, httpStatus);
-    const diagnosticText = getBotTextReaderError_(error);
-    console.log('NEWS_URL_TASK_ERROR_METADATA ' + JSON.stringify({
-      taskId: task.taskId || '',
-      errorType: errorType,
-      errorReason: normalizeAiErrorReason_(error && error.errorReason),
-      readerRoute: String(error && error.readerRoute || ''),
-      httpStatus: httpStatus,
-      retryable: shouldRetry
-    }));
-
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'UpdatedAt', now);
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'RetryCount', retryCount);
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorType', errorType);
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'LastErrorText', truncateForSheet(diagnosticText));
-
-    // 暫時性錯誤才重試；已知永久性錯誤，例如 unsupported_social_platform，不應排回 pending。
-    if (shouldRetry && retryCount < MAX_NEWS_QUEUE_RETRY_COUNT) {
-      setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'pending');
-      setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'NextRunAt', new Date(now.getTime() + retryCount * 2 * 60 * 1000));
-      return;
-    }
-
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'Status', 'failed');
-    setCellByHeader_(sheet, task.sheetRowNumber, headerMap, 'FinishedAt', now);
-
-    // failed 後仍需透過 createPendingReplyFromTask() 建立通知，不能只更新 Queue 狀態。
-    // 下一次同 conversationId 有訊息時，由主流程 deliverPendingReply_() 安全交付。
-    createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, error), 'news_url_failed');
-  }
+  // 暫時性錯誤才重試；已知永久性錯誤，例如 unsupported_social_platform，不應排回 pending。
+  const retry = shouldRetry && retryCount < MAX_NEWS_QUEUE_RETRY_COUNT;
+  const updates = { UpdatedAt: now, RetryCount: retryCount, LastErrorType: errorType,
+    LastErrorText: truncateForSheet(diagnosticText), Status: retry ? 'pending' : 'failed' };
+  if (retry) updates.NextRunAt = new Date(now.getTime() + retryCount * 2 * 60 * 1000);
+  else updates.FinishedAt = now;
+  return withQueueTaskResult_(NEWS_URL_QUEUE_SHEET_NAME, task, updates, function() {
+    if (!retry) createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, error), 'news_url_failed');
+  });
 }
 
 /**
@@ -1116,41 +1113,46 @@ function removeSpecialTopicTerms_(specialTopic, termsToRemove) {
 
 function appendNewsInboxRow_(item) {
   const result = withDataMutationLock_(function() {
-    const sheet = ensureNewsInboxSheet_();
-    // 時間戳必須在取得鎖後產生，並在釋放前完成寫入，避免落在已封存的取樣之前。
-    const now = new Date();
-    const valuesByHeader = {
-      NewsId: createSimpleId('news'),
-      CreatedAt: now,
-      ConversationId: item.conversationId || '',
-      SourceType: item.sourceType || '',
-      UserId: item.userId || '',
-      GroupId: item.groupId || '',
-      RoomId: item.roomId || '',
-      Url: item.url || '',
-      Title: truncateForSheet(item.title || ''),
-      Category: item.category || '待分類',
-      Brief: truncateForSheet(item.brief || ''),
-      Angle: truncateForSheet(item.angle || ''),
-      TopicPotential: item.topicPotential || '中',
-      SourceMode: item.sourceMode || '',
-      Status: item.status || 'ok',
-      ErrorText: truncateForSheet(item.errorText || ''),
-      Outline: truncateForSheet(item.outline || ''),
-      SpecialTopic: truncateForSheet(item.specialTopic || '無'),
-      CategoryReason: truncateForSheet(item.categoryReason || ''),
-      CategoryConfidence: item.categoryConfidence === '' || typeof item.categoryConfidence === 'undefined' ? '' : item.categoryConfidence,
-      MatchedEntities: truncateForSheet(item.matchedEntities || '無'),
-      ClassificationWarning: truncateForSheet(item.classificationWarning || ''),
-      StoryKey: truncateForSheet(normalizeStoryKey_(item.storyKey, item))
-    };
-
-    // 依實際表頭對位，避免舊 Sheet 補上 Outline 後因欄位位置不同而寫錯資料。
-    appendRowByHeaders_(sheet, valuesByHeader);
+    appendNewsInboxRowLocked_(item);
     SpreadsheetApp.flush();
     return { status: 'saved' };
   });
   if (result.status === 'busy') throw createAiExecutionBudgetError_('News inbox write lock is busy.');
+}
+
+// 同步入口與已核對 Queue 身分的提交段，各自只取得一次外層鎖。
+function appendNewsInboxRowLocked_(item) {
+  const sheet = ensureNewsInboxSheet_();
+  // 時間戳必須在取得鎖後產生，並在釋放前完成寫入，避免落在已封存的取樣之前。
+  const now = new Date();
+  const valuesByHeader = {
+    NewsId: createSimpleId('news'),
+    CreatedAt: now,
+    ConversationId: item.conversationId || '',
+    SourceType: item.sourceType || '',
+    UserId: item.userId || '',
+    GroupId: item.groupId || '',
+    RoomId: item.roomId || '',
+    Url: item.url || '',
+    Title: truncateForSheet(item.title || ''),
+    Category: item.category || '待分類',
+    Brief: truncateForSheet(item.brief || ''),
+    Angle: truncateForSheet(item.angle || ''),
+    TopicPotential: item.topicPotential || '中',
+    SourceMode: item.sourceMode || '',
+    Status: item.status || 'ok',
+    ErrorText: truncateForSheet(item.errorText || ''),
+    Outline: truncateForSheet(item.outline || ''),
+    SpecialTopic: truncateForSheet(item.specialTopic || '無'),
+    CategoryReason: truncateForSheet(item.categoryReason || ''),
+    CategoryConfidence: item.categoryConfidence === '' || typeof item.categoryConfidence === 'undefined' ? '' : item.categoryConfidence,
+    MatchedEntities: truncateForSheet(item.matchedEntities || '無'),
+    ClassificationWarning: truncateForSheet(item.classificationWarning || ''),
+    StoryKey: truncateForSheet(normalizeStoryKey_(item.storyKey, item))
+  };
+
+  // 依實際表頭對位，避免舊 Sheet 補上 Outline 後因欄位位置不同而寫錯資料。
+  appendRowByHeaders_(sheet, valuesByHeader);
 }
 
 function classifyNewsUrlError_(errorText) {

@@ -695,6 +695,12 @@ function headerSheet(headers) {
   };
 }
 
+function queueTaskSheet(task) {
+  return readOnlySheet([{ TaskId: task.taskId, ConversationId: task.conversationId, Status: 'processing',
+    StartedAt: new Date(task.startedAtMs), UpdatedAt: '', FinishedAt: '', ResultText: '', ErrorText: '',
+    RetryCount: task.retryCount || 0, LastErrorType: '', LastErrorText: '', NextRunAt: '' }]);
+}
+
 function pendingReplySheet(records) {
   const headers = ['PendingId', 'CreatedAt', 'ConversationId', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'ReplyText', 'Status', 'DeliveredAt', 'ReplyMode'];
   const data = records.map(record => headers.map(header => record[header] || ''));
@@ -1126,16 +1132,18 @@ check('synchronous and queued news persist the same analysis in reordered column
   const analysis = { title: '測試新聞', outline: '完整新聞內容'.repeat(20), category: '科技與 AI', brief: '新聞的自然簡介', angle: '可聊切角', topicPotential: '高', specialTopic: '無', categoryReason: '測試分類理由', categoryConfidence: 0, matchedEntities: '測試公司', classificationWarning: '', storyKey: '測試公司產品更新事件' };
   const fieldHeaders = { title: 'Title', outline: 'Outline', category: 'Category', brief: 'Brief', angle: 'Angle', topicPotential: 'TopicPotential', specialTopic: 'SpecialTopic', categoryReason: 'CategoryReason', categoryConfidence: 'CategoryConfidence', matchedEntities: 'MatchedEntities', classificationWarning: 'ClassificationWarning', storyKey: 'StoryKey' };
   const headers = ['SourceMode', 'ConversationId', 'Url', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'Custom'].concat(Object.values(fieldHeaders).reverse());
-  const sheet = headerSheet(headers), queue = headerSheet(['Status']), changes = {};
+  const task = { taskId: 'task', startedAtMs: now, conversationId: 'user:user1', sourceType: 'user',
+    userId: 'user1', groupId: 'group1', roomId: 'room1', url: 'https://example.org/news' };
+  const sheet = headerSheet(headers), queue = queueTaskSheet(task), changes = {};
   const url = 'https://example.org/news';
   fetchImpl = () => responsesCompletion(JSON.stringify(analysis));
-  withStubs({ ensureNewsInboxSheet_: () => sheet, ensureNewsUrlQueueSheet_: () => queue,
+  withStubs({ ensureNewsInboxSheet_: () => sheet, getSpreadsheet_: () => ({ getSheetByName: () => queue }),
     fetchAndExtractWebPageByReaderLayer_: () => ({ ok: true, mainText: '正文', readerRoute: 'jina_reader' }),
     setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
   }, () => {
     const direct = context.handleDirectNewsUrlMessage_(event('text'), 'user:user1', url);
     assert.equal(direct.replyText, analysis.brief); assert.equal(direct.queued, false);
-    context.processSingleNewsUrlTask_({ sheetRowNumber: 2, conversationId: 'user:user1', sourceType: 'user', userId: 'user1', groupId: 'group1', roomId: 'room1', url });
+    context.processSingleNewsUrlTask_(task);
     assert.equal(changes.Status, 'done'); assert.equal(sheet.appended.length, 2);
     for (const [i, row] of sheet.appended.entries()) {
       const record = Object.fromEntries(headers.map((header, j) => [header, row[j]]));
@@ -1148,10 +1156,10 @@ check('synchronous and queued news persist the same analysis in reordered column
 });
 
 check('WebTask success and failure preserve PendingReplies source fields and task type', () => {
-  const queue = headerSheet(['Status']), pendingSheet = headerSheet([]), changes = {};
-  const task = Object.freeze({ sheetRowNumber: 2, taskId: 'task', conversationId: 'room:r', sourceType: 'room', userId: 'u', groupId: '', roomId: 'r', userPrompt: 'prompt', urls: 'https://example.org', taskType: 'web_lazy_summary' });
-  for (const failed of [false, true]) withStubs({ ensureWebTaskQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
-    processWebLazySummaryTask_: () => { if (failed) throw new Error('test failure'); return '快讀完成'; },
+  const task = Object.freeze({ taskId: 'task', startedAtMs: now, conversationId: 'room:r', sourceType: 'room', userId: 'u', groupId: '', roomId: 'r', userPrompt: 'prompt', urls: 'https://example.org', taskType: 'web_lazy_summary' });
+  const queue = queueTaskSheet(task), pendingSheet = headerSheet([]), changes = {};
+  for (const failed of [false, true]) withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => queue }), ensurePendingRepliesSheet_: () => pendingSheet,
+    processWebLazySummaryTask_: () => { if (failed) throw new Error('test failure'); return { status: 'ready', resultText: '快讀完成', summaryResults: [] }; },
     setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
   }, () => {
     context.processSingleWebTask_(task);
@@ -1165,12 +1173,13 @@ check('WebTask success and failure preserve PendingReplies source fields and tas
 
 check('NewsUrlQueue retains permanent failure, retry backoff and retry exhaustion', () => {
   for (const [status, retryCount, shouldRetry] of [[404, 0, false], [408, 0, true], [429, 1, true], [503, 2, false], [0, 0, true]]) {
-    const queue = headerSheet(['Status']), pendingSheet = headerSheet([]), changes = {};
-    withStubs({ ensureNewsUrlQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
+    const task = { taskId: 'task', startedAtMs: now, conversationId: 'group:a', url: 'https://example.org', retryCount };
+    const queue = queueTaskSheet(task), pendingSheet = headerSheet([]), changes = {};
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => queue }), ensurePendingRepliesSheet_: () => pendingSheet,
       fetchAndExtractWebPageByReaderLayer_: () => ({ ok: false, httpStatus: status, statusCode: 200, retryable: true, errorType: 'reader_error', error: 'read failed' }),
       setCellByHeader_: (_sheet, _row, _map, field, fieldValue) => { changes[field] = fieldValue; }
     }, () => {
-      context.processSingleNewsUrlTask_({ sheetRowNumber: 2, conversationId: 'group:a', url: 'https://example.org', retryCount });
+      context.processSingleNewsUrlTask_(task);
       assert.equal(changes.Status, shouldRetry ? 'pending' : 'failed'); assert.equal(changes.RetryCount, retryCount + 1);
       if (shouldRetry) assert.equal(changes.NextRunAt.getTime() - changes.UpdatedAt.getTime(), (retryCount + 1) * 120000);
       assert.equal(pendingSheet.appended.length, shouldRetry ? 0 : 1);
@@ -3304,11 +3313,12 @@ check('v1162 Reader and background notifications keep safe codes without guessin
     assert(text.includes((type === 'PRIVATE_TYPE' ? 'READER_ERROR' : type.toUpperCase()) + '｜HTTP 403'));
     assert(!/PRIVATE|擋爬蟲|需要登入/.test(text));
   }
-  const queue = headerSheet(['Status']), pendingSheet = headerSheet([]);
+  const task = { taskId: 'task', startedAtMs: now, conversationId: 'user:test', taskType: 'web_lazy_summary' };
+  const queue = queueTaskSheet(task), pendingSheet = headerSheet([]);
   const typed = Object.assign(Error('PRIVATE_BODY'), { errorType: 'ai_web_search_failed', errorReason: 'search_limit', httpStatus: 200 });
-  withStubs({ ensureWebTaskQueueSheet_: () => queue, ensurePendingRepliesSheet_: () => pendingSheet,
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => queue }), ensurePendingRepliesSheet_: () => pendingSheet,
     processWebLazySummaryTask_: () => { throw typed; }, setCellByHeader_: () => {} }, () => {
-    context.processSingleWebTask_({ sheetRowNumber: 2, conversationId: 'user:test', taskId: 'task', taskType: 'web_lazy_summary' });
+    context.processSingleWebTask_(task);
     assert(pendingSheet.appended[0][7].includes('SEARCH_LIMIT｜HTTP 200')); assert(!pendingSheet.appended[0][7].includes('PRIVATE_BODY'));
   });
 });

@@ -1,4 +1,4 @@
-// 固定週期封存／週編輯台回歸；只用 Node 內建模組，所有 GAS／HTTP 都是記憶體 mock。
+// 固定週期封存／週編輯台／Queue 回歸；只用 Node 內建模組，所有 GAS／HTTP 都是記憶體 mock。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -619,7 +619,7 @@ for (const hasExisting of [false, true]) for (const origin of ['manual', 'auto']
     assert(!e.held());
   });
 }
-check('busy news insertion throws, sync queues, background retries, manual never claims saved', () => {
+check('busy news insertion throws, sync queues, background stays incomplete, manual never claims saved', () => {
   const e = env(), analysis = { title: '新聞標題', outline: '完整新聞', brief: '新聞簡介', category: '科技與 AI',
     angle: '節目切角', topicPotential: '高', specialTopic: '無', categoryConfidence: 90, storyKey: '新聞事件' };
   e.c.fetchAndExtractWebPageByReaderLayer_ = () => ({ ok: true, mainText: '新聞正文', readerRoute: 'jina_reader' });
@@ -635,9 +635,9 @@ check('busy news insertion throws, sync queues, background retries, manual never
   assert.throws(() => e.c.handleManualNewsSupplement_(event, 'group:a', 'https://example.org/news 新聞補件'));
   const queue = e.c.ensureNewsUrlQueueSheet_();
   e.c.appendRowByHeaders_(queue, { TaskId: 'task1', ConversationId: 'group:a', Status: 'processing', RetryCount: 0 });
-  e.c.processSingleNewsUrlTask_({ sheetRowNumber: 2, taskId: 'task1', conversationId: 'group:a',
-    url: 'https://example.org/news', retryCount: 0 });
-  assert.equal(queue.records()[0].Status, 'pending'); assert.equal(queue.records()[0].RetryCount, 1);
+  assert.equal(e.c.processSingleNewsUrlTask_({ taskId: 'task1', conversationId: 'group:a', startedAtMs: e.now(),
+    url: 'https://example.org/news', retryCount: 0 }).status, 'busy');
+  assert.equal(queue.records()[0].Status, 'processing'); assert.equal(queue.records()[0].RetryCount, 0);
   assert.equal(e.sheets.get('NewsInbox').records().length, 0);
 });
 check('all cleanup scopes hold one outer lock through row snapshot, deletion and flush', () => {
@@ -893,6 +893,359 @@ check('deployment guides keep auto off through setup, update Web App, verify man
     assert(start >= 0 && setup > 0 && deploy > setup && manual > deploy && enable > manual && install > enable, name);
     assert(section.slice(0, deploy).includes('autoEnabled=false'));
     assert(section.slice(deploy, enable).includes('#版本'));
+  }
+});
+
+function queueWork(e, kind, { id = 'task-a', scope = 'group:a', status = 'processing', retryCount = 0, urls = ['https://example.org/queue'] } = {}) {
+  const isNews = kind === 'news', sheet = isNews ? e.c.ensureNewsUrlQueueSheet_() : e.c.ensureWebTaskQueueSheet_();
+  const task = { taskId: id, conversationId: scope, startedAtMs: e.now(), retryCount,
+    sourceType: scope.split(':')[0], userId: 'alice', groupId: scope.startsWith('group:') ? scope.slice(6) : '',
+    roomId: scope.startsWith('room:') ? scope.slice(5) : '', url: urls[0], urls: urls.join('\n'),
+    userPrompt: urls.join('\n'), taskType: kind === 'program' ? 'program_topic_analysis' : 'web_lazy_summary' };
+  e.c.appendRowByHeaders_(sheet, { TaskId: id, ConversationId: scope, Status: status,
+    StartedAt: status === 'processing' ? new e.c.Date(task.startedAtMs) : '', RetryCount: retryCount,
+    SourceType: task.sourceType, UserId: task.userId, GroupId: task.groupId, RoomId: task.roomId,
+    Url: task.url, Urls: task.urls, UserPrompt: task.userPrompt, TaskType: task.taskType });
+  return { task, sheet, name: isNews ? 'NewsUrlQueue' : 'WebTaskQueue',
+    cleanup: () => e.c.performDataCleanup_(isNews ? 'news_data' : 'web_data', scope),
+    run: () => isNews ? e.c.processSingleNewsUrlTask_(task) : e.c.processSingleWebTask_(task),
+    schedule: () => isNews ? e.c.processNewsUrlQueue() : e.c.processWebTaskQueue() };
+}
+function queueServices(e, { outcome = 'success', onRead = () => {}, onAi = () => {} } = {}) {
+  const calls = { readers: 0, ai: 0 };
+  e.c.fetchAndExtractWebPageByReaderLayer_ = url => {
+    assert(!e.held()); calls.readers++; onRead(url);
+    if (outcome === 'retry' || outcome === 'failed') return { ok: false, errorType: 'reader_error',
+      error: 'PRIVATE_READER_BODY', httpStatus: outcome === 'retry' ? 503 : 404, retryable: outcome === 'retry' };
+    return { ok: true, url, title: '測試新聞', mainText: '測試新聞正文', contentType: 'article', readerRoute: 'jina_reader' };
+  };
+  const infer = () => {
+    assert(!e.held()); calls.ai++; onAi();
+    if (outcome === 'ai_failed') throw Object.assign(Error('PRIVATE_AI_BODY'), { errorType: 'ai_timeout', retryable: true });
+  };
+  e.c.analyzeNewsUrlWithAi_ = () => {
+    infer(); return { title: 'Queue 新聞', brief: '素材簡介', outline: '完整正文', category: '科技與 AI',
+      angle: '節目切角', topicPotential: '高', storyKey: 'Queue 新聞事件', categoryConfidence: 0.9 };
+  };
+  e.c.runWebLazySummaryAi_ = () => {
+    infer(); return { title: '快讀標題', summary: '快讀摘要', keyPoints: ['重點'], warnings: [],
+      contentTypeLabel: '新聞資訊', topicPotential: '高', extractionConfidence: 0.9 };
+  };
+  e.c.runAiMemoryTask = () => { infer(); return { ok: true, text: '節目分析結果' }; };
+  return calls;
+}
+function scopeRows(e, name, scope = 'group:a') {
+  return e.sheets.get(name)?.records().filter(row => row.ConversationId === scope) || [];
+}
+
+for (const kind of ['news', 'web', 'program']) {
+  check(kind + ' relocates a surviving task after preceding rows are deleted', () => {
+    const e = env(), preceding = queueWork(e, kind, { id: 'task-other', scope: 'group:b' });
+    const work = queueWork(e, kind);
+    let shifted = false;
+    const calls = queueServices(e, { onAi: () => {
+      if (!shifted) { shifted = true; preceding.cleanup(); }
+    } });
+    assert.equal(work.run().status, 'committed');
+    assert.equal(work.sheet.records().length, 1); assert.equal(work.sheet.records()[0].TaskId, 'task-a');
+    assert.equal(work.sheet.records()[0].Status, 'done'); assert.equal(calls.ai, 1);
+    assert.equal(scopeRows(e, 'PendingReplies').length, kind === 'news' ? 0 : 1);
+    assert(!e.held());
+  });
+  for (const phase of ['reader', 'ai']) check(kind + ' cancellation during ' + phase + ' never recreates deleted data or replies', () => {
+    const e = env(), work = queueWork(e, kind), other = queueWork(e, kind, { id: 'task-b', scope: 'group:b' });
+    const beforeOther = JSON.stringify(other.sheet.records()[1]);
+    let once = false;
+    const cancel = () => { if (!once) { once = true; work.cleanup(); } };
+    const calls = queueServices(e, { onRead: phase === 'reader' ? cancel : undefined, onAi: phase === 'ai' ? cancel : undefined });
+    assert.equal(work.run().status, 'cancelled');
+    assert.equal(JSON.stringify(other.sheet.records()[0]), beforeOther);
+    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
+    assert.equal(calls.ai, phase === 'reader' ? 0 : 1); assert(!e.held());
+  });
+  check(kind + ' missing task before processing skips all Reader and AI work', () => {
+    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
+    work.cleanup(); assert.equal(work.run().status, 'cancelled');
+    assert.deepEqual(calls, { readers: 0, ai: 0 }); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+  });
+  check(kind + ' a replacement task at the same row survives the old result', () => {
+    const e = env(), old = queueWork(e, kind); let replacement;
+    queueServices(e, { onAi: () => {
+      old.cleanup(); replacement = queueWork(e, kind, { id: 'new-task' });
+    } });
+    assert.equal(old.run().status, 'cancelled');
+    assert.equal(old.sheet.records()[0].TaskId, 'new-task'); assert.equal(old.sheet.records()[0].Status, 'processing');
+    queueServices(e); assert.equal(replacement.run().status, 'committed');
+    assert.equal(old.sheet.records()[0].TaskId, 'new-task'); assert.equal(old.sheet.records()[0].Status, 'done');
+    const sources = scopeRows(e, kind === 'news' ? 'NewsInbox' : 'WebSummary');
+    assert.equal(sources.length, kind === 'program' ? 0 : 1);
+  });
+}
+for (const kind of ['news', 'web', 'program']) check(kind + ' public handler claims with StartedAt, flushes and processes outside the lock', () => {
+  const e = env(), work = queueWork(e, kind, { status: 'pending' });
+  let snapshots = 0;
+  const worker = kind === 'news' ? 'processSingleNewsUrlTask_' : 'processSingleWebTask_', original = e.c[worker];
+  e.c[worker] = task => {
+    assert(!e.held()); assert(!Object.hasOwn(task, 'sheetRowNumber'));
+    assert.equal(task.startedAtMs, e.now());
+    assert.equal(work.sheet.records()[0].Status, 'processing');
+    snapshots++;
+    return original(task);
+  };
+  const calls = queueServices(e, { onRead: () => work.schedule() });
+  e.setFlush(() => assert(e.held()));
+  work.schedule();
+  assert.equal(snapshots, 1); assert.equal(calls.ai, 1); assert.equal(work.sheet.records()[0].Status, 'done');
+});
+check('news retry and permanent failure cannot update a different room or create a cancelled notification', () => {
+  for (const outcome of ['retry', 'failed', 'ai_failed']) for (const cancel of [false, true]) {
+    const e = env(), preceding = queueWork(e, 'news', { id: 'preceding', scope: 'group:b' });
+    const work = queueWork(e, 'news');
+    queueServices(e, { outcome, onRead: () => cancel ? work.cleanup() : preceding.cleanup(),
+      onAi: () => cancel ? work.cleanup() : undefined });
+    const result = work.run();
+    if (cancel) {
+      assert.equal(result.status, 'cancelled'); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+      assert.equal(preceding.sheet.records()[0].TaskId, 'preceding'); assert.equal(preceding.sheet.records()[0].Status, 'processing');
+    } else {
+      assert.equal(result.status, 'committed');
+      assert.equal(work.sheet.records()[0].TaskId, 'task-a');
+      assert.equal(work.sheet.records()[0].Status, outcome === 'failed' ? 'failed' : 'pending');
+      assert.equal(scopeRows(e, 'PendingReplies').length, outcome === 'failed' ? 1 : 0);
+    }
+  }
+});
+check('web and program AI failure revalidates ownership before creating its failure reply', () => {
+  for (const kind of ['web', 'program']) for (const cancelled of [false, true]) {
+    const e = env(), work = queueWork(e, kind);
+    queueServices(e, { outcome: 'ai_failed', onAi: () => { if (cancelled) work.cleanup(); } });
+    const result = work.run();
+    assert.equal(result.status, cancelled ? 'cancelled' : 'committed');
+    assert.equal(scopeRows(e, 'PendingReplies').length, cancelled ? 0 : 1);
+    if (!cancelled) assert.equal(work.sheet.records()[0].Status, kind === 'program' ? 'failed' : 'done');
+    assert(!e.logs.join('').includes('PRIVATE_AI_BODY'));
+  }
+});
+check('news batch cancellation skips the second claimed task and does not revive either result', () => {
+  const e = env(), first = queueWork(e, 'news', { status: 'pending' });
+  queueWork(e, 'news', { id: 'second', status: 'pending' });
+  const calls = queueServices(e, { onAi: () => first.cleanup() });
+  first.schedule(); assert.equal(calls.ai, 1); assert.equal(calls.readers, 1);
+  assert.equal(first.sheet.records().length, 0); assert.equal(scopeRows(e, 'NewsInbox').length, 0);
+});
+check('multi URL web cancellation stops later URLs and saves no partial or late summaries', () => {
+  const e = env(), work = queueWork(e, 'web', { urls: ['https://example.org/1', 'https://example.org/2', 'https://example.org/3'] });
+  const calls = queueServices(e, { onAi: () => work.cleanup() });
+  assert.equal(work.run().status, 'cancelled'); assert.equal(calls.readers, 1); assert.equal(calls.ai, 1);
+  assert.equal(scopeRows(e, 'WebSummary').length, 0); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+});
+check('multi URL web keeps each success or failure record and the existing combined reply', () => {
+  const e = env(), work = queueWork(e, 'web', { urls: ['https://example.org/1', 'https://example.org/2'] });
+  const calls = queueServices(e), read = e.c.fetchAndExtractWebPageByReaderLayer_;
+  e.c.fetchAndExtractWebPageByReaderLayer_ = url => url.endsWith('/2')
+    ? { ok: false, errorType: 'reader_error', httpStatus: 404 } : read(url);
+  assert.equal(work.run().status, 'committed'); assert.equal(calls.ai, 1);
+  assert.deepEqual(scopeRows(e, 'WebSummary').map(row => row.Status), ['ok', 'failed']);
+  assert.equal(scopeRows(e, 'PendingReplies').length, 1); assert.equal(work.sheet.records()[0].Status, 'done');
+});
+check('queue identity guards reject missing, duplicate, changed room, state or claim time without fallback rows', () => {
+  for (const kind of ['news', 'web']) for (const invalid of ['blank', 'duplicate', 'scope', 'status', 'started', 'missing-start']) {
+    const e = env(), work = queueWork(e, kind), calls = queueServices(e), headers = work.sheet.data[0];
+    if (invalid === 'blank') work.task.taskId = '';
+    if (invalid === 'duplicate') queueWork(e, kind, { scope: 'group:b' });
+    if (invalid === 'scope') work.sheet.data[1][headers.indexOf('ConversationId')] = 'group:b';
+    if (invalid === 'status') work.sheet.data[1][headers.indexOf('Status')] = 'done';
+    if (invalid === 'started') work.sheet.data[1][headers.indexOf('StartedAt')] = new e.c.Date(e.now() + 1);
+    if (invalid === 'missing-start') delete work.task.startedAtMs;
+    const before = JSON.stringify(work.sheet.data);
+    assert(['failed', 'cancelled'].includes(work.run().status)); assert.deepEqual(calls, { readers: 0, ai: 0 });
+    assert.equal(JSON.stringify(work.sheet.data), before); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+  }
+});
+check('claim skips blank and duplicate task IDs and never dispatches an ambiguous task', () => {
+  for (const kind of ['news', 'web']) {
+    const e = env(), work = queueWork(e, kind, { id: '', status: 'pending' });
+    queueWork(e, kind, { id: 'duplicate', status: 'pending' });
+    queueWork(e, kind, { id: 'duplicate', scope: 'group:b', status: 'pending' });
+    const calls = queueServices(e); work.schedule();
+    assert.deepEqual(calls, { readers: 0, ai: 0 });
+    assert(work.sheet.records().every(row => row.Status === 'pending')); assert(!e.held());
+  }
+});
+check('queue read, schema and retrieval failure stays distinct from cancellation and never creates a missing queue', () => {
+  for (const kind of ['news', 'web']) for (const failure of ['read', 'missing-sheet', 'missing-header', 'duplicate-header', 'retrieve']) {
+    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
+    if (failure === 'read') work.sheet.failRead = true;
+    if (failure === 'missing-sheet') e.sheets.delete(work.name);
+    if (failure === 'missing-header') work.sheet.data[0][0] = 'NotTaskId';
+    if (failure === 'duplicate-header') work.sheet.data[0].push('TaskId');
+    if (failure === 'retrieve') e.c.getSpreadsheet_ = () => { throw Error('PRIVATE_SHEET_RETRIEVAL'); };
+    assert.equal(work.run().status, 'failed'); assert.deepEqual(calls, { readers: 0, ai: 0 });
+    assert(!e.logs.join('').includes('PRIVATE_'));
+    if (failure === 'missing-sheet') assert(!e.sheets.has(work.name));
+  }
+});
+check('queue commit rechecks headers and ownership after AI and before any output is written', () => {
+  for (const kind of ['news', 'web', 'program']) for (const mutation of ['missing-header', 'read-error', 'changed-start']) {
+    const e = env(), work = queueWork(e, kind);
+    queueServices(e, { onAi: () => {
+      if (mutation === 'missing-header') work.sheet.data[0][work.sheet.data[0].indexOf('FinishedAt')] = 'NotFinishedAt';
+      if (mutation === 'read-error') work.sheet.failRead = true;
+      if (mutation === 'changed-start') work.sheet.data[1][work.sheet.data[0].indexOf('StartedAt')] = new e.c.Date(e.now() + 1);
+    } });
+    assert.equal(work.run().status, mutation === 'changed-start' ? 'cancelled' : 'failed');
+    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
+  }
+});
+check('queue commit owns one lock through output writes, terminal status and flush, excluding cleanup', () => {
+  for (const kind of ['news', 'web', 'program']) {
+    const e = env(), work = queueWork(e, kind); queueServices(e);
+    let flushed = false;
+    e.setFlush(() => {
+      assert(e.held()); assert.throws(work.cleanup);
+      if (!flushed) assert.equal(work.sheet.records()[0].Status, 'processing');
+      flushed = true;
+    });
+    assert.equal(work.run().status, 'committed'); assert(flushed); assert(!e.held());
+    e.setFlush(null); work.cleanup();
+    assert.equal(scopeRows(e, 'NewsInbox').length, 0); assert.equal(scopeRows(e, 'WebSummary').length, 0);
+  }
+});
+check('queue commit waits within a finite budget and uses the same single model result', () => {
+  for (const kind of ['news', 'web', 'program']) {
+    const e = env(), work = queueWork(e, kind), began = e.now();
+    const calls = queueServices(e, { onAi: () => e.setBusyUntil(e.now() + 3000) });
+    assert.equal(work.run().status, 'committed'); assert.equal(e.now() - began, 3000);
+    assert.equal(calls.ai, 1); assert.equal(work.sheet.records()[0].Status, 'done');
+  }
+});
+check('permanent commit contention leaves unfinished work with a safe diagnostic and no duplicate AI or output', () => {
+  for (const kind of ['news', 'web', 'program']) {
+    const e = env(), work = queueWork(e, kind), began = e.now();
+    const calls = queueServices(e, { onAi: () => e.setBusy(true) });
+    assert.equal(work.run().status, 'busy'); assert.equal(e.now() - began, 5000); assert.equal(calls.ai, 1);
+    assert.equal(work.sheet.records()[0].Status, 'processing');
+    assert(e.logs.some(line => line.startsWith('QUEUE_TASK_STATUS ') && line.includes('local_time_budget')));
+    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
+  }
+});
+check('queue write and flush errors never mark done early, recreate failure notifications or rerun the model', () => {
+  for (const kind of ['news', 'web', 'program']) for (const failure of ['output', 'fields', 'flush']) {
+    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
+    if (failure === 'output') {
+      const factory = kind === 'news' ? 'ensureNewsInboxSheet_' : kind === 'web' ? 'ensureWebSummarySheet_' : 'ensurePendingRepliesSheet_';
+      e.c[factory] = () => { throw Error('PRIVATE_OUTPUT_WRITE'); };
+    }
+    if (failure === 'fields') {
+      const original = e.c.setCellByHeader_;
+      e.c.setCellByHeader_ = (sheet, row, headers, name, value) => {
+        if (name === 'UpdatedAt') throw Error('PRIVATE_FIELD_WRITE');
+        return original(sheet, row, headers, name, value);
+      };
+    }
+    if (failure === 'flush') e.setFlush(() => { throw Error('PRIVATE_FLUSH_WRITE'); });
+    assert.equal(work.run().status, 'failed'); assert.equal(calls.ai, 1); assert(!e.held());
+    assert.equal(work.sheet.records()[0].Status, 'processing');
+    assert(scopeRows(e, 'PendingReplies').length <= 1);
+    assert(!e.logs.join('').includes('PRIVATE_'));
+    if (failure === 'output') assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+  }
+});
+check('a second worker invocation after commit cannot generate duplicate data, pending replies or AI', () => {
+  for (const kind of ['news', 'web', 'program']) {
+    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
+    assert.equal(work.run().status, 'committed');
+    const snapshot = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
+    assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
+    assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), snapshot);
+  }
+});
+check('queue claim uses the flushed Sheet timestamp even when storage changes millisecond precision', () => {
+  for (const kind of ['news', 'web']) {
+    const e = env({ clock: end + 900123 }), work = queueWork(e, kind, { status: 'pending' });
+    const setCell = e.c.setCellByHeader_;
+    e.c.setCellByHeader_ = (sheet, row, headers, name, value) => {
+      const stored = name === 'StartedAt' ? new e.c.Date(Math.round(value.getTime() / 1000) * 1000) : value;
+      return setCell(sheet, row, headers, name, stored);
+    };
+    const calls = queueServices(e); work.schedule();
+    assert.equal(calls.ai, 1); assert.equal(work.sheet.records()[0].Status, 'done');
+  }
+});
+check('queue commit refreshes reordered headers instead of reusing stale column positions', () => {
+  for (const kind of ['news', 'web']) {
+    const e = env(), work = queueWork(e, kind);
+    queueServices(e, { onAi: () => { work.sheet.data = work.sheet.data.map(row => row.slice().reverse()); } });
+    assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].TaskId, 'task-a');
+    assert.equal(work.sheet.records()[0].Status, 'done');
+  }
+});
+check('queued news uses its guarded commit timestamp and remains visible to the correct fixed archive period', () => {
+  for (const commitAt of [end - 1, end]) {
+    const e = env({ clock: end - 2 }), work = queueWork(e, 'news');
+    queueServices(e, { onAi: () => e.setNow(commitAt) });
+    assert.equal(work.run().status, 'committed');
+    assert.equal(scopeRows(e, 'NewsInbox')[0].CreatedAt.getTime(), commitAt);
+    e.setNow(end);
+    assert.equal(e.run().status, commitAt === end ? 'empty' : 'completed');
+    e.setNow(end + week);
+    assert.equal(e.run().status, commitAt === end ? 'completed' : 'empty');
+    assert.equal(e.sheets.get('WeeklySummary').records().length, 1);
+  }
+});
+check('clearing only PendingReplies leaves active queue work eligible to complete normally', () => {
+  for (const kind of ['news', 'web', 'program']) {
+    const e = env(), work = queueWork(e, kind);
+    queueServices(e, { onAi: () => e.c.performDataCleanup_('pending_replies', 'group:a') });
+    assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].Status, 'done');
+    assert.equal(scopeRows(e, 'PendingReplies').length, kind === 'news' ? 0 : 1);
+  }
+});
+check('cleanup that wins during commit lock wait cancels the result before any persistence', () => {
+  for (const kind of ['news', 'web']) {
+    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
+    const getLock = e.c.LockService.getScriptLock; let waiting = false;
+    e.c.LockService.getScriptLock = () => {
+      const lock = getLock(), acquire = lock.tryLock;
+      lock.tryLock = waitMs => {
+        if (waitMs === 5000 && !waiting) { waiting = true; work.cleanup(); }
+        return acquire(waitMs);
+      };
+      return lock;
+    };
+    assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
+    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
+    assert(!e.held());
+  }
+});
+check('queue diagnostics never contain task identifiers, scope, source URLs or raw model errors', () => {
+  for (const kind of ['news', 'web', 'program']) {
+    const e = env(), work = queueWork(e, kind, { id: 'PRIVATE_TASK https://private.example/task' });
+    queueServices(e, { outcome: 'ai_failed' });
+    assert.equal(work.run().status, 'committed');
+    assert(!e.logs.join('').includes('PRIVATE_')); assert(!e.logs.join('').includes('group:a'));
+    assert(!e.logs.join('').includes('https://'));
+  }
+});
+check('ambiguous final queue flush failure never creates a second reply or regenerates a committed result', () => {
+  for (const kind of ['news', 'web', 'program']) {
+    const e = env(), work = queueWork(e, kind), calls = queueServices(e); let flushes = 0;
+    e.setFlush(() => { if (++flushes === 2) throw Error('PRIVATE_FINAL_FLUSH'); });
+    assert.equal(work.run().status, 'failed'); assert.equal(work.sheet.records()[0].Status, 'done');
+    e.setFlush(null);
+    const persisted = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
+    assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
+    assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), persisted);
+    assert(!e.logs.join('').includes('PRIVATE_FINAL_FLUSH'));
+  }
+});
+check('news treats even a falsy thrown value as failure and never stores an empty successful analysis', () => {
+  for (const error of [null, undefined, 0, '']) {
+    const e = env(), work = queueWork(e, 'news'); queueServices(e);
+    e.c.analyzeNewsUrlWithAi_ = () => { throw error; };
+    assert.equal(work.run().status, 'committed');
+    assert.notEqual(work.sheet.records()[0].Status, 'done');
+    assert.equal(scopeRows(e, 'NewsInbox').length, 0);
   }
 });
 

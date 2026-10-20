@@ -21,7 +21,7 @@ MEGA浣 / 小浣：**v1.17.0 Weekly News Archive Edition**（2026-10-20），主
 - `processScheduledNewsArchives()` 每日台灣時間中午約 12:00～12:30 檢查，週三新增到期工作，其餘日補跑。使用 `atHour(12).nearMinute(15).everyDays(1).inTimezone('Asia/Taipei')`；GAS 為近似時間，不能保證 12:00 準點。依據：[ClockTriggerBuilder 官方契約](https://developers.google.com/apps-script/reference/script/clock-trigger-builder)。
 - 每次每聊天室最多一個週期，先舊後新；總檢查預算 180 秒、每次 AI cap 60 秒，輪替聊天室先後以免尾端長期等待。維持原 service deadline，AI 前後均短暫持有 ScriptLock，等待 AI 時不鎖住其他工作。
 - ArchiveKey 包含聊天室 SHA-256、news 與精確起迄毫秒，寫入前精確掃描整張 WeeklySummary 防重，不受記憶讀取的最近 100 列限制。摘要寫入／flush 後才推進游標；若進度更新失敗，下次從既有 key 恢復，不再生成摘要。LINE 回覆失敗不撤銷已完成封存。
-- 新聞寫入在取得共用 ScriptLock 後才產生 CreatedAt，append／flush 完成後才放鎖；封存來源快照也在此鎖內讀取。先取得鎖並產生截止前時間戳者歸原週；封存先取得鎖時，後續入庫依當下時間歸期。空期與已有新聞的週期同樣受保護。鎖忙不得宣稱收件成功，同步入口回既有 Queue、背景入口按既有規則重試，人工補件回報未完成。
+- 新聞寫入在取得共用 ScriptLock 後才產生 CreatedAt，append／flush 完成後才放鎖；封存來源快照也在此鎖內讀取。先取得鎖並產生截止前時間戳者歸原週；封存先取得鎖時，後續入庫依當下時間歸期。空期與已有新聞的週期同樣受保護。鎖忙不得宣稱收件成功，同步入口回既有 Queue，人工補件回報未完成。背景 Reader／AI 失敗沿用重試規則，Queue 提交失敗另依下節查核。
 - 進度包含目前期間、執行 token／五分鐘 lease、自動嘗試數及最近錯誤。過期 lease 可接手；token／游標不符的遲到結果取消寫入。可重試失敗每日一次，同一期自動最多三次（含首次）；不可重試錯誤或達上限須處理後手動補跑。舊週失敗時不越過它處理新週。
 - 不可重試／達上限的狀態，不會被後續 Sheet 恢復檢查失敗改回可重試；已存在的有效 ArchiveKey 仍優先恢復。AI 結果提交最多等鎖 30 秒，且不得超過原 deadline 的剩餘時間，不再呼叫模型；若仍失敗，清除本次 token 並記安全失敗碼。連失敗狀態鎖也拿不到時，只寫本次 token 專屬的 `NEWS_ARCHIVE_STATE_*_FAILURE_*` 安全收據；讀取立即呈現失敗，下一次持鎖更新進度時消化、清除收據，不保存模型內容。Properties 服務也失效時仍以五分鐘 lease／既有 key 保守恢復，需維護者查核失敗紀錄。
 - 確實沒有資料只記錄 empty 及推進游標，不呼叫 AI、不新增空摘要。缺表、缺欄、讀取失敗、同聊天室有效來源的無效日期、重複 key 或不完整列均是失敗，不當成空期完成。所有來源必需維持現有 Sheet 契約。
@@ -55,6 +55,20 @@ MEGA浣 / 小浣：**v1.17.0 Weekly News Archive Edition**（2026-10-20），主
 快取改存已驗證結果與安全話題筆數，命中時重驗契約並保留全拒絕／部分採納差異；因此 `WEEKLY_EDITORIAL_CACHE_VERSION` 升為 `v1.17.0`，舊 key 自然失效，不需要清 Sheet 或 migration。模型輸出 schema 不變，拒絕的話題原文與未知 ID 不進快取。
 
 GAS／LINE 實測待部署後執行：測試聊天室先貼一般使用者討論及新聞，核對 #本週新聞 有話題且每則 URL 完整；長列表與超長單則新聞仍保留話題。用已有話題／無主題／來源不可讀樣本核對狀態差異。固定封存於邊界前不能跑、到期後只一列；自動後再手動及反向操作不重複。核對 12:00 邊界歸期、無資料期無空摘要、狀態失敗補跑與最早週優先；清理只在測試聊天室確認，清空後舊週不復活、其他聊天室保留。排程實際執行時間、API 延遲、Sheets flush／權限及真實模型話題品質均未經本機 mock 證明。
+
+## 背景 Queue 提交與清理
+
+NewsUrlQueue、WebTaskQueue 的完成／失敗／重試提交，不使用領取時的列號。領取在 ScriptLock 內標記 processing、flush 並回讀既有 StartedAt；任務只攜帶 TaskId、ConversationId 與本次時間識別。處理前、Reader 後、下一個網址前及提交時，重新按唯一 TaskId 定位，核對聊天室、processing 與 StartedAt。空白或重複 ID 拒絕領取；讀表／schema 錯誤回報失敗，不當成任務消失。
+
+提交與清理共用既有 ScriptLock，重新核對後才保存 NewsInbox／各網址的 WebSummary／PendingReplies，flush 輸出與欄位後才設定 done、failed 或 pending，再 flush 並釋放鎖。Reader／AI 仍在此資料鎖外執行；一般聊天／節目分析的既有 AiService memory lock 保留。快讀先把各網址成功或失敗結果留在記憶體，通過提交檢查後才保存。公開 handler、既有欄位、批次上限（新聞 2／Web 1）及 Reader／AI timeout 不變，沒有新增 Queue 欄位、Script Property、Trigger 或 migration。
+
+`#清空新聞 確認`、`#清空快讀 確認` 刪除目前聊天室 Queue 列後，舊工作以 cancelled 結束，不重建素材或失敗通知；已發出的 HTTP 無法撤回，遲到結果會丟棄。其他聊天室仍能在刪列後正確定位；同聊天室重新入隊的新 TaskId 也照常處理。已存在的 PendingReplies 不在這兩個清理範圍，另用 `#清空待回覆`；單獨清空待回覆不取消正常 Queue 工作。二段確認與資料表範圍不變。
+
+前置檢查最多等鎖 1 秒，提交最多等鎖 5 秒，重用同一次模型結果。新聞 Reader／AI 失敗仍按原次數與退避規則補跑；Web 逐網址失敗仍保存失敗紀錄並維持原回覆格式。鎖忙、資料寫入或 flush 失敗屬提交問題，不再當成 AI 失敗重跑或追加第二份失敗通知。`QUEUE_TASK_STATUS` 只記 Queue 名稱、安全狀態與白名單錯誤碼，不記 TaskId、聊天室 ID、URL 或原始 exception。
+
+**提交鎖持續忙碌或寫入結果不明時需人工查核**：任務可能仍為 processing；先核對 Queue、素材與 PendingReplies，再決定是否補處理，不直接重設為 pending 或重跑模型。Google Sheets 多表寫入沒有交易回復，輸出已保存但 Queue 狀態未成功落盤時可能留下部分結果；本版不新增自動接手／lease 機制，也不承諾跨表 exactly-once。原 Pending Reply 送達後 acknowledge 中斷仍可能重送。
+
+上傳與部署後的 Queue 人工驗收（本機未執行）：以兩個測試聊天室建立新聞、快讀與網址節目分析工作；分別驗證只刪除前方其他聊天室列、處理中清空自己、清空後新入隊，以及多網址混合成功／失敗。核對其他聊天室任務與來源資料不變、舊結果未復活、正常結果只產生原有通知，並回讀 StartedAt／狀態。兩套新舊程式不得混跑；待舊 handler 執行結束後，再以同版程式驗收。既有固定封存補欄與觸發器仍依前述人工啟用順序處理。
 
 ## 錯誤回覆與診斷
 
@@ -181,9 +195,7 @@ v1.17.0 必須同步上述檔案，不能只同步新增檔。AiService／Provid
 
 ## 驗證與限制
 
-v1.17.0 修改前在本機 main `8231700` 實跑既有 254 checks 通過；PR 初版 `fcc90c0` 為 302 checks。九項 review 修正後，`node tests/v1140_smoke.cjs` **24 GAS sources、469 unique functions、254 checks 通過**，`node tests/v1170_archive.cjs` **72 checks 通過**，合計 **326 checks**。保留原檢查，追加截止入庫的八種交錯、六類清理及未設定聊天室、Pending Reply 交付互斥、致命／達上限狀態的連續讀取失敗、提交鎖等待與 token 失敗收據、游標預覽、拒絕話題與快取重驗、未知 ID 隱私、短段落完整新聞，以及文件啟用順序。實際 AiService／Provider 與 LINE router 使用 mock 下游；`git diff --check` 通過。本機測試不連線真實 GAS／LINE／Sheets／AI，不證明排程時間、權限或模型產出品質。
-
-另列既存風險：`processSingleNewsUrlTask_` 仍依領取時的 sheetRowNumber 回寫 NewsUrlQueue；若工作執行中刪除前面的任務列，可能回寫其他聊天室的任務。本次以 mock 重現，相關背景回寫流程未修改，須另案處理。維護者清空新聞前，先暫停 processNewsUrlQueue 的背景觸發器並確認既有工作已結束，完成清理後再恢復；本輪沒有執行這些操作。
+v1.17.0 修改前在本機 main `8231700` 實跑既有 254 checks 通過；PR 初版 `fcc90c0` 為 302 checks，九項修正 `ba20434` 為 326 checks。Queue 補修後，`node tests/v1140_smoke.cjs` **24 GAS sources、473 unique functions、254 checks 通過**，`node tests/v1170_archive.cjs` **112 checks 通過**，合計 **366 checks**。原有封存、截止入庫、跨聊天室清理、拒絕話題快取、短段落與啟用順序繼續通過；追加兩套 Queue／節目分析的刪列位移、清空取消、新任務取代、實際 handler 領取、錯誤與重試、多網址、身分與欄位驗證、等鎖／寫入／flush 失敗、Sheet 時間回讀、診斷隱私，以及與固定封存的截止整合。原 fixture 配合實際任務身分與提交結果；`git diff --check` 通過。實際 AiService／Provider 與 LINE router 使用 mock 下游；沒有真實 GAS／LINE／Sheets／AI 呼叫，不能證明排程時間、權限或模型品質。
 
 v1.16.2 前版 review fix：修改前在 `817676c` 實跑 245 checks 通過；先新增測試重現「已搜尋但 length 回覆缺提示」（預期 1 次、實際 0 次），修正後 `node tests/v1140_smoke.cjs` **23 GAS sources、444 unique functions、254 checks 通過**。新增 9 項參數化檢查：實際私訊／group／room 與圖片入口的長度、deadline、空答案；文字／圖片必要資料失敗；continuation 的 HTTP／搜尋／長度錯誤；未搜尋／pending／malformed／工具錯誤；read_url 來源；舊 caller／typed Error／嚴格布林／不改 metadata；成功回覆與來源 bubble。原 245 項有效斷言保留，partial answer 不進 LINE、Cache 或 Sheet，固定診斷紀錄保留。未執行 live，仍須正式環境確認後段失敗提示、正常來源 bubble 與既有圖片／查詢提醒。
 
