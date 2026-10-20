@@ -1,4 +1,10 @@
 2026-10-20
+v1.17.0 PR #54 話題欄位 Unicode 裁切補修（維持原版號，部署另行處理）
+- 共用週編輯台裁切函式沿用 LINE 安全切點，話題標題／摘要／可聊點、故事線標題及新聞／對話模型輸入補省略號時不切斷 UTF-16 配對字元；既有長度、去空白、URL 移除與快取契約不變。
+- 原 379 項回歸保留，新增 4 項涵蓋各欄位邊界、正規化與新聞 ID、模型輸入、三個超長話題的快取與實際 LINE payload／完整網址／省略數；254 smoke checks＋129 focused checks 共 383 checks 通過，24 GAS sources／474 unique functions。
+- Runtime 僅修改 35_WeeklyEditorialDigest.gs；未合併、部署或操作實際 Sheets／Properties／觸發器，未新增依賴、欄位、設定或 migration；累計仍為 12 個 runtime 同步檔。
+
+2026-10-20
 v1.17.0 PR #54 LINE Unicode 邊界補修（維持原版號，部署另行處理）
 - 硬切、來源訊息及省略提示截斷共用 UTF-16 配對字元邊界，必要時退一個單位；分段 metadata 同步實際切點，保留 4900 字／五則與來源名額，真正超限仍明示省略。
 - 原 374 項回歸保留，新增 5 項涵蓋切點兩側、LINE payload、來源／省略提示、容量邊界、Queue 交付與週編輯台話題／網址；254 smoke checks＋125 focused checks 共 379 checks 通過，24 GAS sources／474 unique functions。

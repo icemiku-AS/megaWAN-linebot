@@ -1470,4 +1470,89 @@ check('editorial Unicode boundaries keep three topics, complete source URLs and 
   assert(omitted > 0 && omitted < items.length); assert(text.includes('尚有 ' + omitted + ' 則未顯示'));
 });
 
+check('editorial field clipping preserves complete Unicode at and around every shared length limit', () => {
+  const e = env();
+  for (const limit of [40, 60, 80, 100, 160, 240]) for (const mark of ['🙂', '𠮷']) {
+    for (const at of [limit - 3, limit - 2, limit - 1]) {
+      const original = '字'.repeat(at) + mark + '尾字';
+      const clipped = e.c.truncateWeeklyEditorialText_(original, limit);
+      assert(clipped.isWellFormed()); assert(clipped.length <= limit); assert(clipped.endsWith('…'));
+      assert.equal(clipped, at === limit - 3 ? '字'.repeat(at) + mark + '…' : '字'.repeat(at) + '…');
+    }
+    const exact = '字'.repeat(limit - 2) + mark;
+    assert.equal(e.c.truncateWeeklyEditorialText_(exact, limit), exact);
+  }
+  assert.equal(e.c.truncateWeeklyEditorialText_('題'.repeat(61), 60), '題'.repeat(59) + '…');
+  assert.equal(e.c.truncateWeeklyEditorialText_(' \n說明　🙂\t內容  ', 60), '說明 🙂 內容');
+  for (const limit of [1, 2]) assert.equal(e.c.truncateWeeklyEditorialText_('🙂尾', limit), '…');
+  assert.equal(e.c.truncateWeeklyEditorialText_('🙂尾', 0), '🙂尾');
+});
+check('topic and story-line normalization keeps clipped Unicode valid without losing known news IDs', () => {
+  const e = env(), { items, ids } = editorial(e, 2);
+  const result = e.c.normalizeAndValidateWeeklyEditorialResult_(JSON.stringify({
+    newsClusters: [{ title: '線'.repeat(38) + '🙂尾', itemIds: ids }], ungroupedNewsIds: [],
+    conversationTopics: [{ title: '題'.repeat(58) + '🙂尾', summary: '述'.repeat(158) + '𠮷尾',
+      talkingPoint: '點'.repeat(98) + '🙂尾', relatedNewsIds: [ids[0]] }]
+  }), ids, e.c.assignWeeklyEditorialItemIds_(items), true);
+  const normalized = result.normalizedResult, topic = normalized.conversationTopics[0];
+  assert.equal(normalized.newsClusters[0].title, '線'.repeat(38) + '…');
+  assert.equal(topic.title, '題'.repeat(58) + '…'); assert.equal(topic.summary, '述'.repeat(158) + '…');
+  assert.equal(topic.talkingPoint, '點'.repeat(98) + '…');
+  assert([normalized.newsClusters[0].title, topic.title, topic.summary, topic.talkingPoint].every(value => value.isWellFormed()));
+  assert.equal(normalized.newsClusters[0].itemIds.join(','), ids.join(','));
+  assert.equal(topic.relatedNewsIds.join(','), ids[0]);
+  assert.equal(result.topicCounts.adopted, 1); assert.equal(result.topicCounts.rejected, 0);
+});
+check('editorial news and conversation model inputs share Unicode-safe clipping and existing bounds', () => {
+  const e = env(), limits = { title: 100, brief: 80, outline: 160, category: 40, storyKey: 40,
+    specialTopic: 80, matchedEntities: 100 };
+  const item = { createdAt: new e.c.Date(start), topicPotential: '高' };
+  for (const [field, limit] of Object.entries(limits)) item[field] = '材'.repeat(limit - 2) + '🙂尾';
+  const identified = e.c.assignWeeklyEditorialItemIds_([item]);
+  const payload = e.c.buildWeeklyEditorialNewsPayload_(identified);
+  for (const [field, limit] of Object.entries(limits)) {
+    assert.equal(payload[0][field], '材'.repeat(limit - 2) + '…');
+    assert(payload[0][field].isWellFormed()); assert(payload[0][field].length <= limit);
+  }
+  assert(e.c.assertWeeklyEditorialNewsPayloadHasNoUrls_(payload));
+  const conversations = e.c.prepareWeeklyEditorialConversationPayload_([{
+    timestamp: new e.c.Date(end - 1), userId: 'alice', messageId: '100', role: 'user', mode: 'input',
+    text: '述'.repeat(238) + '𠮷尾'
+  }], identified);
+  assert.equal(conversations.length, 1); assert.equal(conversations[0].text, '述'.repeat(238) + '…');
+  assert(conversations[0].text.isWellFormed()); assert(conversations[0].text.length <= 240);
+});
+check('overlong emoji topics survive normalization, cache hits and actual multi-bubble LINE payloads', () => {
+  const e = env(), { items, ids } = editorial(e, 30);
+  items.forEach(item => { item.url += 'u'.repeat(850); });
+  const rawTopics = ['甲', '乙', '丙'].map(label => ({ title: label.repeat(58) + '🙂尾',
+    summary: '述'.repeat(158) + '𠮷尾', talkingPoint: '點'.repeat(98) + '🙂尾', relatedNewsIds: [ids[0]] }));
+  e.setAi(() => ({ ok: true, json: { newsClusters: [], ungroupedNewsIds: ids, conversationTopics: rawTopics } }));
+  const beforeSheets = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
+  const beforeProps = JSON.stringify([...e.props]);
+  const text = e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query);
+  assert(text.isWellFormed()); assert(text.includes('本週群組話題'));
+  for (const label of ['甲', '乙', '丙']) assert(text.includes(label.repeat(58) + '…'));
+  const cached = JSON.parse([...e.cache.values()][0]);
+  assert.equal(cached.topicCounts.adopted, 3); assert.equal(cached.topicCounts.rejected, 0);
+  assert(cached.result.conversationTopics.every(topic => [topic.title, topic.summary, topic.talkingPoint].every(value => value.isWellFormed())));
+  assert.equal(e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query), text); assert.equal(e.models.length, 1);
+  assert(e.logs.some(line => line.includes('"cacheHit":true') && line.includes('"topicCount":3')));
+  assert(e.models[0][1].includes('我們可以聊')); assert(!e.models[0][1].includes('PRIVATE_OTHER_ROOM'));
+  assert(!e.models[0][1].includes('PRIVATE_DERIVED_IMAGE'));
+  e.c.replyToLine('test-only-reply-token', text, true);
+  const payload = JSON.parse(e.fetches.at(-1).options.payload);
+  assert(payload.messages.length > 1 && payload.messages.length <= 5);
+  assert(payload.messages.every(message => message.text.isWellFormed() && message.text.length <= 4900));
+  for (const label of ['甲', '乙', '丙']) assert.equal(payload.messages.filter(message => message.text.includes(label.repeat(58) + '…')).length, 1);
+  let omitted = 0;
+  for (const item of items) {
+    if (!text.includes(item.url)) { omitted++; continue; }
+    assert.equal(payload.messages.filter(message => message.text.includes(item.url)).length, 1);
+  }
+  assert(omitted > 0 && omitted < items.length); assert(text.includes('尚有 ' + omitted + ' 則未顯示'));
+  assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), beforeSheets);
+  assert.equal(JSON.stringify([...e.props]), beforeProps); assert.equal(e.triggers.length, 0); assert(!e.held());
+});
+
 process.stdout.write('OK ' + checks + ' v1.17.0 checks; no live GAS/LINE/Sheets/API calls.\n');

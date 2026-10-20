@@ -51,6 +51,8 @@ MEGA浣 / 小浣：**v1.17.0 Weekly News Archive Edition**（2026-10-20），主
 
 共享 LINE splitter 先選完整段落，即使首段少於 1200 字也可採用，再用分類／編號界線；不優先把標題內的編號當切點。若該切點會使後續文字超過剩餘訊息容量，改用每則 4900 字上限切割，避免短前言讓原本可完整送出的聊天／分析／待回覆被截斷；來源 bubble 仍保留第五個名額。硬切、來源與省略提示的截斷共用 UTF-16 配對邊界檢查，必要時切點退一個單位，splitIndexes 使用調整後位置；保留完整字元後仍放不下時，沿用明示省略，不發送半個配對字元。週編輯台沿用同一 splitter，再由 fitter 檢查完整區塊，不再優先 pop 群組話題，容量不足只省略新聞並明示筆數。對話仍只取原本同聊天室、全表尾端最多 2500 列內的合格使用者文字，最新最多 60 則／每則 240 字元／總計 6000 字元；derived 圖片語意、assistant、指令噪音仍排除。
 
+話題標題／摘要／可聊點、故事線標題，以及共用裁切函式的新聞與對話模型輸入，在補省略號前也檢查同一個 UTF-16 配對邊界，避免上游先產生半個字元再進入快取或 LINE。既有欄位長度、去空白、URL 移除與快取契約不變；本次補修不新增設定、欄位或 migration。
+
 模型確實回空話題、非空話題全數未通過檢查、部分採納及沒有合格對話，分開呈現，不補造主題；ConversationLog 缺表／讀取失敗與 AI／整體驗證失敗另行提示。話題全數被拒絕仍保留本次有效新聞，不追加 AI 呼叫。`WEEKLY_EDITORIAL_STATUS` 記 read 狀態、原始／保留對話筆數、returnedTopicCount／topicCount／rejectedTopicCount／topicValidation、cacheHit、stage 與白名單錯誤碼；未知 itemId 只記固定碼與位置，不記被拒絕原值。
 
 快取改存已驗證結果與安全話題筆數，命中時重驗契約並保留全拒絕／部分採納差異；因此 `WEEKLY_EDITORIAL_CACHE_VERSION` 升為 `v1.17.0`，舊 key 自然失效，不需要清 Sheet 或 migration。模型輸出 schema 不變，拒絕的話題原文與未知 ID 不進快取。
@@ -196,7 +198,7 @@ v1.17.0 必須同步上述檔案，不能只同步新增檔。AiService／Provid
 
 ## 驗證與限制
 
-v1.17.0 修改前在本機 main `8231700` 實跑既有 254 checks 通過；PR 初版 `fcc90c0` 為 302 checks，九項修正 `ba20434` 為 326 checks，Queue 補修 `2c1616b` 為 366 checks，三項補修 `e881e9e` 為 374 checks。本輪 Unicode 邊界修正後，`node tests/v1140_smoke.cjs` **24 GAS sources、474 unique functions、254 checks 通過**，`node tests/v1170_archive.cjs` **125 checks 通過**，合計 **379 checks**。新增 5 項檢查涵蓋自然／強制切點附近的配對字元、splitIndexes、四／五則正文與實際 LINE payload、來源與省略提示截斷、完整字元造成的容量不足、Queue 待回覆交付及週編輯台話題／完整網址／省略數。前輪 8 項儲存恢復與長回覆修正，以及原有兩套 Queue、固定封存、防重補跑、截止入庫、跨聊天室清理、話題快取與啟用順序回歸繼續通過；原 fixture 與有效斷言保留，`git diff --check` 通過。Runtime 僅用既有字串／正則能力，不依賴新套件；Unicode 完整性斷言只在 Node 測試中使用。實際 AiService／Provider 與 LINE router 使用 mock 下游；沒有真實 GAS／LINE／Sheets／AI 呼叫，不能證明排程時間、權限或模型品質。
+v1.17.0 修改前在本機 main `8231700` 實跑既有 254 checks 通過；PR 初版 `fcc90c0` 為 302 checks，九項修正 `ba20434` 為 326 checks，Queue 補修 `2c1616b` 為 366 checks，三項補修 `e881e9e` 為 374 checks，LINE Unicode 邊界補修 `e572eae` 為 379 checks。本輪話題欄位 Unicode 修正後，`node tests/v1140_smoke.cjs` **24 GAS sources、474 unique functions、254 checks 通過**，`node tests/v1170_archive.cjs` **129 checks 通過**，合計 **383 checks**。新增 4 項檢查先重現半個字元，再涵蓋所有共用裁切長度、話題／故事線正規化與新聞 ID 保留、新聞及對話模型輸入，以及三個超長話題經快取命中、完整新聞網址／精確省略數到實際 LINE payload 的路徑；一般文字與剛好達上限的配對字元行為保留。前輪 LINE 分段、儲存恢復與長回覆修正，以及原有兩套 Queue、固定封存、防重補跑、截止入庫、跨聊天室清理、話題快取與啟用順序回歸繼續通過；原 fixture 與有效斷言保留，`git diff --check` 通過。Runtime 僅用既有字串／正則能力，不依賴新套件；Unicode 完整性斷言只在 Node 測試中使用。實際 AiService／Provider 與 LINE router 使用 mock 下游；沒有真實 GAS／LINE／Sheets／AI 呼叫，不能證明排程時間、權限或模型品質。
 
 v1.16.2 前版 review fix：修改前在 `817676c` 實跑 245 checks 通過；先新增測試重現「已搜尋但 length 回覆缺提示」（預期 1 次、實際 0 次），修正後 `node tests/v1140_smoke.cjs` **23 GAS sources、444 unique functions、254 checks 通過**。新增 9 項參數化檢查：實際私訊／group／room 與圖片入口的長度、deadline、空答案；文字／圖片必要資料失敗；continuation 的 HTTP／搜尋／長度錯誤；未搜尋／pending／malformed／工具錯誤；read_url 來源；舊 caller／typed Error／嚴格布林／不改 metadata；成功回覆與來源 bubble。原 245 項有效斷言保留，partial answer 不進 LINE、Cache 或 Sheet，固定診斷紀錄保留。未執行 live，仍須正式環境確認後段失敗提示、正常來源 bubble 與既有圖片／查詢提醒。
 

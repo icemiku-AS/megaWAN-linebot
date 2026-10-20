@@ -487,7 +487,9 @@ function truncateWeeklyEditorialText_(value, maxLength) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   const safeMaxLength = Math.max(0, Number(maxLength) || 0);
   if (!safeMaxLength || text.length <= safeMaxLength) return text;
-  return text.slice(0, Math.max(0, safeMaxLength - 1)).trim() + '…';
+  // 與 LINE 分段共用配對字元邊界，避免話題、模型輸入及快取留下半個字元。
+  const sliceIndex = getLineMessageSafeSliceIndex_(text, Math.max(0, safeMaxLength - 1));
+  return text.slice(0, sliceIndex).trim() + '…';
 }
 
 function containsWeeklyEditorialUrl_(value) {
