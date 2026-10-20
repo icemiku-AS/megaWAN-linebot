@@ -1383,4 +1383,91 @@ check('capacity-aware splitting keeps three editorial topics and omits only comp
   assert(omitted > 0 && omitted < items.length); assert(text.includes('尚有 ' + omitted + ' 則未顯示'));
 });
 
+check('LINE natural and capacity-forced cuts preserve paired Unicode and actual payloads', () => {
+  for (const [count, slots] of [[355, 4], [435, 5]]) for (const at of [4898, 4899, 4900, 9799]) {
+    const e = env();
+    const original = 'Here is the analysis:\n\n' + Array.from({ length: count }, (_, i) =>
+      (i + 1) + '. The team needs one more check before the launch.').join('\n');
+    const text = original.slice(0, at) + '🙂' + original.slice(at + 2);
+    const split = e.c.splitTextForLineMessagesWithMeta_(text, slots);
+    assert(text.isWellFormed()); assert.equal(split.wasTruncated, false);
+    assert(split.messages.every(message => message.isWellFormed() && message.length <= 4900));
+    assert.equal(split.messages.join('').replace(/\s/g, ''), text.replace(/\s/g, ''));
+    for (const index of split.splitIndexes) {
+      assert(text.slice(0, index).isWellFormed()); assert(text.slice(index).isWellFormed());
+    }
+    const sources = slots === 4 ? 'Sources:\nhttps://example.org/source' : '';
+    e.c.replyToLine('test-only-reply-token', text, true, sources);
+    const payload = JSON.parse(e.fetches.at(-1).options.payload);
+    assert.equal(payload.messages.length, 5); assert(payload.messages.every(message => message.text.isWellFormed()));
+    const main = sources ? payload.messages.slice(0, -1) : payload.messages;
+    assert.equal(main.map(message => message.text).join('').replace(/\s/g, ''), text.replace(/\s/g, ''));
+    if (sources) assert.equal(payload.messages.at(-1).text, sources);
+  }
+  const e = env();
+  for (const text of ['x'.repeat(4899) + '🙂' + 'y'.repeat(10), '說明。\n\n' + '🙂'.repeat(12000)]) {
+    const split = e.c.splitTextForLineMessagesWithMeta_(text);
+    assert.equal(split.wasTruncated, false); assert(split.messages.every(message => message.isWellFormed()));
+    assert.equal(split.messages.join('').replace(/\s/g, ''), text.replace(/\s/g, ''));
+  }
+});
+check('overflow notice and exact paired-character capacity never leave half a Unicode character', () => {
+  const e = env(), probe = e.c.splitTextForLineMessagesWithMeta_('x'.repeat(5001), 1).messages[0];
+  const suffix = probe.slice(probe.indexOf('\n\n'));
+  assert(suffix.includes('後面已省略'));
+  for (const slots of [1, 4, 5]) {
+    const at = 4900 * slots - suffix.length - 1;
+    const text = 'x'.repeat(at) + '🙂' + 'y'.repeat(200);
+    const split = e.c.splitTextForLineMessagesWithMeta_(text, slots);
+    assert.equal(split.wasTruncated, true); assert.equal(split.messages.length, slots);
+    assert(split.messages.every(message => message.isWellFormed() && message.length <= 4900));
+    assert(split.messages.at(-1).endsWith(suffix));
+    const exact = 'x'.repeat(4899) + '🙂' + 'y'.repeat(Math.max(0, 4900 * slots - 4901));
+    const exactSplit = e.c.splitTextForLineMessagesWithMeta_(exact, slots);
+    assert.equal(exactSplit.wasTruncated, true);
+    assert(exactSplit.messages.every(message => message.isWellFormed() && message.length <= 4900));
+    assert(exactSplit.messages.at(-1).endsWith(suffix));
+  }
+});
+check('LINE source bubble truncation retains only complete paired characters', () => {
+  for (const at of [4898, 4899, 4900]) {
+    const e = env(), source = 's'.repeat(at) + '🙂tail';
+    e.c.replyToLine('test-only-reply-token', '正文', true, source);
+    const payload = JSON.parse(e.fetches.at(-1).options.payload), last = payload.messages.at(-1).text;
+    assert.equal(payload.messages.length, 2); assert(last.isWellFormed()); assert(last.length <= 4900);
+    assert.equal(last, at === 4898 ? 's'.repeat(at) + '🙂' : 's'.repeat(Math.min(at, 4900)));
+  }
+});
+check('program Queue and Pending Reply deliver paired Unicode without changing acknowledgement', () => {
+  const e = env(), work = queueWork(e, 'program'); queueServices(e);
+  const text = '說明。\n\n' + '🙂'.repeat(12000);
+  e.c.runAiMemoryTask = () => ({ ok: true, text });
+  assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].Status, 'done');
+  assert.equal(scopeRows(e, 'PendingReplies')[0].ReplyText, text);
+  const expected = e.c.getBotTextPendingDelivery_(text, false);
+  assert(e.c.deliverPendingReply_('group:a', 'test-only-reply-token'));
+  const payload = JSON.parse(e.fetches.at(-1).options.payload);
+  assert(payload.messages.length <= 5); assert(payload.messages.every(message => message.text.isWellFormed() && message.text.length <= 4900));
+  assert.equal(payload.messages.map(message => message.text).join('').replace(/\s/g, ''), expected.replace(/\s/g, ''));
+  assert.equal(scopeRows(e, 'PendingReplies').length, 0); assert(!e.held());
+});
+check('editorial Unicode boundaries keep three topics, complete source URLs and exact omission counts', () => {
+  const e = env(), topic = { title: '題'.repeat(58) + '🙂', summary: '述'.repeat(158) + '🙂',
+    talkingPoint: '點'.repeat(98) + '🙂', relatedNewsIds: [] };
+  const items = Array.from({ length: 30 }, (_, i) => ({ title: '新聞🙂'.repeat(20) + i,
+    url: 'https://example.org/' + i + '/' + 'u'.repeat(850), category: '科技與 AI', topicPotential: '高' }));
+  const identified = e.c.assignWeeklyEditorialItemIds_(items);
+  const text = e.c.formatWeeklyEditorialDigest_(identified, { newsClusters: [],
+    otherItemIds: identified.map(entry => entry.itemId), conversationTopics: [topic, topic, topic] }, query);
+  const split = e.c.splitTextForLineMessagesWithMeta_(text);
+  assert.equal(text.split(topic.title).length - 1, 3); assert.equal(split.wasTruncated, false);
+  assert(split.messages.length <= 5); assert(split.messages.every(message => message.isWellFormed() && message.length <= 4900));
+  let omitted = 0;
+  for (const item of items) {
+    if (!text.includes(item.url)) { omitted++; continue; }
+    assert.equal(split.messages.filter(message => message.includes(item.url)).length, 1);
+  }
+  assert(omitted > 0 && omitted < items.length); assert(text.includes('尚有 ' + omitted + ' 則未顯示'));
+});
+
 process.stdout.write('OK ' + checks + ' v1.17.0 checks; no live GAS/LINE/Sheets/API calls.\n');

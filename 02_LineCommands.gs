@@ -159,14 +159,15 @@ function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
   const mainMessageLimit = LINE_REPLY_MAX_MESSAGE_COUNT - (finalText ? 1 : 0);
   const messageTexts = splitTextForLineMessagesWithMeta_(text, mainMessageLimit).messages;
   const safeMessageTexts = messageTexts.length ? messageTexts : [getBotTextEmptyReply_()];
-  if (finalText) safeMessageTexts.push(finalText.slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH));
+  if (finalText) safeMessageTexts.push(finalText.slice(0, getLineMessageSafeSliceIndex_(finalText, LINE_TEXT_MESSAGE_MAX_LENGTH)));
 
   const payload = {
     replyToken: replyToken,
     messages: safeMessageTexts.slice(0, LINE_REPLY_MAX_MESSAGE_COUNT).map(function(messageText) {
+      const safeText = String(messageText || getBotTextEmptyReply_());
       return {
         type: 'text',
-        text: String(messageText || getBotTextEmptyReply_()).slice(0, LINE_TEXT_MESSAGE_MAX_LENGTH)
+        text: safeText.slice(0, getLineMessageSafeSliceIndex_(safeText, LINE_TEXT_MESSAGE_MAX_LENGTH))
       };
     })
   };
@@ -197,6 +198,11 @@ function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
     // 保留既有拋錯行為，但不讓含 request/token 的外部例外流入上層 stack log。
     throw new Error('LINE Reply API request failed.');
   }
+}
+
+// UTF-16 配對字元不可跨訊息或截斷邊界，切點必要時退一個單位。
+function getLineMessageSafeSliceIndex_(text, index) {
+  return /[\uD800-\uDBFF][\uDC00-\uDFFF]/.test(text.slice(index - 1, index + 1)) ? index - 1 : index;
 }
 
 function splitTextForLineMessages_(text) {
@@ -240,6 +246,7 @@ function splitTextForLineMessagesWithMeta_(text, maxMessageCount) {
     if (remainingText.slice(splitIndex).trim().length > (maxCount - messages.length - 1) * maxLength) {
       splitIndex = maxLength;
     }
+    splitIndex = getLineMessageSafeSliceIndex_(remainingText, splitIndex);
     const chunk = remainingText.slice(0, splitIndex).trim();
     messages.push(chunk || remainingText.slice(0, maxLength).trim());
     splitIndexes.push(remainingOffset + splitIndex);
@@ -264,7 +271,8 @@ function splitTextForLineMessagesWithMeta_(text, maxMessageCount) {
 
     // 第 5 則如果已接近上限，先裁出空間再補省略提示，避免 LINE payload 被拒。
     if (lastMessage.length + suffix.length > maxLength) {
-      lastMessage = lastMessage.slice(0, Math.max(0, maxLength - suffix.length)).trim();
+      lastMessage = lastMessage.slice(0,
+        getLineMessageSafeSliceIndex_(lastMessage, Math.max(0, maxLength - suffix.length))).trim();
     }
 
     nonEmptyMessages[lastIndex] = (lastMessage ? lastMessage + suffix : omittedNotice).slice(0, maxLength);
