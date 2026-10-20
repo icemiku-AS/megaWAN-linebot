@@ -235,7 +235,11 @@ function splitTextForLineMessagesWithMeta_(text, maxMessageCount) {
       break;
     }
 
-    const splitIndex = findLineMessageSplitIndex_(remainingText, maxLength);
+    let splitIndex = findLineMessageSplitIndex_(remainingText, maxLength);
+    // 短段落不能耗盡後續訊息容量；週編輯台仍由 fitter 驗證完整區塊。
+    if (remainingText.slice(splitIndex).trim().length > (maxCount - messages.length - 1) * maxLength) {
+      splitIndex = maxLength;
+    }
     const chunk = remainingText.slice(0, splitIndex).trim();
     messages.push(chunk || remainingText.slice(0, maxLength).trim());
     splitIndexes.push(remainingOffset + splitIndex);

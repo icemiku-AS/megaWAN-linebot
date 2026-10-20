@@ -96,7 +96,14 @@ function getNewsArchiveState_(config) {
 function saveNewsArchiveState_(config, state) {
   const properties = PropertiesService.getScriptProperties();
   const key = getNewsArchiveStateKey_(config);
-  properties.setProperty(key, JSON.stringify(state));
+  const raw = JSON.stringify(state);
+  try { properties.setProperty(key, raw); } catch (error) {
+    if (error && typeof error.retryable === 'boolean') throw error;
+    // 原生進度寫入例外仍可隔日補跑，不把短暫儲存失敗永久封鎖。
+    const failure = new Error('News archive progress write failed.');
+    failure.retryable = true;
+    throw failure;
+  }
   // 收據只保存安全失敗碼，不保存模型結果；新進度落盤後移除已失效 token 的收據。
   try {
     properties.getKeys().filter(function(name) {
@@ -408,7 +415,8 @@ function getNewsArchiveStatusText_(conversationId) {
     if (due) lines.push('下一期：' + formatNewsArchiveTime_(state.nextStartAt) + ' ～ ' + formatNewsArchiveTime_(state.nextStartAt + NEWS_ARCHIVE_WEEK_MS));
     if (state.runId) lines.push(state.leaseUntil > Date.now() ? '封存正在處理中。' : '前次工作已逾期，可補跑。');
     if (state.lastErrorCode) lines.push('前次失敗：' + state.lastErrorCode.toUpperCase() +
-      (!state.retryable || state.autoAttempts >= NEWS_ARCHIVE_MAX_AUTO_ATTEMPTS ? '；需要處理後手動補跑。' : '；下次每日檢查補跑。'));
+      (!state.retryable || state.autoAttempts >= NEWS_ARCHIVE_MAX_AUTO_ATTEMPTS ? '；需要處理後手動補跑。' :
+        config.autoEnabled ? '；下次每日檢查補跑。' : '；自動封存已關閉，請用 #封存本週新聞 手動補跑。'));
     else if (state.autoAttempts >= NEWS_ARCHIVE_MAX_AUTO_ATTEMPTS) lines.push('自動嘗試已達上限，需維護者確認後手動補跑。');
     return lines.join('\n');
   } catch (ignore) { return '固定週期新聞封存：設定或進度無法讀取，請維護者檢查。'; }

@@ -1249,4 +1249,138 @@ check('news treats even a falsy thrown value as failure and never stores an empt
   }
 });
 
+check('native reservation progress write failure retries tomorrow, even if the failed write landed', () => {
+  for (const landed of [false, true]) {
+    const e = env(); news(e); let failed = false;
+    e.setPropertyFailure((key, raw) => {
+      if (!failed && key === e.stateKey() && JSON.parse(raw).runId) {
+        failed = true;
+        if (landed) e.props.set(key, raw);
+        throw Error('PRIVATE_RESERVATION_WRITE');
+      }
+    });
+    const result = e.run('auto');
+    assert.equal(result.status, 'failed'); assert.equal(result.failure.retryable, true);
+    assert.equal(e.state().retryable, true); assert.equal(e.state().runId, '');
+    assert.equal(e.state().nextStartAt, start); assert.equal(e.state().autoAttempts, 1);
+    assert.equal(e.run('auto').status, 'waiting'); assert.equal(e.models.length, 0);
+    e.setPropertyFailure(null); e.setNow(e.now() + 86400000);
+    assert.equal(e.run('auto').status, 'completed'); assert.equal(e.run().status, 'up_to_date');
+    assert.equal(e.models.length, 1); assert.equal(e.sheets.get('WeeklySummary').records().length, 1);
+    assert(!e.logs.join('').includes('PRIVATE_RESERVATION_WRITE')); assert(!e.held());
+  }
+});
+check('reservation storage failures retain the automatic attempt ceiling and manual recovery', () => {
+  const e = env(); news(e);
+  e.setPropertyFailure((key, raw) => {
+    if (key === e.stateKey() && JSON.parse(raw).runId) throw Error('PRIVATE_RESERVATION_WRITE');
+  });
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    assert.equal(e.run('auto').status, 'failed');
+    assert.equal(e.state().autoAttempts, attempt); assert.equal(e.state().retryable, true);
+    assert.equal(e.run('auto').status, attempt === 3 ? 'needs_attention' : 'waiting');
+    e.setNow(e.now() + 86400000);
+  }
+  assert.equal(e.run('auto').status, 'needs_attention'); assert.equal(e.models.length, 0);
+  e.setPropertyFailure(null);
+  assert.equal(e.run().status, 'completed'); assert.equal(e.state().autoAttempts, 0);
+  assert.equal(e.models.length, 1); assert.equal(e.sheets.get('WeeklySummary').records().length, 1);
+});
+check('explicit nonretryable progress-write errors and blocked states are never promoted to automatic retry', () => {
+  const e = env(); news(e); let failed = false;
+  e.setPropertyFailure((key, raw) => {
+    if (!failed && key === e.stateKey() && JSON.parse(raw).runId) {
+      failed = true; throw e.c.createAiConfigurationError_('PRIVATE_PROGRESS_CONFIGURATION');
+    }
+  });
+  assert.equal(e.run('auto').failure.retryable, false); assert.equal(e.state().retryable, false);
+  e.setPropertyFailure(null); e.setNow(e.now() + 86400000);
+  assert.equal(e.run('auto').status, 'needs_attention'); assert.equal(e.models.length, 0);
+  const before = e.props.get(e.stateKey());
+  e.setPropertyFailure(() => { throw Error('PRIVATE_BLOCKED_WRITE'); });
+  assert.equal(e.run('auto').status, 'needs_attention'); assert.equal(e.props.get(e.stateKey()), before);
+  e.setPropertyFailure(null); assert.equal(e.run().status, 'completed');
+  assert(!e.logs.join('').includes('PRIVATE_'));
+});
+check('archive recovery status follows autoEnabled and never promises a disabled scheduled retry', () => {
+  for (const enabled of [false, true]) for (const kind of ['retryable', 'fatal', 'capped']) {
+    const e = env(); news(e);
+    const config = JSON.parse(e.props.get('NEWS_ARCHIVE_CONFIG'));
+    config.conversations[0].autoEnabled = enabled;
+    e.props.set('NEWS_ARCHIVE_CONFIG', JSON.stringify(config));
+    e.setAi(() => ({ ok: false, errorType: kind === 'fatal' ? 'ai_auth_error' : 'ai_timeout', retryable: kind !== 'fatal' }));
+    assert.equal(e.run().status, 'failed');
+    if (kind === 'capped') {
+      e.props.set(e.stateKey(), JSON.stringify({ ...e.state(), autoAttempts: 3 }));
+    }
+    const status = e.c.getNewsArchiveStatusText_('group:a');
+    assert.equal(status.includes('下次每日檢查補跑'), enabled && kind === 'retryable');
+    if (!enabled || kind !== 'retryable') assert(status.includes('手動補跑'));
+    e.setAi(null); e.setNow(e.now() + 86400000);
+    const scheduled = e.c.processScheduledNewsArchives();
+    assert.equal(scheduled.length, enabled ? 1 : 0);
+    if (enabled) assert.equal(scheduled[0].status, kind === 'retryable' ? 'completed' : 'needs_attention');
+    else assert.equal(e.models.length, 1);
+  }
+});
+check('long replies fit all four or five main bubbles and retain the actual LINE source bubble', () => {
+  for (const [count, slots] of [[355, 4], [435, 5]]) {
+    const e = env(), text = 'Here is the analysis:\n\n' + Array.from({ length: count }, (_, i) =>
+      (i + 1) + '. The team needs one more check before the launch.').join('\n');
+    const sources = slots === 4 ? 'Sources:\nhttps://example.org/source' : '';
+    const split = e.c.splitTextForLineMessagesWithMeta_(text, slots);
+    assert.equal(split.wasTruncated, false); assert.equal(split.messages.length, slots);
+    assert(split.messageLengths.every(length => length <= 4900));
+    assert.equal(split.messages.join('').replace(/\s/g, ''), text.replace(/\s/g, ''));
+    e.c.replyToLine('test-only-reply-token', text, true, sources);
+    const payload = JSON.parse(e.fetches.at(-1).options.payload);
+    assert.equal(payload.messages.length, 5);
+    const main = sources ? payload.messages.slice(0, -1) : payload.messages;
+    assert.equal(main.map(message => message.text).join('').replace(/\s/g, ''), text.replace(/\s/g, ''));
+    if (sources) assert.equal(payload.messages.at(-1).text, sources);
+  }
+});
+check('splitter keeps exact-capacity content and bounds genuine overflow for one, four and five slots', () => {
+  const e = env(), intro = 'Short introduction.\n\n';
+  for (const slots of [1, 4, 5]) for (const excess of [0, 100]) {
+    const text = intro + 'x'.repeat(4900 * slots - intro.length + excess);
+    const split = e.c.splitTextForLineMessagesWithMeta_(text, slots);
+    assert.equal(split.messages.length, slots); assert.equal(split.wasTruncated, excess > 0);
+    assert(split.messageLengths.every(length => length <= 4900));
+    if (!excess) assert.equal(split.messages.join('').replace(/\s/g, ''), text.replace(/\s/g, ''));
+    else assert(split.messages.at(-1).includes('後面已省略'));
+  }
+});
+check('long program Queue output survives guarded storage and Pending Reply delivery without truncation', () => {
+  const e = env(), work = queueWork(e, 'program'); queueServices(e);
+  const text = 'Here is the analysis:\n\n' + Array.from({ length: 435 }, (_, i) =>
+    (i + 1) + '. The team needs one more check before the launch.').join('\n');
+  e.c.runAiMemoryTask = () => ({ ok: true, text });
+  assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].Status, 'done');
+  assert.equal(scopeRows(e, 'PendingReplies')[0].ReplyText, text);
+  const expected = e.c.getBotTextPendingDelivery_(text, false);
+  assert(e.c.deliverPendingReply_('group:a', 'test-only-reply-token'));
+  const payload = JSON.parse(e.fetches.at(-1).options.payload);
+  assert(payload.messages.length <= 5); assert(payload.messages.every(message => message.text.length <= 4900));
+  assert.equal(payload.messages.map(message => message.text).join('').replace(/\s/g, ''), expected.replace(/\s/g, ''));
+  assert.equal(scopeRows(e, 'PendingReplies').length, 0); assert(!e.held());
+});
+check('capacity-aware splitting keeps three editorial topics and omits only complete news blocks', () => {
+  const e = env(), topic = { title: '題'.repeat(60), summary: '述'.repeat(160), talkingPoint: '點'.repeat(100), relatedNewsIds: [] };
+  const items = Array.from({ length: 30 }, (_, i) => ({ title: '新聞'.repeat(45) + i,
+    url: 'https://example.org/' + i + '/' + 'u'.repeat(850), category: '科技與 AI', topicPotential: '高' }));
+  const identified = e.c.assignWeeklyEditorialItemIds_(items);
+  const text = e.c.formatWeeklyEditorialDigest_(identified, { newsClusters: [],
+    otherItemIds: identified.map(entry => entry.itemId), conversationTopics: [topic, topic, topic] }, query);
+  const split = e.c.splitTextForLineMessagesWithMeta_(text);
+  assert.equal(text.split(topic.title).length - 1, 3); assert.equal(split.wasTruncated, false);
+  assert(split.messages.length <= 5); assert(split.messageLengths.every(length => length <= 4900));
+  let omitted = 0;
+  for (const item of items) {
+    if (!text.includes(item.url)) { omitted++; continue; }
+    assert.equal(split.messages.filter(message => message.includes(item.url)).length, 1);
+  }
+  assert(omitted > 0 && omitted < items.length); assert(text.includes('尚有 ' + omitted + ' 則未顯示'));
+});
+
 process.stdout.write('OK ' + checks + ' v1.17.0 checks; no live GAS/LINE/Sheets/API calls.\n');
