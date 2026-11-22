@@ -17,6 +17,12 @@ const chatHeaders = ['Timestamp', 'ConversationId', 'Role', 'Mode', 'UserId', 'T
 const archive = { topicTitle: '本週新聞索引', keywords: ['新聞'], summary: '本週新聞保留代表事件與主要脈絡。',
   reusableAngles: ['事件後續'], followUpQuestions: ['下週有何進展？'] };
 const event = { source: { type: 'group', groupId: 'a', userId: 'alice' } };
+function geminiReply(text) {
+  return { getResponseCode: () => 200, getContentText: () => JSON.stringify({
+    candidates: [{ finishReason: 'STOP', content: { role: 'model', parts: [{ text }] } }],
+    usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 20, totalTokenCount: 30 }
+  }) };
+}
 
 class Sheet {
   constructor(headers, rows = []) { this.data = [headers.slice(), ...rows.map(row => row.slice())]; this.failRead = false; }
@@ -41,9 +47,27 @@ class Sheet {
   records() { return this.data.slice(1).map(row => Object.fromEntries(this.data[0].map((h, i) => [h, row[i] ?? '']))); }
 }
 
+function formatPtDate(date, timeZone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' })
+    .formatToParts(date).map(part => [part.type, part.value]));
+  return [parts.year, parts.month, parts.day].join('-');
+}
+function parsePtDate(text, timeZone) {
+  const utc = Date.parse(text.replace(' ', 'T') + 'Z');
+  const formatter = new Intl.DateTimeFormat('en-US', { timeZone, timeZoneName: 'longOffset' });
+  let instant = utc;
+  for (let i = 0; i < 3; i++) {
+    const zone = formatter.formatToParts(new Date(instant)).find(part => part.type === 'timeZoneName').value;
+    const match = zone.match(/^GMT([+-])(\d\d):(\d\d)$/);
+    const offset = match ? (Number(match[2]) * 60 + Number(match[3])) * (match[1] === '-' ? -1 : 1) : 0;
+    instant = utc - offset * 60000;
+  }
+  return new Date(instant);
+}
+
 function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
   let now = clock, held = false, uuid = 0, busy = false, busyUntil = 0, propertyFailure = null, ai = null, flush = null;
-  const props = new Map(), logs = [], models = [], fetches = [], triggers = [], lockWaits = [];
+  const props = new Map(), logs = [], models = [], fetches = [], triggers = [], lockWaits = [], keyReads = [];
   const sheets = new Map([
     ['WeeklySummary', new Sheet(legacy ? legacyHeaders : legacyHeaders.concat(extraHeaders))],
     ['NewsInbox', new Sheet(newsHeaders)],
@@ -56,7 +80,10 @@ function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
     console: Object.fromEntries(['log', 'warn', 'error'].map(key => [key, (...args) => logs.push(args.join(' '))])),
     Date: class extends Date { constructor(...args) { super(...(args.length ? args : [now])); } static now() { return now; } },
     PropertiesService: { getScriptProperties: () => ({
-      getProperty: key => props.get(key) ?? (['DEEPSEEK_API_KEY', 'LINE_CHANNEL_ACCESS_TOKEN'].includes(key) ? 'test-only-placeholder' : null),
+      getProperty: key => {
+        if (key.endsWith('_API_KEY')) keyReads.push(key);
+        return props.get(key) ?? (['GEMINI_API_KEY', 'LINE_CHANNEL_ACCESS_TOKEN'].includes(key) ? 'test-only-placeholder' : null);
+      },
       getKeys: () => [...props.keys()],
       setProperty: (key, value) => { if (propertyFailure) propertyFailure(key, value); props.set(key, value); },
       deleteProperty: key => props.delete(key)
@@ -81,7 +108,8 @@ function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
       newBlob: value => ({ getBytes: () => Array.from(Buffer.from(value)) }),
       computeDigest: (_algorithm, value) => [...crypto.createHash('sha256').update(value).digest()],
       base64EncodeWebSafe: bytes => Buffer.from(bytes).toString('base64url'),
-      formatDate: date => new Date(date.getTime() + 28800000).toISOString().slice(0, 10)
+      formatDate: (date, zone) => zone === 'America/Los_Angeles' ? formatPtDate(date, zone) : new Date(date.getTime() + 28800000).toISOString().slice(0, 10),
+      parseDate: parsePtDate
     },
     CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value), remove: key => cache.delete(key) }) },
     ScriptApp: {
@@ -90,23 +118,19 @@ function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
       newTrigger: handler => {
         const data = { getHandlerFunction: () => handler };
         const builder = { timeBased: () => builder, create: () => triggers.push(data) };
-        for (const method of ['atHour', 'nearMinute', 'everyDays', 'inTimezone']) builder[method] = value => { data[method] = value; return builder; };
+        for (const method of ['atHour', 'nearMinute', 'everyDays', 'everyMinutes', 'inTimezone']) builder[method] = value => { data[method] = value; return builder; };
         return builder;
       }
     },
     UrlFetchApp: { fetch: (url, options) => {
       fetches.push({ url, options });
-      return { getResponseCode: () => 200, getContentText: () => JSON.stringify({
-        object: 'response', status: 'completed',
-        output: [{ type: 'message', status: 'completed', role: 'assistant', content: [{ type: 'output_text', text: JSON.stringify(archive) }] }],
-        usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 }
-      }) };
+      return geminiReply(JSON.stringify(archive));
     } }
   });
   const cache = new Map();
   vm.runInContext(source, c);
   c.getSpreadsheet_ = () => ({ getSheetByName: name => sheets.get(name) || null,
-    insertSheet: name => { const sheet = new Sheet([]); sheets.set(name, sheet); return sheet; } });
+    insertSheet: name => { const sheet = new Sheet([]); sheet.getName = () => name; sheets.set(name, sheet); return sheet; } });
   const realRunAiJsonTask = c.runAiJsonTask;
   c.runAiJsonTask = (...args) => {
     assert(!held, 'AI cannot run while ScriptLock is held');
@@ -116,7 +140,7 @@ function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
   const config = () => c.getNewsArchiveConfig_('group:a');
   const run = (origin = 'manual', context) => c.runFixedNewsArchive_(config(), origin, event, context);
   const stateKey = () => c.getNewsArchiveStateKey_(config());
-  return { c, props, logs, models, fetches, triggers, sheets, cache, lockWaits, run, config, stateKey,
+  return { c, props, logs, models, fetches, triggers, sheets, cache, lockWaits, keyReads, run, config, stateKey,
     state: () => c.getNewsArchiveState_(config()), now: () => now, setNow: value => { now = value; },
     setBusy: value => { busy = value; }, setAi: value => { ai = value; },
     setBusyUntil: value => { busyUntil = value; },
@@ -130,9 +154,14 @@ function news(e, time = start + 1000, scope = 'group:a', title = '代表新聞',
 }
 function seedArchive(e, periodStart = start, scope = 'group:a', patch = {}) {
   const config = { ...e.config(), conversationId: scope }, period = { startAt: periodStart, endAt: periodStart + week };
-  e.c.appendWeeklySummaryRow_({ conversationId: scope, archiveType: 'news', summary: '已存摘要', sourceItemCount: 1,
+  e.c.appendWeeklySummaryRow_({ conversationId: scope, summary: '已存摘要', sourceItemCount: 1,
     archiveKey: e.c.getNewsArchiveKey_(config, period), periodStartAt: new Date(period.startAt).toISOString(),
     periodEndAt: new Date(period.endAt).toISOString(), ...patch });
+}
+function sendTextCommand(e, text) {
+  e.c.handleLineEvent({ ...event, type: 'message', replyToken: 'test-only-reply-token', timestamp: e.now(),
+    message: { type: 'text', id: String(200 + e.fetches.length), text } }, e.now());
+  return JSON.parse(e.fetches.at(-1).options.payload).messages.map(message => message.text).join('\n');
 }
 let checks = 0;
 function check(name, run) { run(); checks++; process.stdout.write('PASS ' + name + '\n'); }
@@ -155,6 +184,24 @@ check('configuration absent stays off and keeps legacy manual rolling7 behavior'
   assert.equal(e.models.length, 1);
   assert.equal(e.sheets.get('WeeklySummary').records()[0].ArchiveKey, '');
   assert(e.c.getNewsArchiveStatusText_('group:a').includes('未啟用'));
+});
+check('LINE and scheduled entries retain rolling and fixed news archives', () => {
+  for (const configured of [false, true]) {
+    const e = env({ configured }); e.restoreAi();
+    news(e, end - 1000);
+    if (configured) assert.equal(e.c.processScheduledNewsArchives()[0].status, 'completed');
+
+    e.c.handleLineEvent({ ...event, type: 'message', replyToken: 'test-only-reply-token', timestamp: e.now(),
+      message: { type: 'text', id: '100', text: '#封存本週新聞' } }, e.now());
+    const reply = JSON.parse(e.fetches.at(-1).options.payload).messages[0].text;
+    assert(reply.includes(configured ? '不重複封存' : '已經放進 WeeklySummary'));
+    const records = e.sheets.get('WeeklySummary').records();
+    assert.equal(records.length, 1);
+    assert.equal(records[0].ArchiveType, 'news');
+    assert.equal(records[0].ArchiveOrigin, configured ? 'auto' : '');
+    assert.equal(e.fetches.filter(call => call.url.endsWith('/gemini-4-hydrogen:generateContent')).length, 1);
+    assert.deepEqual(e.keyReads, ['GEMINI_API_KEY']);
+  }
 });
 check('invalid config never reads or writes Sheet, invokes AI or installs a trigger', () => {
   const bad = ['{', '{}', '{"conversations":{}}',
@@ -419,6 +466,57 @@ check('trigger installer requires setup, replaces only its own handler and keeps
   assert.equal(trigger.atHour, 12); assert.equal(trigger.nearMinute, 15);
   assert.equal(trigger.everyDays, 1); assert.equal(trigger.inTimezone, 'Asia/Taipei');
 });
+check('news queue installer replaces only news triggers and stays at one per minute', () => {
+  const e = env();
+  const newsHandler = 'processNewsUrlQueue';
+  const oldNews = { getHandlerFunction: () => newsHandler };
+  const duplicateNews = { getHandlerFunction: () => newsHandler };
+  const webTrigger = { getHandlerFunction: () => 'processWebTaskQueue' };
+  const archiveTrigger = { getHandlerFunction: () => 'processScheduledNewsArchives' };
+  e.triggers.push(oldNews, webTrigger, duplicateNews, archiveTrigger);
+
+  for (let i = 0; i < 2; i++) {
+    const previous = e.triggers.filter(trigger => trigger.getHandlerFunction() === newsHandler);
+    assert.equal(e.c.installNewsUrlQueueTrigger(), 'processNewsUrlQueue trigger installed.');
+    assert.equal(e.triggers.length, 3);
+    assert.equal(e.triggers[0], webTrigger);
+    assert.equal(e.triggers[1], archiveTrigger);
+    assert.equal(e.triggers[2].getHandlerFunction(), newsHandler);
+    assert.equal(e.triggers[2].everyMinutes, 1);
+    assert(!previous.includes(e.triggers[2]));
+  }
+});
+check('legacy queue installer removes retired triggers and rebuilds only one news minute trigger', () => {
+  const e = env();
+  const archiveTrigger = { getHandlerFunction: () => 'processScheduledNewsArchives' };
+  const oldNews = { getHandlerFunction: () => 'processNewsUrlQueue' };
+  const oldWeb = { getHandlerFunction: () => 'processWebTaskQueue' };
+  e.triggers.push(oldNews, archiveTrigger, oldWeb, { ...oldNews }, { ...oldWeb });
+  assert.equal(e.c.processWebTaskQueue, undefined);
+  for (let i = 0; i < 2; i++) {
+    assert.equal(e.c.installWebTaskQueueTrigger(), 'processNewsUrlQueue trigger installed.');
+    assert.equal(e.triggers[0], archiveTrigger);
+    assert.notEqual(e.triggers[1], oldNews);
+    assert.deepEqual(e.triggers.slice(1).map(trigger => [trigger.getHandlerFunction(), trigger.everyMinutes]),
+      [['processNewsUrlQueue', 1]]);
+  }
+});
+check('setup only initializes five active tabs and preserves existing historical tabs', () => {
+  const e = env(); e.sheets.clear();
+  const active = ['ConversationLog', 'WeeklySummary', 'NewsUrlQueue', 'NewsInbox', 'PendingReplies'];
+  assert.equal(e.c.setupLogSheet(), ['Sheet setup completed:', ...active].join(', '));
+  assert.deepEqual([...e.sheets.keys()], active);
+
+  const retired = ['TopicHighlights', 'WebTaskQueue', 'WebSummary'];
+  for (const name of retired) e.sheets.set(name, new Sheet(['ConversationId', 'Text'], [['group:a', '歷史資料']]));
+  const historical = retired.map(name => e.sheets.get(name));
+  assert.equal(e.c.setupLogSheet(), ['Sheet setup completed:', ...active].join(', '));
+  assert.deepEqual([...e.sheets.keys()], [...active, ...retired]);
+  for (const [i, name] of retired.entries()) {
+    assert.equal(e.sheets.get(name), historical[i]);
+    assert.deepEqual(historical[i].records(), [{ ConversationId: 'group:a', Text: '歷史資料' }]);
+  }
+});
 check('setup preserves reordered columns and custom values; broken old schema does not migrate', () => {
   const e = env({ legacy: true });
   const headers = ['Custom', ...legacyHeaders.slice().reverse()];
@@ -446,12 +544,25 @@ check('cleanup cancels in-flight result and prevents old periods returning; next
   assert.equal(e.run('auto').status, 'completed');
   assert.equal(e.sheets.get('WeeklySummary').records().filter(row => row.ConversationId === 'group:b').length, 1);
 });
-check('clear confirmation scope and legacy behavior stay compatible', () => {
-  const e = env({ configured: false }); seedArchive(e, start, 'group:a'); seedArchive(e, start, 'group:b');
-  assert.equal(e.c.getCleanupCommandInfo_('#清空封存').isConfirm, false);
-  assert.equal(e.c.getCleanupCommandInfo_('#清空封存 確認').isConfirm, true);
-  assert.equal(e.c.performDataCleanup_('weekly_summary', 'group:a').total, 1);
-  assert.equal(e.props.size, 0); assert.equal(e.sheets.get('WeeklySummary').records()[0].ConversationId, 'group:b');
+check('LINE clear archive confirmation deletes every summary type for only the current room under lock', () => {
+  const e = env({ configured: false });
+  const sheet = e.sheets.get('WeeklySummary');
+  for (const scope of ['group:a', 'group:b']) {
+    seedArchive(e, start, scope);
+    for (const type of ['topic', '']) {
+      e.c.appendRowByHeaders_(sheet, { ConversationId: scope, ArchiveType: type, Summary: '歷史話題' });
+    }
+  }
+  const otherRoom = sheet.records().filter(row => row.ConversationId === 'group:b');
+  const remove = sheet.deleteRow.bind(sheet);
+  sheet.deleteRow = row => { assert(e.held()); remove(row); };
+  e.setFlush(() => assert(e.held()));
+
+  assert(sendTextCommand(e, '#清空封存').includes('#清空封存 確認'));
+  assert.equal(sheet.records().length, 6);
+  assert(sendTextCommand(e, '#清空封存 確認').includes('合計清理筆數：3'));
+  assert.deepEqual(sheet.records(), otherRoom);
+  assert.equal(e.props.size, 0); assert(!e.held());
 });
 check('a reply transmission failure after commit never resets completion or duplicates an archive', () => {
   const e = env(); news(e);
@@ -470,13 +581,18 @@ check('a reply transmission failure after commit never resets completion or dupl
 });
 check('all summary consumers display exact new intervals and preserve legacy date-only rows', () => {
   const e = env(); news(e); e.run();
-  e.c.appendWeeklySummaryRow_({ conversationId: 'group:a', summary: '舊話題', periodStart: '2026-09-01', periodEnd: '2026-09-08' });
+  const sheet = e.sheets.get('WeeklySummary');
+  for (const type of ['topic', '']) {
+    e.c.appendRowByHeaders_(sheet, { ConversationId: 'group:a', Summary: '舊話題 ' + (type || '無類型'),
+      ArchiveType: type, PeriodStart: '2026-09-01', PeriodEnd: '2026-09-08' });
+  }
   const text = e.c.getRecentWeeklySummaryText('group:a', 8, undefined, true);
   assert(text.includes('2026-10-07 12:00（含）')); assert(text.includes('2026-10-14 12:00（不含，台灣時間）'));
   assert(text.includes('2026-09-01 ～ 2026-09-08'));
   const tool = e.c.getRecentWeeklySummaryText('group:a', 8, 'news', true);
   assert(tool.includes('新聞封存')); assert(!tool.includes('舊話題'));
-  const sheet = e.sheets.get('WeeklySummary');
+  const history = e.c.getRecentWeeklySummaryText('group:a', 8, 'topic', true);
+  assert(history.includes('舊話題 topic')); assert(history.includes('舊話題 無類型')); assert(!history.includes('新聞封存'));
   sheet.data[1][sheet.data[0].indexOf('PeriodStartAt')] = 'corrupt timestamp';
   const fallback = e.c.getRecentWeeklySummaryText('group:a', 8, undefined, true);
   assert(fallback.includes('2026-10-07 ～ 2026-10-14')); assert(fallback.includes('舊話題'));
@@ -488,7 +604,15 @@ check('actual AiService/provider/parser shares archive validator, deadline and m
   assert.equal(result.status, 'completed', JSON.stringify({ result, logs: e.logs }));
   assert.equal(e.fetches.length, 1);
   assert(e.fetches[0].options.timeoutSeconds <= 30);
-  assert(e.logs.some(line => line.includes('AI_CALL_METADATA')));
+  const [{ url, options }] = e.fetches;
+  assert.equal(url, 'https://generativelanguage.googleapis.com/v1beta/models/gemini-4-hydrogen:generateContent');
+  assert.equal(options.headers['x-goog-api-key'], 'test-only-placeholder');
+  const config = JSON.parse(options.payload).generationConfig;
+  assert.equal(config.thinkingConfig.thinkingLevel, 'MEDIUM');
+  assert(config.responseJsonSchema.properties.summary);
+  const meta = JSON.parse(e.logs.find(line => line.startsWith('AI_CALL_METADATA ')).slice(17));
+  assert.equal(meta.keyScope, 'free'); assert.equal(meta.webSearchMode, '');
+  assert.deepEqual(e.keyReads, ['GEMINI_API_KEY']);
 });
 
 const topics = [{ title: '群友討論 AI 改變對話習慣', summary: '甲與乙認為過度依賴制式回覆會影響討論方式。', talkingPoint: '哪些場合仍需要自己的說法？', relatedNewsIds: [] }];
@@ -506,6 +630,48 @@ function editorial(e, count = 23) {
   e.setAi(() => ({ ok: true, json: { newsClusters: [], ungroupedNewsIds: ids, conversationTopics: topics } }));
   return { items, ids };
 }
+check('LINE weekly news retains editorial aliases, detailed memory, high potential, category and diagnostics', () => {
+  const e = env(); const { ids } = editorial(e, 2); e.restoreAi(); seedArchive(e);
+  const sheet = e.c.ensureNewsInboxSheet_();
+  for (const [i, item] of [
+    { Title: '國際談判有進展', Category: '國際政治', TopicPotential: '高', Outline: '談判議程與時程', Angle: '後續談判觀察' },
+    { Title: '公共建設案', Category: '公共政策', TopicPotential: '低', CategoryConfidence: 0.3 },
+    { Title: '其他群組的新聞', ConversationId: 'group:b', Category: '國際政治', TopicPotential: '高' }
+  ].entries()) {
+    e.c.appendRowByHeaders_(sheet, { CreatedAt: new e.c.Date(end - 1000 - i), ConversationId: 'group:a', Status: 'ok',
+      Url: 'https://example.org/weekly/' + i, Brief: '新聞簡介', StoryKey: item.Title, ...item });
+  }
+  const fetch = e.c.UrlFetchApp.fetch;
+  e.c.UrlFetchApp.fetch = (url, options) => {
+    if (!url.endsWith(':generateContent')) return fetch(url, options);
+    e.fetches.push({ url, options });
+    const generation = JSON.parse(options.payload).generationConfig;
+    return generation.responseMimeType === 'application/json'
+      ? geminiReply(JSON.stringify({ newsClusters: [], ungroupedNewsIds: ids, conversationTopics: topics }))
+      : geminiReply('過去脈絡：談判延續');
+  };
+
+  const standard = sendTextCommand(e, '#本週新聞');
+  assert.equal(sendTextCommand(e, '#本週新聞 精簡'), standard);
+  for (const text of [topics[0].title, '國際談判有進展', '公共建設案', 'https://example.org/weekly/0']) assert(standard.includes(text));
+
+  const detailed = sendTextCommand(e, '#本週新聞 詳細');
+  for (const text of ['談判議程與時程', '後續談判觀察', '節目潛力：高', '過去脈絡：談判延續']) assert(detailed.includes(text));
+  const high = sendTextCommand(e, '#本週新聞 高潛力');
+  assert(high.includes('國際談判有進展')); assert(!high.includes('公共建設案'));
+  const category = sendTextCommand(e, '#本週新聞 分類 公共政策');
+  assert(category.includes('公共建設案')); assert(!category.includes('國際談判有進展'));
+  const diagnostic = sendTextCommand(e, '#本週新聞 診斷');
+  assert(diagnostic.includes('公共建設案')); assert(diagnostic.includes('分類信心低於 0.55'));
+  for (const reply of [standard, detailed, high, category, diagnostic]) assert(!reply.includes('其他群組的新聞'));
+  const aiCalls = e.fetches.filter(call => call.url.endsWith(':generateContent'));
+  assert.equal(aiCalls.length, 2);
+  assert(aiCalls[0].url.includes('/gemini-4-hydrogen:'));
+  assert(aiCalls[1].url.includes('/gemini-4-hydrogen:'));
+  const bridgePrompt = JSON.parse(aiCalls[1].options.payload).contents.at(-1).parts[0].text;
+  assert(bridgePrompt.includes('已存摘要')); assert(bridgePrompt.includes('國際談判有進展'));
+  assert.deepEqual(e.keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
+});
 check('real conversation reader and long multi-bubble render retain topics, every news and URLs', () => {
   const e = env(), { items } = editorial(e);
   const text = e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query);
@@ -641,10 +807,9 @@ check('busy news insertion throws, sync queues, background stays incomplete, man
   assert.equal(e.sheets.get('NewsInbox').records().length, 0);
 });
 check('all cleanup scopes hold one outer lock through row snapshot, deletion and flush', () => {
-  for (const key of ['conversation_log', 'topic_highlights', 'web_data', 'weekly_summary', 'news_data', 'pending_replies']) {
+  for (const key of ['conversation_log', 'weekly_summary', 'news_data', 'pending_replies']) {
     const e = env();
-    const names = { conversation_log: ['ConversationLog'], topic_highlights: ['TopicHighlights'],
-      web_data: ['WebSummary', 'WebTaskQueue'], weekly_summary: ['WeeklySummary'],
+    const names = { conversation_log: ['ConversationLog'], weekly_summary: ['WeeklySummary'],
       news_data: ['NewsInbox', 'NewsUrlQueue'], pending_replies: ['PendingReplies'] }[key];
     for (const name of names) {
       const sheet = new Sheet(['ConversationId'], ['group:b', 'group:a', 'group:c', 'group:a', 'group:d'].map(scope => [scope]));
@@ -832,7 +997,7 @@ check('all rejected, partial and valid-empty topics keep distinct diagnostics an
       assert.equal(data.stage, 'done'); assert.equal(data.errorCode, '');
     }
     assert.equal(diagnostics[1].cacheHit, true);
-    assert([...e.cache.keys()].some(key => key.startsWith('weekly_editorial:v1.17.0:')));
+    assert([...e.cache.keys()].some(key => key.startsWith('weekly_editorial:v2.0.0:')));
   }
 });
 check('corrupt topic count cache is discarded and regenerated without storing rejected raw content', () => {
@@ -855,12 +1020,8 @@ check('actual AI service preserves rejected topic cause and removes unknown ID t
   const marker = 'PRIVATE_ID_DIALOGUE https://private.example/url';
   e.c.UrlFetchApp.fetch = (url, options) => {
     e.fetches.push({ url, options });
-    return { getResponseCode: () => 200, getContentText: () => JSON.stringify({
-      object: 'response', status: 'completed', output: [{ type: 'message', status: 'completed', role: 'assistant',
-        content: [{ type: 'output_text', text: JSON.stringify({ newsClusters: [], ungroupedNewsIds: [...ids, marker],
-          conversationTopics: [{ ...topics[0], title: '   ' }] }) }] }],
-      usage: { input_tokens: 10, output_tokens: 20, total_tokens: 30 }
-    }) };
+    return geminiReply(JSON.stringify({ newsClusters: [], ungroupedNewsIds: [...ids, marker],
+      conversationTopics: [{ ...topics[0], title: '   ' }] }));
   };
   const text = e.c.tryBuildWeeklyEditorialDigest_('group:a', items, query);
   assert(text.includes('話題未通過檢查')); assert(text.includes(items[0].url));
@@ -893,23 +1054,23 @@ check('deployment guides keep auto off through setup, update Web App, verify man
     assert(start >= 0 && setup > 0 && deploy > setup && manual > deploy && enable > manual && install > enable, name);
     assert(section.slice(0, deploy).includes('autoEnabled=false'));
     assert(section.slice(deploy, enable).includes('#版本'));
+    assert(section.slice(deploy, enable).includes('v2.0.0'));
   }
 });
 
-function queueWork(e, kind, { id = 'task-a', scope = 'group:a', status = 'processing', retryCount = 0, urls = ['https://example.org/queue'] } = {}) {
-  const isNews = kind === 'news', sheet = isNews ? e.c.ensureNewsUrlQueueSheet_() : e.c.ensureWebTaskQueueSheet_();
+function queueWork(e, { id = 'task-a', scope = 'group:a', status = 'processing', retryCount = 0 } = {}) {
+  const sheet = e.c.ensureNewsUrlQueueSheet_(), url = 'https://example.org/queue';
   const task = { taskId: id, conversationId: scope, startedAtMs: e.now(), retryCount,
     sourceType: scope.split(':')[0], userId: 'alice', groupId: scope.startsWith('group:') ? scope.slice(6) : '',
-    roomId: scope.startsWith('room:') ? scope.slice(5) : '', url: urls[0], urls: urls.join('\n'),
-    userPrompt: urls.join('\n'), taskType: kind === 'program' ? 'program_topic_analysis' : 'web_lazy_summary' };
-  e.c.appendRowByHeaders_(sheet, { TaskId: id, ConversationId: scope, Status: status,
+    roomId: scope.startsWith('room:') ? scope.slice(5) : '', url, userPrompt: url };
+  e.c.appendRowByHeaders_(sheet, { TaskId: id, ConversationId: scope, Status: status, CreatedAt: new e.c.Date(e.now()),
     StartedAt: status === 'processing' ? new e.c.Date(task.startedAtMs) : '', RetryCount: retryCount,
     SourceType: task.sourceType, UserId: task.userId, GroupId: task.groupId, RoomId: task.roomId,
-    Url: task.url, Urls: task.urls, UserPrompt: task.userPrompt, TaskType: task.taskType });
-  return { task, sheet, name: isNews ? 'NewsUrlQueue' : 'WebTaskQueue',
-    cleanup: () => e.c.performDataCleanup_(isNews ? 'news_data' : 'web_data', scope),
-    run: () => isNews ? e.c.processSingleNewsUrlTask_(task) : e.c.processSingleWebTask_(task),
-    schedule: () => isNews ? e.c.processNewsUrlQueue() : e.c.processWebTaskQueue() };
+    Url: task.url, UserPrompt: task.userPrompt });
+  return { task, sheet,
+    cleanup: () => e.c.performDataCleanup_('news_data', scope),
+    run: () => e.c.processSingleNewsUrlTask_(task),
+    schedule: () => e.c.processNewsUrlQueue() };
 }
 function queueServices(e, { outcome = 'success', onRead = () => {}, onAi = () => {} } = {}) {
   const calls = { readers: 0, ai: 0 };
@@ -919,73 +1080,83 @@ function queueServices(e, { outcome = 'success', onRead = () => {}, onAi = () =>
       error: 'PRIVATE_READER_BODY', httpStatus: outcome === 'retry' ? 503 : 404, retryable: outcome === 'retry' };
     return { ok: true, url, title: '測試新聞', mainText: '測試新聞正文', contentType: 'article', readerRoute: 'jina_reader' };
   };
-  const infer = () => {
+  e.c.analyzeNewsUrlWithAi_ = () => {
     assert(!e.held()); calls.ai++; onAi();
     if (outcome === 'ai_failed') throw Object.assign(Error('PRIVATE_AI_BODY'), { errorType: 'ai_timeout', retryable: true });
-  };
-  e.c.analyzeNewsUrlWithAi_ = () => {
-    infer(); return { title: 'Queue 新聞', brief: '素材簡介', outline: '完整正文', category: '科技與 AI',
+    return { title: 'Queue 新聞', brief: '素材簡介', outline: '完整正文', category: '科技與 AI',
       angle: '節目切角', topicPotential: '高', storyKey: 'Queue 新聞事件', categoryConfidence: 0.9 };
   };
-  e.c.runWebLazySummaryAi_ = () => {
-    infer(); return { title: '快讀標題', summary: '快讀摘要', keyPoints: ['重點'], warnings: [],
-      contentTypeLabel: '新聞資訊', topicPotential: '高', extractionConfidence: 0.9 };
-  };
-  e.c.runAiMemoryTask = () => { infer(); return { ok: true, text: '節目分析結果' }; };
   return calls;
 }
 function scopeRows(e, name, scope = 'group:a') {
   return e.sheets.get(name)?.records().filter(row => row.ConversationId === scope) || [];
 }
 
-for (const kind of ['news', 'web', 'program']) {
-  check(kind + ' relocates a surviving task after preceding rows are deleted', () => {
-    const e = env(), preceding = queueWork(e, kind, { id: 'task-other', scope: 'group:b' });
-    const work = queueWork(e, kind);
-    let shifted = false;
-    const calls = queueServices(e, { onAi: () => {
-      if (!shifted) { shifted = true; preceding.cleanup(); }
-    } });
-    assert.equal(work.run().status, 'committed');
-    assert.equal(work.sheet.records().length, 1); assert.equal(work.sheet.records()[0].TaskId, 'task-a');
-    assert.equal(work.sheet.records()[0].Status, 'done'); assert.equal(calls.ai, 1);
-    assert.equal(scopeRows(e, 'PendingReplies').length, kind === 'news' ? 0 : 1);
-    assert(!e.held());
+check('news queue failures reach LINE and acknowledge pending replies', () => {
+  const e = env();
+  const work = queueWork(e, { status: 'pending' });
+  e.c.fetchAndExtractWebPageByReaderLayer_ = () => ({
+    ok: false, errorType: 'reader_error', error: 'Reader unavailable', httpStatus: 404, retryable: false
   });
-  for (const phase of ['reader', 'ai']) check(kind + ' cancellation during ' + phase + ' never recreates deleted data or replies', () => {
-    const e = env(), work = queueWork(e, kind), other = queueWork(e, kind, { id: 'task-b', scope: 'group:b' });
-    const beforeOther = JSON.stringify(other.sheet.records()[1]);
-    let once = false;
-    const cancel = () => { if (!once) { once = true; work.cleanup(); } };
-    const calls = queueServices(e, { onRead: phase === 'reader' ? cancel : undefined, onAi: phase === 'ai' ? cancel : undefined });
-    assert.equal(work.run().status, 'cancelled');
-    assert.equal(JSON.stringify(other.sheet.records()[0]), beforeOther);
-    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
-    assert.equal(calls.ai, phase === 'reader' ? 0 : 1); assert(!e.held());
-  });
-  check(kind + ' missing task before processing skips all Reader and AI work', () => {
-    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
-    work.cleanup(); assert.equal(work.run().status, 'cancelled');
-    assert.deepEqual(calls, { readers: 0, ai: 0 }); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
-  });
-  check(kind + ' a replacement task at the same row survives the old result', () => {
-    const e = env(), old = queueWork(e, kind); let replacement;
-    queueServices(e, { onAi: () => {
-      old.cleanup(); replacement = queueWork(e, kind, { id: 'new-task' });
-    } });
-    assert.equal(old.run().status, 'cancelled');
-    assert.equal(old.sheet.records()[0].TaskId, 'new-task'); assert.equal(old.sheet.records()[0].Status, 'processing');
-    queueServices(e); assert.equal(replacement.run().status, 'committed');
-    assert.equal(old.sheet.records()[0].TaskId, 'new-task'); assert.equal(old.sheet.records()[0].Status, 'done');
-    const sources = scopeRows(e, kind === 'news' ? 'NewsInbox' : 'WebSummary');
-    assert.equal(sources.length, kind === 'program' ? 0 : 1);
-  });
-}
-for (const kind of ['news', 'web', 'program']) check(kind + ' public handler claims with StartedAt, flushes and processes outside the lock', () => {
-  const e = env(), work = queueWork(e, kind, { status: 'pending' });
+
+  work.schedule();
+  assert.equal(work.sheet.records()[0].Status, 'failed');
+  const pending = e.sheets.get('PendingReplies');
+  assert.deepEqual(pending.records().map(row => [row.ConversationId, row.ReplyMode]), [['group:a', 'news_url_failed']]);
+
+  e.c.handleLineEvent({ ...event, type: 'message', replyToken: 'test-only-reply-token', timestamp: e.now(),
+    message: { type: 'text', id: '101', text: '收到' } }, e.now());
+  const reply = JSON.parse(e.fetches.at(-1).options.payload);
+  assert.equal(reply.replyToken, 'test-only-reply-token');
+  assert(reply.messages[0].text.includes(work.task.url));
+  assert.equal(pending.records().length, 0);
+});
+
+check('news relocates a surviving task after preceding rows are deleted', () => {
+  const e = env(), preceding = queueWork(e, { id: 'task-other', scope: 'group:b' });
+  const work = queueWork(e);
+  let shifted = false;
+  const calls = queueServices(e, { onAi: () => {
+    if (!shifted) { shifted = true; preceding.cleanup(); }
+  } });
+  assert.equal(work.run().status, 'committed');
+  assert.equal(work.sheet.records().length, 1); assert.equal(work.sheet.records()[0].TaskId, 'task-a');
+  assert.equal(work.sheet.records()[0].Status, 'done'); assert.equal(calls.ai, 1);
+  assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+  assert(!e.held());
+});
+for (const phase of ['reader', 'ai']) check('news cancellation during ' + phase + ' never recreates deleted data or replies', () => {
+  const e = env(), work = queueWork(e), other = queueWork(e, { id: 'task-b', scope: 'group:b' });
+  const beforeOther = JSON.stringify(other.sheet.records()[1]);
+  let once = false;
+  const cancel = () => { if (!once) { once = true; work.cleanup(); } };
+  const calls = queueServices(e, { onRead: phase === 'reader' ? cancel : undefined, onAi: phase === 'ai' ? cancel : undefined });
+  assert.equal(work.run().status, 'cancelled');
+  assert.equal(JSON.stringify(other.sheet.records()[0]), beforeOther);
+  for (const name of ['NewsInbox', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
+  assert.equal(calls.ai, phase === 'reader' ? 0 : 1); assert(!e.held());
+});
+check('news missing task before processing skips all Reader and AI work', () => {
+  const e = env(), work = queueWork(e), calls = queueServices(e);
+  work.cleanup(); assert.equal(work.run().status, 'cancelled');
+  assert.deepEqual(calls, { readers: 0, ai: 0 }); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+});
+check('news a replacement task at the same row survives the old result', () => {
+  const e = env(), old = queueWork(e); let replacement;
+  queueServices(e, { onAi: () => {
+    old.cleanup(); replacement = queueWork(e, { id: 'new-task' });
+  } });
+  assert.equal(old.run().status, 'cancelled');
+  assert.equal(old.sheet.records()[0].TaskId, 'new-task'); assert.equal(old.sheet.records()[0].Status, 'processing');
+  queueServices(e); assert.equal(replacement.run().status, 'committed');
+  assert.equal(old.sheet.records()[0].TaskId, 'new-task'); assert.equal(old.sheet.records()[0].Status, 'done');
+  assert.equal(scopeRows(e, 'NewsInbox').length, 1);
+});
+check('news public handler claims with StartedAt, flushes and processes outside the lock', () => {
+  const e = env(), work = queueWork(e, { status: 'pending' });
   let snapshots = 0;
-  const worker = kind === 'news' ? 'processSingleNewsUrlTask_' : 'processSingleWebTask_', original = e.c[worker];
-  e.c[worker] = task => {
+  const original = e.c.processSingleNewsUrlTask_;
+  e.c.processSingleNewsUrlTask_ = task => {
     assert(!e.held()); assert(!Object.hasOwn(task, 'sheetRowNumber'));
     assert.equal(task.startedAtMs, e.now());
     assert.equal(work.sheet.records()[0].Status, 'processing');
@@ -999,8 +1170,8 @@ for (const kind of ['news', 'web', 'program']) check(kind + ' public handler cla
 });
 check('news retry and permanent failure cannot update a different room or create a cancelled notification', () => {
   for (const outcome of ['retry', 'failed', 'ai_failed']) for (const cancel of [false, true]) {
-    const e = env(), preceding = queueWork(e, 'news', { id: 'preceding', scope: 'group:b' });
-    const work = queueWork(e, 'news');
+    const e = env(), preceding = queueWork(e, { id: 'preceding', scope: 'group:b' });
+    const work = queueWork(e);
     queueServices(e, { outcome, onRead: () => cancel ? work.cleanup() : preceding.cleanup(),
       onAi: () => cancel ? work.cleanup() : undefined });
     const result = work.run();
@@ -1015,44 +1186,18 @@ check('news retry and permanent failure cannot update a different room or create
     }
   }
 });
-check('web and program AI failure revalidates ownership before creating its failure reply', () => {
-  for (const kind of ['web', 'program']) for (const cancelled of [false, true]) {
-    const e = env(), work = queueWork(e, kind);
-    queueServices(e, { outcome: 'ai_failed', onAi: () => { if (cancelled) work.cleanup(); } });
-    const result = work.run();
-    assert.equal(result.status, cancelled ? 'cancelled' : 'committed');
-    assert.equal(scopeRows(e, 'PendingReplies').length, cancelled ? 0 : 1);
-    if (!cancelled) assert.equal(work.sheet.records()[0].Status, kind === 'program' ? 'failed' : 'done');
-    assert(!e.logs.join('').includes('PRIVATE_AI_BODY'));
-  }
-});
 check('news batch cancellation skips the second claimed task and does not revive either result', () => {
-  const e = env(), first = queueWork(e, 'news', { status: 'pending' });
-  queueWork(e, 'news', { id: 'second', status: 'pending' });
+  const e = env(), first = queueWork(e, { status: 'pending' });
+  queueWork(e, { id: 'second', status: 'pending' });
   const calls = queueServices(e, { onAi: () => first.cleanup() });
   first.schedule(); assert.equal(calls.ai, 1); assert.equal(calls.readers, 1);
   assert.equal(first.sheet.records().length, 0); assert.equal(scopeRows(e, 'NewsInbox').length, 0);
 });
-check('multi URL web cancellation stops later URLs and saves no partial or late summaries', () => {
-  const e = env(), work = queueWork(e, 'web', { urls: ['https://example.org/1', 'https://example.org/2', 'https://example.org/3'] });
-  const calls = queueServices(e, { onAi: () => work.cleanup() });
-  assert.equal(work.run().status, 'cancelled'); assert.equal(calls.readers, 1); assert.equal(calls.ai, 1);
-  assert.equal(scopeRows(e, 'WebSummary').length, 0); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
-});
-check('multi URL web keeps each success or failure record and the existing combined reply', () => {
-  const e = env(), work = queueWork(e, 'web', { urls: ['https://example.org/1', 'https://example.org/2'] });
-  const calls = queueServices(e), read = e.c.fetchAndExtractWebPageByReaderLayer_;
-  e.c.fetchAndExtractWebPageByReaderLayer_ = url => url.endsWith('/2')
-    ? { ok: false, errorType: 'reader_error', httpStatus: 404 } : read(url);
-  assert.equal(work.run().status, 'committed'); assert.equal(calls.ai, 1);
-  assert.deepEqual(scopeRows(e, 'WebSummary').map(row => row.Status), ['ok', 'failed']);
-  assert.equal(scopeRows(e, 'PendingReplies').length, 1); assert.equal(work.sheet.records()[0].Status, 'done');
-});
 check('queue identity guards reject missing, duplicate, changed room, state or claim time without fallback rows', () => {
-  for (const kind of ['news', 'web']) for (const invalid of ['blank', 'duplicate', 'scope', 'status', 'started', 'missing-start']) {
-    const e = env(), work = queueWork(e, kind), calls = queueServices(e), headers = work.sheet.data[0];
+  for (const invalid of ['blank', 'duplicate', 'scope', 'status', 'started', 'missing-start']) {
+    const e = env(), work = queueWork(e), calls = queueServices(e), headers = work.sheet.data[0];
     if (invalid === 'blank') work.task.taskId = '';
-    if (invalid === 'duplicate') queueWork(e, kind, { scope: 'group:b' });
+    if (invalid === 'duplicate') queueWork(e, { scope: 'group:b' });
     if (invalid === 'scope') work.sheet.data[1][headers.indexOf('ConversationId')] = 'group:b';
     if (invalid === 'status') work.sheet.data[1][headers.indexOf('Status')] = 'done';
     if (invalid === 'started') work.sheet.data[1][headers.indexOf('StartedAt')] = new e.c.Date(e.now() + 1);
@@ -1063,78 +1208,69 @@ check('queue identity guards reject missing, duplicate, changed room, state or c
   }
 });
 check('claim skips blank and duplicate task IDs and never dispatches an ambiguous task', () => {
-  for (const kind of ['news', 'web']) {
-    const e = env(), work = queueWork(e, kind, { id: '', status: 'pending' });
-    queueWork(e, kind, { id: 'duplicate', status: 'pending' });
-    queueWork(e, kind, { id: 'duplicate', scope: 'group:b', status: 'pending' });
-    const calls = queueServices(e); work.schedule();
-    assert.deepEqual(calls, { readers: 0, ai: 0 });
-    assert(work.sheet.records().every(row => row.Status === 'pending')); assert(!e.held());
-  }
+  const e = env(), work = queueWork(e, { id: '', status: 'pending' });
+  queueWork(e, { id: 'duplicate', status: 'pending' });
+  queueWork(e, { id: 'duplicate', scope: 'group:b', status: 'pending' });
+  const calls = queueServices(e); work.schedule();
+  assert.deepEqual(calls, { readers: 0, ai: 0 });
+  assert(work.sheet.records().every(row => row.Status === 'pending')); assert(!e.held());
 });
 check('queue read, schema and retrieval failure stays distinct from cancellation and never creates a missing queue', () => {
-  for (const kind of ['news', 'web']) for (const failure of ['read', 'missing-sheet', 'missing-header', 'duplicate-header', 'retrieve']) {
-    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
+  for (const failure of ['read', 'missing-sheet', 'missing-header', 'duplicate-header', 'retrieve']) {
+    const e = env(), work = queueWork(e), calls = queueServices(e);
     if (failure === 'read') work.sheet.failRead = true;
-    if (failure === 'missing-sheet') e.sheets.delete(work.name);
+    if (failure === 'missing-sheet') e.sheets.delete('NewsUrlQueue');
     if (failure === 'missing-header') work.sheet.data[0][0] = 'NotTaskId';
     if (failure === 'duplicate-header') work.sheet.data[0].push('TaskId');
     if (failure === 'retrieve') e.c.getSpreadsheet_ = () => { throw Error('PRIVATE_SHEET_RETRIEVAL'); };
     assert.equal(work.run().status, 'failed'); assert.deepEqual(calls, { readers: 0, ai: 0 });
     assert(!e.logs.join('').includes('PRIVATE_'));
-    if (failure === 'missing-sheet') assert(!e.sheets.has(work.name));
+    if (failure === 'missing-sheet') assert(!e.sheets.has('NewsUrlQueue'));
   }
 });
 check('queue commit rechecks headers and ownership after AI and before any output is written', () => {
-  for (const kind of ['news', 'web', 'program']) for (const mutation of ['missing-header', 'read-error', 'changed-start']) {
-    const e = env(), work = queueWork(e, kind);
+  for (const mutation of ['missing-header', 'read-error', 'changed-start']) {
+    const e = env(), work = queueWork(e);
     queueServices(e, { onAi: () => {
       if (mutation === 'missing-header') work.sheet.data[0][work.sheet.data[0].indexOf('FinishedAt')] = 'NotFinishedAt';
       if (mutation === 'read-error') work.sheet.failRead = true;
       if (mutation === 'changed-start') work.sheet.data[1][work.sheet.data[0].indexOf('StartedAt')] = new e.c.Date(e.now() + 1);
     } });
     assert.equal(work.run().status, mutation === 'changed-start' ? 'cancelled' : 'failed');
-    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
+    for (const name of ['NewsInbox', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
   }
 });
 check('queue commit owns one lock through output writes, terminal status and flush, excluding cleanup', () => {
-  for (const kind of ['news', 'web', 'program']) {
-    const e = env(), work = queueWork(e, kind); queueServices(e);
-    let flushed = false;
-    e.setFlush(() => {
-      assert(e.held()); assert.throws(work.cleanup);
-      if (!flushed) assert.equal(work.sheet.records()[0].Status, 'processing');
-      flushed = true;
-    });
-    assert.equal(work.run().status, 'committed'); assert(flushed); assert(!e.held());
-    e.setFlush(null); work.cleanup();
-    assert.equal(scopeRows(e, 'NewsInbox').length, 0); assert.equal(scopeRows(e, 'WebSummary').length, 0);
-  }
+  const e = env(), work = queueWork(e); queueServices(e);
+  let flushed = false;
+  e.setFlush(() => {
+    assert(e.held()); assert.throws(work.cleanup);
+    if (!flushed) assert.equal(work.sheet.records()[0].Status, 'processing');
+    flushed = true;
+  });
+  assert.equal(work.run().status, 'committed'); assert(flushed); assert(!e.held());
+  e.setFlush(null); work.cleanup();
+  assert.equal(scopeRows(e, 'NewsInbox').length, 0);
 });
 check('queue commit waits within a finite budget and uses the same single model result', () => {
-  for (const kind of ['news', 'web', 'program']) {
-    const e = env(), work = queueWork(e, kind), began = e.now();
-    const calls = queueServices(e, { onAi: () => e.setBusyUntil(e.now() + 3000) });
-    assert.equal(work.run().status, 'committed'); assert.equal(e.now() - began, 3000);
-    assert.equal(calls.ai, 1); assert.equal(work.sheet.records()[0].Status, 'done');
-  }
+  const e = env(), work = queueWork(e), began = e.now();
+  const calls = queueServices(e, { onAi: () => e.setBusyUntil(e.now() + 3000) });
+  assert.equal(work.run().status, 'committed'); assert.equal(e.now() - began, 3000);
+  assert.equal(calls.ai, 1); assert.equal(work.sheet.records()[0].Status, 'done');
 });
 check('permanent commit contention leaves unfinished work with a safe diagnostic and no duplicate AI or output', () => {
-  for (const kind of ['news', 'web', 'program']) {
-    const e = env(), work = queueWork(e, kind), began = e.now();
-    const calls = queueServices(e, { onAi: () => e.setBusy(true) });
-    assert.equal(work.run().status, 'busy'); assert.equal(e.now() - began, 5000); assert.equal(calls.ai, 1);
-    assert.equal(work.sheet.records()[0].Status, 'processing');
-    assert(e.logs.some(line => line.startsWith('QUEUE_TASK_STATUS ') && line.includes('local_time_budget')));
-    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
-  }
+  const e = env(), work = queueWork(e), began = e.now();
+  const calls = queueServices(e, { onAi: () => e.setBusy(true) });
+  assert.equal(work.run().status, 'busy'); assert.equal(e.now() - began, 5000); assert.equal(calls.ai, 1);
+  assert.equal(work.sheet.records()[0].Status, 'processing');
+  assert(e.logs.some(line => line.startsWith('QUEUE_TASK_STATUS ') && line.includes('local_time_budget')));
+  for (const name of ['NewsInbox', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
 });
 check('queue write and flush errors never mark done early, recreate failure notifications or rerun the model', () => {
-  for (const kind of ['news', 'web', 'program']) for (const failure of ['output', 'fields', 'flush']) {
-    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
+  for (const failure of ['output', 'fields', 'flush']) {
+    const e = env(), work = queueWork(e), calls = queueServices(e);
     if (failure === 'output') {
-      const factory = kind === 'news' ? 'ensureNewsInboxSheet_' : kind === 'web' ? 'ensureWebSummarySheet_' : 'ensurePendingRepliesSheet_';
-      e.c[factory] = () => { throw Error('PRIVATE_OUTPUT_WRITE'); };
+      e.c.ensureNewsInboxSheet_ = () => { throw Error('PRIVATE_OUTPUT_WRITE'); };
     }
     if (failure === 'fields') {
       const original = e.c.setCellByHeader_;
@@ -1152,37 +1288,31 @@ check('queue write and flush errors never mark done early, recreate failure noti
   }
 });
 check('a second worker invocation after commit cannot generate duplicate data, pending replies or AI', () => {
-  for (const kind of ['news', 'web', 'program']) {
-    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
-    assert.equal(work.run().status, 'committed');
-    const snapshot = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
-    assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
-    assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), snapshot);
-  }
+  const e = env(), work = queueWork(e), calls = queueServices(e);
+  assert.equal(work.run().status, 'committed');
+  const snapshot = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
+  assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
+  assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), snapshot);
 });
 check('queue claim uses the flushed Sheet timestamp even when storage changes millisecond precision', () => {
-  for (const kind of ['news', 'web']) {
-    const e = env({ clock: end + 900123 }), work = queueWork(e, kind, { status: 'pending' });
-    const setCell = e.c.setCellByHeader_;
-    e.c.setCellByHeader_ = (sheet, row, headers, name, value) => {
-      const stored = name === 'StartedAt' ? new e.c.Date(Math.round(value.getTime() / 1000) * 1000) : value;
-      return setCell(sheet, row, headers, name, stored);
-    };
-    const calls = queueServices(e); work.schedule();
-    assert.equal(calls.ai, 1); assert.equal(work.sheet.records()[0].Status, 'done');
-  }
+  const e = env({ clock: end + 900123 }), work = queueWork(e, { status: 'pending' });
+  const setCell = e.c.setCellByHeader_;
+  e.c.setCellByHeader_ = (sheet, row, headers, name, value) => {
+    const stored = name === 'StartedAt' ? new e.c.Date(Math.round(value.getTime() / 1000) * 1000) : value;
+    return setCell(sheet, row, headers, name, stored);
+  };
+  const calls = queueServices(e); work.schedule();
+  assert.equal(calls.ai, 1); assert.equal(work.sheet.records()[0].Status, 'done');
 });
 check('queue commit refreshes reordered headers instead of reusing stale column positions', () => {
-  for (const kind of ['news', 'web']) {
-    const e = env(), work = queueWork(e, kind);
-    queueServices(e, { onAi: () => { work.sheet.data = work.sheet.data.map(row => row.slice().reverse()); } });
-    assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].TaskId, 'task-a');
-    assert.equal(work.sheet.records()[0].Status, 'done');
-  }
+  const e = env(), work = queueWork(e);
+  queueServices(e, { onAi: () => { work.sheet.data = work.sheet.data.map(row => row.slice().reverse()); } });
+  assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].TaskId, 'task-a');
+  assert.equal(work.sheet.records()[0].Status, 'done');
 });
 check('queued news uses its guarded commit timestamp and remains visible to the correct fixed archive period', () => {
   for (const commitAt of [end - 1, end]) {
-    const e = env({ clock: end - 2 }), work = queueWork(e, 'news');
+    const e = env({ clock: end - 2 }), work = queueWork(e);
     queueServices(e, { onAi: () => e.setNow(commitAt) });
     assert.equal(work.run().status, 'committed');
     assert.equal(scopeRows(e, 'NewsInbox')[0].CreatedAt.getTime(), commitAt);
@@ -1194,54 +1324,46 @@ check('queued news uses its guarded commit timestamp and remains visible to the 
   }
 });
 check('clearing only PendingReplies leaves active queue work eligible to complete normally', () => {
-  for (const kind of ['news', 'web', 'program']) {
-    const e = env(), work = queueWork(e, kind);
-    queueServices(e, { onAi: () => e.c.performDataCleanup_('pending_replies', 'group:a') });
-    assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].Status, 'done');
-    assert.equal(scopeRows(e, 'PendingReplies').length, kind === 'news' ? 0 : 1);
-  }
+  const e = env(), work = queueWork(e);
+  queueServices(e, { onAi: () => e.c.performDataCleanup_('pending_replies', 'group:a') });
+  assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].Status, 'done');
+  assert.equal(scopeRows(e, 'PendingReplies').length, 0);
 });
 check('cleanup that wins during commit lock wait cancels the result before any persistence', () => {
-  for (const kind of ['news', 'web']) {
-    const e = env(), work = queueWork(e, kind), calls = queueServices(e);
-    const getLock = e.c.LockService.getScriptLock; let waiting = false;
-    e.c.LockService.getScriptLock = () => {
-      const lock = getLock(), acquire = lock.tryLock;
-      lock.tryLock = waitMs => {
-        if (waitMs === 5000 && !waiting) { waiting = true; work.cleanup(); }
-        return acquire(waitMs);
-      };
-      return lock;
+  const e = env(), work = queueWork(e), calls = queueServices(e);
+  const getLock = e.c.LockService.getScriptLock; let waiting = false;
+  e.c.LockService.getScriptLock = () => {
+    const lock = getLock(), acquire = lock.tryLock;
+    lock.tryLock = waitMs => {
+      if (waitMs === 5000 && !waiting) { waiting = true; work.cleanup(); }
+      return acquire(waitMs);
     };
-    assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
-    for (const name of ['NewsInbox', 'WebSummary', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
-    assert(!e.held());
-  }
+    return lock;
+  };
+  assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
+  for (const name of ['NewsInbox', 'PendingReplies']) assert.equal(scopeRows(e, name).length, 0);
+  assert(!e.held());
 });
 check('queue diagnostics never contain task identifiers, scope, source URLs or raw model errors', () => {
-  for (const kind of ['news', 'web', 'program']) {
-    const e = env(), work = queueWork(e, kind, { id: 'PRIVATE_TASK https://private.example/task' });
-    queueServices(e, { outcome: 'ai_failed' });
-    assert.equal(work.run().status, 'committed');
-    assert(!e.logs.join('').includes('PRIVATE_')); assert(!e.logs.join('').includes('group:a'));
-    assert(!e.logs.join('').includes('https://'));
-  }
+  const e = env(), work = queueWork(e, { id: 'PRIVATE_TASK https://private.example/task' });
+  queueServices(e, { outcome: 'ai_failed' });
+  assert.equal(work.run().status, 'committed');
+  assert(!e.logs.join('').includes('PRIVATE_')); assert(!e.logs.join('').includes('group:a'));
+  assert(!e.logs.join('').includes('https://'));
 });
 check('ambiguous final queue flush failure never creates a second reply or regenerates a committed result', () => {
-  for (const kind of ['news', 'web', 'program']) {
-    const e = env(), work = queueWork(e, kind), calls = queueServices(e); let flushes = 0;
-    e.setFlush(() => { if (++flushes === 2) throw Error('PRIVATE_FINAL_FLUSH'); });
-    assert.equal(work.run().status, 'failed'); assert.equal(work.sheet.records()[0].Status, 'done');
-    e.setFlush(null);
-    const persisted = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
-    assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
-    assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), persisted);
-    assert(!e.logs.join('').includes('PRIVATE_FINAL_FLUSH'));
-  }
+  const e = env(), work = queueWork(e), calls = queueServices(e); let flushes = 0;
+  e.setFlush(() => { if (++flushes === 2) throw Error('PRIVATE_FINAL_FLUSH'); });
+  assert.equal(work.run().status, 'failed'); assert.equal(work.sheet.records()[0].Status, 'done');
+  e.setFlush(null);
+  const persisted = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
+  assert.equal(work.run().status, 'cancelled'); assert.equal(calls.ai, 1);
+  assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), persisted);
+  assert(!e.logs.join('').includes('PRIVATE_FINAL_FLUSH'));
 });
 check('news treats even a falsy thrown value as failure and never stores an empty successful analysis', () => {
   for (const error of [null, undefined, 0, '']) {
-    const e = env(), work = queueWork(e, 'news'); queueServices(e);
+    const e = env(), work = queueWork(e); queueServices(e);
     e.c.analyzeNewsUrlWithAi_ = () => { throw error; };
     assert.equal(work.run().status, 'committed');
     assert.notEqual(work.sheet.records()[0].Status, 'done');
@@ -1351,12 +1473,11 @@ check('splitter keeps exact-capacity content and bounds genuine overflow for one
     else assert(split.messages.at(-1).includes('後面已省略'));
   }
 });
-check('long program Queue output survives guarded storage and Pending Reply delivery without truncation', () => {
-  const e = env(), work = queueWork(e, 'program'); queueServices(e);
+check('long pending replies survive storage and LINE delivery without truncation', () => {
+  const e = env();
   const text = 'Here is the analysis:\n\n' + Array.from({ length: 435 }, (_, i) =>
     (i + 1) + '. The team needs one more check before the launch.').join('\n');
-  e.c.runAiMemoryTask = () => ({ ok: true, text });
-  assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].Status, 'done');
+  e.c.createPendingReplyFromTask({ conversationId: 'group:a', sourceType: 'group', groupId: 'a' }, text, 'news_url_failed');
   assert.equal(scopeRows(e, 'PendingReplies')[0].ReplyText, text);
   const expected = e.c.getBotTextPendingDelivery_(text, false);
   assert(e.c.deliverPendingReply_('group:a', 'test-only-reply-token'));
@@ -1438,11 +1559,10 @@ check('LINE source bubble truncation retains only complete paired characters', (
     assert.equal(last, at === 4898 ? 's'.repeat(at) + '🙂' : 's'.repeat(Math.min(at, 4900)));
   }
 });
-check('program Queue and Pending Reply deliver paired Unicode without changing acknowledgement', () => {
-  const e = env(), work = queueWork(e, 'program'); queueServices(e);
+check('pending replies preserve paired Unicode through successful LINE acknowledgement', () => {
+  const e = env();
   const text = '說明。\n\n' + '🙂'.repeat(12000);
-  e.c.runAiMemoryTask = () => ({ ok: true, text });
-  assert.equal(work.run().status, 'committed'); assert.equal(work.sheet.records()[0].Status, 'done');
+  e.c.createPendingReplyFromTask({ conversationId: 'group:a', sourceType: 'group', groupId: 'a' }, text, 'news_url_failed');
   assert.equal(scopeRows(e, 'PendingReplies')[0].ReplyText, text);
   const expected = e.c.getBotTextPendingDelivery_(text, false);
   assert(e.c.deliverPendingReply_('group:a', 'test-only-reply-token'));
@@ -1555,4 +1675,213 @@ check('overlong emoji topics survive normalization, cache hits and actual multi-
   assert.equal(JSON.stringify([...e.props]), beforeProps); assert.equal(e.triggers.length, 0); assert(!e.held());
 });
 
-process.stdout.write('OK ' + checks + ' v1.17.0 checks; no live GAS/LINE/Sheets/API calls.\n');
+const phase4Models = ['gemini-4-hydrogen', 'gemini-3.8-flash', 'gemini-3.5-flash-lite'];
+function blockPhase4Models(e, models, reason = 'quota_rpd', retryAt) {
+  return models.map(model => e.c.recordGeminiQuotaBlock_('free', model, {
+    errorReason: reason, retryNotBeforeMs: retryAt
+  }, e.now()));
+}
+function phase4Reply(e, text) {
+  const fetch = e.c.UrlFetchApp.fetch;
+  e.c.UrlFetchApp.fetch = (url, options) => {
+    if (!url.endsWith(':generateContent')) return fetch(url, options);
+    assert(!e.held(), 'Gemini HTTP must run outside ScriptLock');
+    e.fetches.push({ url, options });
+    return geminiReply(text(url, options));
+  };
+}
+
+check('chat HTTP releases the project lock and same-room completions merge in commit order', () => {
+  const e = env({ configured: false });
+  const work = queueWork(e, { status: 'pending' });
+  const calls = queueServices(e);
+  let first = true;
+  phase4Reply(e, () => {
+    if (!first) return '先完成的新答案';
+    first = false;
+    work.schedule();
+    assert.equal(work.sheet.records()[0].Status, 'done');
+    assert.equal(calls.ai, 1);
+    const concurrent = e.c.runAiMemoryTask('general_chat', 'group:a', '後到的提問', '後到的提問');
+    assert(concurrent.ok);
+    return '較晚完成的舊答案';
+  });
+  const initial = e.c.runAiMemoryTask('general_chat', 'group:a', '先到的提問', '先到的提問');
+  assert(initial.ok);
+  assert.deepEqual(Array.from(e.c.getConversationHistory('group:a'), entry => entry.content),
+    ['後到的提問', '先完成的新答案', '先到的提問', '較晚完成的舊答案']);
+  assert(!e.held());
+});
+
+check('LINE reset and confirmed cleanup deliver late replies without restoring prior-generation memory', () => {
+  for (const mode of ['#reset', '#清空紀錄 確認', 'cache eviction']) {
+    const e = env({ configured: false });
+    const key = e.c.getHistoryCacheKey('group:a');
+    e.cache.set(key, JSON.stringify([{ role: 'user', content: '舊陣列快取' }]));
+    e.c.saveConversationHistory('group:b', [{ role: 'user', content: '其它聊天室' }]);
+    let first = true;
+    phase4Reply(e, (_url, options) => {
+      if (!first) return '新世代答案';
+      first = false;
+      assert(options.payload.includes('舊陣列快取'));
+      if (mode === 'cache eviction') e.cache.delete(key);
+      else if (mode === '#reset') assert(sendTextCommand(e, mode).includes('短期記憶'));
+      else {
+        assert(sendTextCommand(e, '#清空紀錄').includes('確認'));
+        assert.equal(e.c.getConversationHistory('group:a').length, 1);
+        assert(sendTextCommand(e, mode).includes('整理完成'));
+      }
+      assert(e.c.runAiMemoryTask('general_chat', 'group:a', '新世代問題', '新世代問題').ok);
+      return '遲到的答案仍回覆 LINE';
+    });
+    assert(sendTextCommand(e, '#小浣 舊世代問題').includes('遲到的答案仍回覆 LINE'));
+    assert.deepEqual(Array.from(e.c.getConversationHistory('group:a'), row => row.content), ['新世代問題', '新世代答案']);
+    assert.equal(e.c.getConversationHistory('group:b')[0].content, '其它聊天室');
+  }
+});
+
+check('a busy memory commit keeps the successful answer and releases all locks', () => {
+  const e = env({ configured: false });
+  phase4Reply(e, () => { e.setBusy(true); return '這次答案仍可交付'; });
+  const result = e.c.runAiMemoryTask('general_chat', 'group:a', '提問', '提問');
+  assert(result.ok); assert.equal(result.text, '這次答案仍可交付');
+  assert.equal(e.c.getConversationHistory('group:a').length, 0);
+  assert(!e.held());
+});
+
+check('quota-blocked news queue defers beyond the hint, keeps its retry count, and resumes', () => {
+  const e = env();
+  const work = queueWork(e, { status: 'pending', retryCount: 2 });
+  const blocks = blockPhase4Models(e, phase4Models, 'quota_rpd');
+  const retryAt = blocks[0].blockedUntilMs;
+  e.restoreAi();
+  let readerCalls = 0;
+  e.c.fetchAndExtractWebPageByReaderLayer_ = url => {
+    assert(!e.held()); readerCalls++;
+    return { ok: true, url, title: '背景文章', mainText: '背景文章正文', readerRoute: 'jina_reader' };
+  };
+  work.schedule();
+  let record = work.sheet.records()[0];
+  assert.equal(record.Status, 'pending'); assert.equal(record.RetryCount, 2); assert.equal(record.NextRunAt.getTime(), retryAt);
+  assert.equal(record.LastErrorType, 'ai_rate_limit'); assert(record.LastErrorText.includes('QUOTA_RPD'));
+  assert.equal(e.fetches.length, 0); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+  e.setNow(retryAt - 1); work.schedule(); assert.equal(readerCalls, 1);
+  e.setNow(retryAt);
+  phase4Reply(e, () => JSON.stringify({ title: 'Quota 後回復', outline: '新聞內容及背景'.repeat(15), brief: '這是一篇測試新聞的簡介。',
+    angle: '訪談切角', category: '科技與 AI', topicPotential: '中', specialTopic: '無', categoryReason: '已有來源',
+    categoryConfidence: 0.9, matchedEntities: '無', classificationWarning: '', storyKey: '測試新聞案例' }));
+  work.schedule();
+  record = work.sheet.records()[0];
+  assert.equal(record.Status, 'done'); assert.equal(record.RetryCount, 2);
+  assert.equal(e.fetches.length, 1); assert(e.fetches[0].url.includes('/gemini-4-hydrogen:'));
+  assert.equal(scopeRows(e, 'NewsInbox').length, 1);
+});
+
+check('queue 429 after real HTTP consumes a retry and quota waiting is bounded by the original creation time', () => {
+  for (const kind of ['real429', 'expired', 'no-creation-time']) {
+    const e = env();
+    const work = queueWork(e, { status: 'pending' });
+    const claimedAge = work.sheet.data[0].indexOf('CreatedAt');
+    if (kind !== 'real429') {
+      work.sheet.data[1][claimedAge] = kind === 'expired' ? new e.c.Date(e.now() - 7 * 86400000) : '';
+      blockPhase4Models(e, phase4Models, 'quota_rpm', e.now() + 300000);
+    }
+    e.restoreAi();
+    e.c.fetchAndExtractWebPageByReaderLayer_ = url => ({ ok: true, url, title: '測試', mainText: '測試新聞正文' });
+    e.c.UrlFetchApp.fetch = (url, options) => {
+      assert(!e.held()); e.fetches.push({ url, options });
+      return { getResponseCode: () => 429, getContentText: () => '{}', getAllHeaders: () => ({ 'Retry-After': '300' }) };
+    };
+    work.schedule();
+    const record = work.sheet.records()[0];
+    if (kind === 'real429') {
+      assert.equal(record.Status, 'pending'); assert.equal(record.RetryCount, 1);
+      assert.equal(record.NextRunAt.getTime(), e.now() + 300000);
+      assert.equal(e.fetches.length, 2); assert.equal(scopeRows(e, 'PendingReplies').length, 0);
+      assert(e.fetches[0].url.includes('/gemini-4-hydrogen:'));
+      assert(e.fetches[1].url.includes('/gemini-3.8-flash:'));
+    } else {
+      assert.equal(record.Status, 'failed'); assert.equal(record.RetryCount, 0);
+      assert.equal(e.fetches.length, 0); assert.equal(scopeRows(e, 'PendingReplies').length, 1);
+    }
+  }
+});
+
+check('legacy HTML quota hint crosses the existing Reader and defers news without consuming a retry', () => {
+  const e = env();
+  const work = queueWork(e, { status: 'pending' });
+  const retryAt = e.now() + 360000;
+  blockPhase4Models(e, phase4Models.slice(1), 'quota_unknown', retryAt);
+  e.restoreAi();
+  e.c.UrlFetchApp.fetch = (url, options) => {
+    assert(!e.held()); e.fetches.push({ url, options });
+    assert(!url.endsWith(':generateContent'));
+    const reader = url.startsWith('https://r.jina.ai/');
+    return {
+      getResponseCode: () => reader ? 503 : 200,
+      getHeaders: () => ({ 'Content-Type': 'text/html' }),
+      getAllHeaders: () => ({ 'Content-Type': 'text/html' }),
+      getContentText: () => reader ? 'temporary error' : '<article>' + '文章內文'.repeat(180) + '</article>'
+    };
+  };
+  work.schedule();
+  const row = work.sheet.records()[0];
+  assert.equal(row.Status, 'pending'); assert.equal(row.RetryCount, 0);
+  assert.equal(row.NextRunAt.getTime(), retryAt);
+  assert.equal(row.LastErrorType, 'ai_rate_limit'); assert(row.LastErrorText.includes('QUOTA_UNKNOWN'));
+  assert.equal(e.fetches.length, 2);
+});
+
+check('scheduled archive keeps a zero-HTTP quota wait outside the attempt allowance and recovers on the next run', () => {
+  const e = env(); news(e); e.restoreAi();
+  const retryAt = blockPhase4Models(e, phase4Models)[0].blockedUntilMs;
+  const [deferred] = e.c.processScheduledNewsArchives();
+  assert.equal(deferred.status, 'quota_wait'); assert.equal(deferred.retryNotBeforeMs, retryAt);
+  assert.equal(e.state().autoAttempts, 0); assert.equal(e.state().lastAutoDay, '');
+  assert.equal(e.state().runId, ''); assert.equal(e.state().nextStartAt, start);
+  assert(e.c.getNewsArchiveStatusText_('group:a').includes(e.c.formatNewsArchiveTime_(retryAt)));
+  e.setNow(retryAt - 1);
+  assert.equal(e.c.processScheduledNewsArchives()[0].status, 'quota_wait'); assert.equal(e.fetches.length, 0);
+  e.setNow(retryAt);
+  assert.equal(e.c.processScheduledNewsArchives()[0].status, 'completed');
+  assert.equal(e.sheets.get('WeeklySummary').records().length, 1);
+  assert.equal(e.state().autoAttempts, 0); assert.equal(e.state().retryNotBeforeMs, 0);
+  assert.equal(e.fetches.length, 1); assert(e.fetches[0].url.includes('/gemini-4-hydrogen:'));
+});
+
+check('archive quota refund survives a busy commit via the original reservation receipt', () => {
+  const e = env(); news(e); e.restoreAi();
+  const retryAt = blockPhase4Models(e, phase4Models, 'quota_unknown', e.now() + 65000)[0].blockedUntilMs;
+  const read = e.c.readGeminiQuotaBlocks_;
+  e.c.readGeminiQuotaBlocks_ = scope => {
+    const state = read(scope);
+    e.setBusy(true);
+    return state;
+  };
+  assert.equal(e.run('auto').status, 'quota_wait');
+  e.setBusy(false);
+  const receiptKey = [...e.props.keys()].find(key => key.startsWith(e.stateKey() + '_FAILURE_'));
+  assert(receiptKey);
+  assert.equal(e.state().autoAttempts, 0); assert.equal(e.state().runId, '');
+  assert.equal(e.state().retryNotBeforeMs, retryAt); assert.equal(e.fetches.length, 0);
+
+  e.c.readGeminiQuotaBlocks_ = read;
+  e.setNow(retryAt);
+  assert.equal(e.run('auto').status, 'completed');
+  assert(!e.props.has(receiptKey));
+  assert.equal(e.sheets.get('WeeklySummary').records().length, 1);
+});
+
+check('archive attempted 429 consumes one scheduled attempt while retaining its retry time', () => {
+  const e = env(); news(e); e.restoreAi();
+  e.c.UrlFetchApp.fetch = (url, options) => {
+    assert(!e.held()); e.fetches.push({ url, options });
+    return { getResponseCode: () => 429, getContentText: () => '{}', getAllHeaders: () => ({ 'Retry-After': '90' }) };
+  };
+  assert.equal(e.run('auto').status, 'failed');
+  assert.equal(e.fetches.length, 2); assert.equal(e.state().autoAttempts, 1);
+  assert.equal(e.state().retryNotBeforeMs, e.now() + 90000);
+  assert.equal(e.run('auto').status, 'quota_wait');
+});
+
+process.stdout.write('OK ' + checks + ' v2.0.0 archive/queue checks; no live GAS/LINE/Sheets/API calls.\n');

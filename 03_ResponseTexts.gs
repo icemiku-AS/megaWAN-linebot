@@ -12,11 +12,21 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v1.17.0 Weekly News Archive Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-10-20';
+const BOT_CURRENT_VERSION = 'v2.0.0 Gemini Architecture Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-11-22';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v2.0.0 Gemini Architecture Edition',
+    date: '2026-11-22',
+    summary: '聊天、圖片研究與新聞工作改用 Gemini，依任務配置模型與配額，保留週三新聞封存。',
+    changes: [
+      '一般使用與明確 Google 搜尋分流；按配額與剩餘時間在 Hydrogen、3.8 Flash、3.5 Flash-Lite 間選擇。',
+      '聊天等待模型時釋放共用鎖。清除記憶後，舊回覆仍可交付，但不會寫回短期記憶。',
+      '新聞收件與封存依配額延後；移除舊快讀與話題指令，保留歷史分頁與待回覆。'
+    ]
+  },
   {
     version: 'v1.17.0 Weekly News Archive Edition',
     date: '2026-10-20',
@@ -478,16 +488,6 @@ function formatBulletList_(items) {
 // 任務與 pending reply 相關回覆
 // ======================================================
 
-function getBotTextWebTaskAccepted_(taskType, urlCount) {
-  const countText = urlCount > 1 ? '前 ' + urlCount + ' 個網址' : '這個網址';
-
-  if (taskType === TASK_TYPE_PROGRAM_TOPIC_ANALYSIS) {
-    return ['收到，' + countText + '我先叼回素材堆裡整理。', '我會把事件重點、可聊切角和需要補查的地方一起翻出來。', '等我處理完，下一次群組有人說話時，我就把結果送上來。'].join('\n');
-  }
-
-  return ['收到，' + countText + '我會做成懶人包。', '整理好後，下一次群組有人說話時，我會把快讀摘要送上來。'].join('\n');
-}
-
 function getBotTextNewsInboxAccepted_(urlCount, skippedUnsupportedUrls) {
   const countText = urlCount > 1 ? '這 ' + urlCount + ' 個網址' : '這篇';
   const lines = ['收到，' + countText + '我先收進本週新聞素材池。', '我會在背景慢慢分類整理；之後用 #本週新聞，就可以看到這週的剪報。'];
@@ -535,7 +535,7 @@ function getBotTextUnsupportedSocialUrl_(urls) {
 function getBotTextPendingDelivery_(pendingText, alsoAcceptedNewUrl) {
   let text = ['我剛剛那包資料整理好了，先端上來：', '', pendingText || ''].join('\n');
   if (alsoAcceptedNewUrl) {
-    text += ['', '另外，你這次貼的新網址我也收到了。', '一般貼網址會靜默進背景佇列，整理後收進 NewsInbox；如果是 #懶人包，我會照指令做快讀。'].join('\n');
+    text += ['', '另外，你這次貼的新網址我也收到了。', '網址會進背景佇列，整理後收進 NewsInbox。'].join('\n');
   }
   return text;
 }
@@ -622,31 +622,6 @@ function getBotTextWeeklyNews24HourRemoved_() {
   ].join('\n');
 }
 
-function getBotTextNewsQuestionNeedQuestion_() {
-  return [
-    '你想問本週新聞素材什麼？',
-    '可以這樣問：',
-    '#新聞問答 這週有哪些 AI 公司相關新聞？',
-    '#新聞問答 高潛力 有哪些適合做節目的社群平台新聞？',
-    '#新聞問答 分類 科技與 AI 這週有什麼可追蹤？'
-  ].join('\n');
-}
-
-function getBotTextNewsQuestionNoData_(queryOptions) {
-  const options = queryOptions || {};
-  const scopeParts = ['最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天'];
-
-  if (options.onlyHighPotential) {
-    scopeParts.push('高潛力');
-  }
-
-  if (options.categoryFilter) {
-    scopeParts.push('分類「' + options.categoryFilter + '」');
-  }
-
-  return ['我翻了一下，' + scopeParts.join('、') + ' NewsInbox 沒有可回答的新聞素材。', '你可以先貼網址讓我收進素材池，或用 #新聞補充 手動補一筆。'].join('\n');
-}
-
 // ======================================================
 // 一般系統提示
 // ======================================================
@@ -723,10 +698,6 @@ function getBotTextClearDone_(deletedCount) {
   return getBotTextCleanupDone_(getCleanupCommandInfo_('#清空紀錄 確認'), { total: deletedCount, details: [{ sheetName: SHEET_NAME, count: deletedCount }] });
 }
 
-function getBotTextHighlightSaved_() { return '我幫你畫起來了。這段已寫入 TopicHighlights，之後統整、分析、封存都會優先參考。'; }
-function getBotTextHighlightEmpty_() { return ['你要我畫哪一段重點？', '#畫重點 這段內容之後節目可以從平台風險和創作者依賴切入'].join('\n'); }
-function getBotTextArchiveError_(failure) { return '這次封存本週話題沒有完成。\n' + getBotTextAiError_(failure); }
-
 /** 舊無參數／errorType caller 仍可使用；只呈現白名單原因，不輸出 exception 或供應商正文。 */
 function getBotTextAiError_(failure) {
   const result = failure && failure.aiResult || failure || {};
@@ -737,7 +708,8 @@ function getBotTextAiError_(failure) {
     local_time_budget: '本次回覆的執行時間已用完，未能完成處理。請稍後重試，或把任務拆小。',
     image_download_timeout: '等待 LINE 圖片下載時逾時，尚未送交 AI 分析。請稍後重新傳圖再試。',
     missing_deepseek_api_key: 'Script Properties 缺少 DEEPSEEK_API_KEY，請維護者補上設定。',
-    missing_gemini_api_key: 'Script Properties 缺少 GEMINI_API_KEY，請維護者檢查手動呼叫的設定。',
+    missing_gemini_api_key: 'Script Properties 缺少 GEMINI_API_KEY，請維護者補上設定。',
+    missing_gemini_search_api_key: 'Google 搜尋尚未設定。請維護者在 Script Properties 補上 GEMINI_SEARCH_API_KEY。',
     api_response_not_json: 'AI 服務回應不是預期的 JSON 格式，請維護者檢查服務回傳。',
     provider_interrupted: 'AI 服務回報生成中斷，沒有完成答案。請稍後重試。',
     provider_paused: 'AI 服務暫停了這次工具回合，目前流程未續接完成。請維護者檢查工具續接。',
@@ -762,6 +734,11 @@ function getBotTextAiError_(failure) {
     ai_configuration_error: 'AI 任務設定未通過檢查，請維護者檢查模型、能力或 Script Properties。',
     ai_auth_error: 'AI 服務拒絕驗證或存取，請維護者檢查 API Key 與權限。',
     ai_rate_limit: 'AI 服務回報請求過於頻繁，請稍後重試。',
+    quota_rpm: 'Gemini 已達每分鐘請求上限，請等短暫冷卻後再試。',
+    quota_tpm: 'Gemini 已達每分鐘 token 上限，請稍後再試，或縮短輸入。',
+    quota_rpd: 'Gemini 已達當日配額。日額度於太平洋時間午夜重置。',
+    quota_zero: '這個 Gemini 專案的模型配額為零或未開通，請維護者檢查專案權限。',
+    quota_unknown: 'Gemini 正在限流，回應未指出配額種類，請稍後再試。',
     ai_timeout: '等待 AI 服務回應時逾時，請稍後重試。',
     ai_provider_http_error: 'AI 服務回傳 HTTP 錯誤，請依狀態碼檢查服務或請求設定。',
     ai_empty_response: 'AI 服務沒有產生可用答案，請稍後重試。',
@@ -785,11 +762,12 @@ function getBotTextAiError_(failure) {
   // 只採信 normalized result 的嚴格布林觀測；與最後錯誤原因獨立，不從來源或搜尋意圖推定。
   return (result.usedWebSearch === true ? '網路搜尋已執行，但這次完整回覆沒有完成。\n' : '') +
     messages[reason] + '\n錯誤代碼：' + reason.toUpperCase() +
-    (status >= 100 && status <= 599 ? '｜HTTP ' + status : '');
+    (status >= 100 && status <= 599 ? '｜HTTP ' + status : '') +
+    (normalizeAiRetryNotBeforeMs_(result.retryNotBeforeMs) > Date.now()
+      ? '\n最早可重試：' + formatNewsArchiveTime_(result.retryNotBeforeMs) + '（台灣時間）' : '');
 }
 
 function getBotTextRequiredEvidenceError_(failure) { return '這次沒有完成你指定的資料查詢，還不能確認是否聊過、收過或有相關內容；這不代表沒有找到。\n' + getBotTextAiError_(failure || 'ai_required_evidence_failed'); }
-function getBotTextArchiveNoData_() { return '目前還沒有足夠的使用者對話可以封存。等群組多聊一點，我再幫你收進 WeeklySummary。'; }
 function getBotTextNewsArchiveError_(failure) { return '這次封存本週新聞沒有完成。\n' + getBotTextAiError_(failure); }
 function getBotTextNewsArchiveNoData_() { return '最近 7 天 NewsInbox 還沒有可封存的新聞素材。你可以先貼幾個網址，或用 #新聞補充 手動補素材。'; }
 
@@ -803,33 +781,13 @@ function formatNewsArchiveResult_(result) {
     ? '目前到期週期已處理，不重複封存。' : '目前還沒有到期週期，週三中午截止後才能封存。') + period;
   if (result.status === 'processing' || result.status === 'busy') return '新聞封存正在處理中，請稍後用 #狀態回報 查看。' + period;
   if (result.status === 'cancelled') return '這次封存工作已取消或由後續工作接手，沒有寫入遲到的結果。' + period;
+  if (result.status === 'quota_wait') return '新聞封存等待配額，最早 ' +
+    formatNewsArchiveTime_(result.retryNotBeforeMs) + '（台灣時間）可再試。' + period;
   if (result.status === 'waiting') return '本日已自動嘗試，將於下次每日檢查補跑；也可手動補跑。' + period;
   if (result.status === 'needs_attention') return '這個週期需要維護者處理後，再用 #封存本週新聞 補跑。' + period;
   return getBotTextNewsArchiveError_(result.failure) + period;
 }
-function getBotTextNoTopicContextForAnalysis_() { return '目前我還翻不到足夠的使用者對話、畫重點、網址快讀摘要或封存記憶可以分析。你可以先貼一個網址，或用 #畫重點 補一段想討論的脈絡。'; }
-function getBotTextNoTopicContextForIntegration_() { return '目前我還翻不到足夠的使用者聊天、畫重點、網址快讀摘要或封存記憶可以統整。你們可以先丟幾個素材進來，我再幫你們整理成話題地圖。'; }
-
-function getBotTextArchiveDone_(archiveJson, recentCount) {
-  return ['本週話題我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名主題'), '', '摘要：', archiveJson.summary || '已建立摘要，但內容比較短。', '', '這次封存只參考 ConversationLog 的 ' + recentCount + ' 則使用者訊息。', '之後你們再聊到相關主題時，我就能把這份對話記憶翻出來接著用。'].join('\n');
-}
 
 function getBotTextNewsArchiveDone_(archiveJson, recentCount) {
   return ['本週新聞我收好了，已經放進 WeeklySummary。', '', '主題：' + (archiveJson.topicTitle || '未命名新聞主軸'), '', '摘要：', archiveJson.summary || '已建立新聞摘要，但內容比較短。', '', '這次封存參考了 ' + recentCount + ' 則 NewsInbox 素材。', '之後用 #本週新聞 詳細，就可以拿這份新聞記憶比對過去脈絡。'].join('\n');
-}
-
-// ======================================================
-// 網址快讀結果格式
-// ======================================================
-
-function getBotTextWebTaskFailed_(failure) {
-  return '這次網址任務沒有完成。\n' + getBotTextReaderError_(failure);
-}
-
-function getBotTextSingleUrlFailed_(index, url, errorMessage) {
-  return ['【網址 ' + (index + 1) + '】', url, '', '這個網址我翻到一半卡住了：', errorMessage || '讀取失敗'].join('\n');
-}
-
-function getBotTextLazySummaryBlock_(result, index, keyPointsText, metaText) {
-  return ['【網址快讀 ' + (index + 1) + '】', '標題：' + (result.title || '未取得標題'), metaText, '', '我翻到的重點是：', result.summary || '未取得摘要', '', '可以先抓這幾點：', keyPointsText, ''].join('\n');
 }

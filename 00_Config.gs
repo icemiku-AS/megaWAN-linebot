@@ -27,7 +27,7 @@ const LINE_WEBHOOK_SYNC_AI_MIN_REQUEST_SECONDS = 8;
 const LINE_WEBHOOK_SYNC_AUXILIARY_AI_MIN_REQUEST_SECONDS = 20;
 
 // Google Apps Script UrlFetchApp 的預設 timeout 可長達 360 秒；同步 Reader 另套 12 秒上限。
-// 背景 WebTaskQueue / NewsUrlQueue 不帶 execution context，維持既有 Reader 預設行為。
+// 背景 NewsUrlQueue 不帶 execution context，維持既有 Reader 預設行為。
 const LINE_WEBHOOK_SYNC_READER_TIMEOUT_CAP_SECONDS = 12;
 
 // FxTwitter API：讀取 X / Twitter 公開單篇 status 貼文。
@@ -42,21 +42,13 @@ const FXTWITTER_API_STATUS_ENDPOINT_PREFIX = 'https://api.fxtwitter.com/2/status
 // 原始對話紀錄 Sheet
 const SHEET_NAME = 'ConversationLog';
 
-// 人工重點資料表。
-// #畫重點 會將使用者手動標記的重要內容寫入這裡，供統整、分析、封存優先參考。
-const TOPIC_HIGHLIGHTS_SHEET_NAME = 'TopicHighlights';
-
 // 封存後的極簡長期記憶 Sheet
 const WEEKLY_SUMMARY_SHEET_NAME = 'WeeklySummary';
 
 // WeeklySummary 封存類型。
-// #封存本週話題 與 #封存本週新聞 共用 WeeklySummary，
-// 透過 ArchiveType 區分「對話記憶」與「新聞記憶」，避免未來讀取長期記憶時混淆來源。
+// 新增列使用 news。讀取舊封存時，保留 topic 與空白類型的相容。
 const WEEKLY_ARCHIVE_TYPE_TOPIC = 'topic';
 const WEEKLY_ARCHIVE_TYPE_NEWS = 'news';
-
-// 網頁讀取任務佇列 Sheet：保留給 #懶人包 / #節目話題分析
-const WEB_TASK_QUEUE_SHEET_NAME = 'WebTaskQueue';
 
 // 新聞網址待處理佇列 Sheet：多網址、同步處理過慢或失敗時使用
 const NEWS_URL_QUEUE_SHEET_NAME = 'NewsUrlQueue';
@@ -67,22 +59,6 @@ const NEWS_INBOX_SHEET_NAME = 'NewsInbox';
 // 已完成但尚未交付給使用者的回覆 Sheet
 const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
 
-// 網址快讀摘要素材池
-// 這張表仍保留給 #懶人包 與 #統整話題 使用
-const WEB_SUMMARY_SHEET_NAME = 'WebSummary';
-
-
-// ======================================================
-// WebTaskQueue TaskType
-// ======================================================
-
-// #懶人包：做 provider-neutral 快讀摘要，不做深度節目分析
-const TASK_TYPE_WEB_LAZY_SUMMARY = 'web_lazy_summary';
-
-// #節目話題分析 + 網址：Reader 取得正文後，由 AI task 做深度節目分析
-const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
-
-
 // ======================================================
 // LINE Bot 指令設定
 // ======================================================
@@ -92,7 +68,7 @@ const TASK_TYPE_PROGRAM_TOPIC_ANALYSIS = 'program_topic_analysis';
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會靜默進入 NewsUrlQueue 背景收件流程，不回覆群組。
 // 2. 個人聊天室直接貼網址仍保留同步回覆路徑，方便維護者測試 Reader / AI 行為。
 // 3. Pending Reply 交付仍放在觸發詞判斷之前，所以只要有完成的 pending reply，任何文字都會交付。
-// 4. #畫重點 明確保存人工素材；清理指令只作用於目前 conversationId，且須二段確認。
+// 4. 清理指令只作用於目前 conversationId，且須二段確認。
 // 5. 靜默收件失敗或網址不支援時，由 PendingReplies 延後回報。
 const TRIGGER_PREFIXES = [
   '#小浣',
@@ -100,22 +76,14 @@ const TRIGGER_PREFIXES = [
   '#reset',
   '#版本紀錄',
   '#版本',
-  '#畫重點',
   '#清空紀錄',
-  '#清空重點',
-  '#清空快讀',
   '#清空封存',
   '#清空新聞',
   '#清空待回覆',
-  '#封存本週話題',
   '#封存本週新聞',
-  '#懶人包',
   '#本週新聞',
-  '#新聞問答',
   '#狀態回報',
-  '#新聞補充',
-  '#節目話題分析',
-  '#統整話題'
+  '#新聞補充'
 ];
 
 
@@ -135,7 +103,7 @@ const MAX_HISTORY_PAIRS = 6;
 // 本週編輯台設定
 // ======================================================
 
-const WEEKLY_EDITORIAL_CACHE_VERSION = 'v1.17.0';
+const WEEKLY_EDITORIAL_CACHE_VERSION = 'v2.0.0';
 const WEEKLY_EDITORIAL_CACHE_TTL_SECONDS = 600;
 
 const MAX_WEEKLY_EDITORIAL_NEWS_ITEMS = 30;
@@ -165,12 +133,8 @@ const MAX_WEEKLY_EDITORIAL_CONVERSATION_TOTAL_LENGTH = 6000;
 // 網頁讀取設定
 // ======================================================
 
-// 單則訊息最多讀幾個網址，避免排程一次處理太久
+// 舊手動網址讀取 wrapper 的單則網址上限。
 const MAX_URLS_PER_MESSAGE = 3;
-
-// 每次排程最多處理幾個 pending 網頁任務
-// 這裡仍只給舊 WebTaskQueue 使用；NewsUrlQueue 有自己的每批處理量。
-const MAX_WEB_TASKS_PER_RUN = 1;
 
 // legacy raw HTML 送入正文抽取 AI task 前的最大字元數。
 // 過長 HTML 會先移除 script/style 等噪音再截斷，避免輸入擠壓 mainText 輸出空間。
@@ -195,19 +159,7 @@ const NEWS_INBOX_BRIEF_TARGET_MAX_LENGTH = 50;
 // 防爆上限只處理模型失控輸出，避免 LINE 回覆與 Sheet 欄位塞入過長文字。
 const NEWS_INBOX_BRIEF_HARD_MAX_LENGTH = 120;
 
-// Outline 保存於 NewsInbox，供 #統整話題讀取。
+// Outline 保存於 NewsInbox，供詳細檢視、週報與封存讀取。
 // Prompt 目標是 100～200 字；程式端接受稍寬範圍，過長時直接裁切，避免再次呼叫 AI。
 const DIRECT_NEWS_OUTLINE_MIN_LENGTH = 80;
 const DIRECT_NEWS_OUTLINE_MAX_LENGTH = 240;
-
-// #統整話題 預設讀取最近幾筆網址摘要
-const DEFAULT_RECENT_WEB_SUMMARY_COUNT = 20;
-
-// #統整話題 預設讀取最近幾筆 NewsInbox 新聞素材
-const DEFAULT_RECENT_NEWS_INBOX_COUNT = 20;
-
-// #統整話題 / #節目話題分析 沒貼網址時，預設讀取最近幾則對話
-const DEFAULT_RECENT_CONVERSATION_COUNT_FOR_TOPIC = 80;
-
-// #統整話題 / #節目話題分析 預設讀取最近幾筆人工重點
-const DEFAULT_RECENT_TOPIC_HIGHLIGHT_COUNT = 50;

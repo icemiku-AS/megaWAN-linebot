@@ -1,6 +1,6 @@
 // ======================================================
 // 30_NewsInbox.gs
-// 用途：News／Editorial：新聞收件、素材池、分類、週報與新聞問答。
+// 用途：News／Editorial：新聞收件、素材池、分類與週報。
 //
 // 職責與協作：
 // 1. 管理 NewsInbox／NewsUrlQueue、新聞分析與補充契約、狀態回報及新聞封存脈絡。
@@ -23,9 +23,9 @@ const NEWS_TOPIC_POTENTIAL_VALUES = ['低', '中', '高'];
 const MAX_NEWS_QUEUE_TASKS_PER_RUN = 2;
 const MAX_NEWS_URLS_PER_MESSAGE = 10;
 const MAX_NEWS_QUEUE_RETRY_COUNT = 3;
+const MAX_NEWS_QUEUE_QUOTA_WAIT_MS = 7 * 86400000;
 const DEFAULT_WEEKLY_NEWS_DAYS = 7;
 const DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT = 4;
-const MAX_NEWS_QUESTION_ITEMS = 30;
 const NEWS_STORY_FALLBACK_KEY = '未命名故事線';
 const MAX_WEEKLY_NEWS_DISPLAY_TITLE_LENGTH = 100;
 
@@ -129,7 +129,8 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText, aiExecutio
       conversationId,
       userText,
       true,
-      webResult.errorType || 'reader_error'
+      webResult.errorType || 'reader_error',
+      getAiQuotaRetryHint_(webResult)?.retryNotBeforeMs
     );
   }
 
@@ -180,7 +181,8 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText, aiExecutio
       conversationId,
       userText,
       true,
-      error && error.errorType ? error.errorType : 'ai_unknown_error'
+      error && error.errorType ? error.errorType : 'ai_unknown_error',
+      getAiQuotaRetryHint_(error)?.retryNotBeforeMs
     );
   }
 
@@ -239,8 +241,8 @@ function handleDirectNewsUrlMessage_(event, conversationId, userText, aiExecutio
   };
 }
 
-function enqueueDirectNewsUrlsForBackground_(event, conversationId, userText, isSyncFallback, fallbackReason) {
-  const enqueueResult = enqueueNewsUrlTasks(event, conversationId, userText);
+function enqueueDirectNewsUrlsForBackground_(event, conversationId, userText, isSyncFallback, fallbackReason, retryAtMs) {
+  const enqueueResult = enqueueNewsUrlTasks(event, conversationId, userText, retryAtMs);
 
   console.log('Direct news URL switched to background queue:', JSON.stringify({
     reason: fallbackReason || '',
@@ -319,7 +321,7 @@ function createPendingReplyForNewsUrlIntake_(event, conversationId, replyText, r
   }, replyText, replyMode || 'news_url_intake');
 }
 
-function enqueueNewsUrlTasks(event, conversationId, userText) {
+function enqueueNewsUrlTasks(event, conversationId, userText, retryAtMs) {
   const urls = extractUrls(userText).slice(0, MAX_NEWS_URLS_PER_MESSAGE);
   if (!urls.length) return { ok: false, error: getBotTextNoReadableUrl_() };
 
@@ -341,7 +343,8 @@ function enqueueNewsUrlTasks(event, conversationId, userText) {
   const now = new Date();
 
   partitionedUrls.supportedUrls.forEach(function(url) {
-    sheet.appendRow([createSimpleId('newsq'), now, now, conversationId, source.type || '', source.userId || '', source.groupId || '', source.roomId || '', truncateForSheet(userText || ''), url, 'pending', 0, now, '', '', '', '']);
+    sheet.appendRow([createSimpleId('newsq'), now, now, conversationId, source.type || '', source.userId || '', source.groupId || '', source.roomId || '', truncateForSheet(userText || ''), url, 'pending', 0,
+      new Date(Math.max(now.getTime(), normalizeAiRetryNotBeforeMs_(retryAtMs) || 0)), '', '', '', '']);
   });
 
   return {
@@ -379,7 +382,7 @@ function partitionNewsUrlsForQueue_(urls) {
 /**
  * 公開 time-driven Trigger handler：依既有批次上限處理 NewsUrlQueue。
  * 副作用是更新 Queue 狀態、寫入 NewsInbox 或建立 PendingReplies；函式名稱與 Sheet 欄位不可改。
- * AI failure 依 normalized retryable/typed error 判斷，但重試次數與 backoff 維持既有行為。
+ * 一般錯誤保留重試次數／backoff；純配額預阻擋可延後，受任務年齡上限約束。
  */
 function processNewsUrlQueue() {
   const queueLock = LockService.getScriptLock();
@@ -420,6 +423,7 @@ function processNewsUrlQueue() {
 
       tasksToProcess.push({
         taskId: taskId, conversationId: conversationId, startedAtMs: startedAtMs,
+        createdAtMs: new Date(getRowValueByHeader_(row, headerMap, 'CreatedAt')).getTime(),
         sourceType: getRowValueByHeader_(row, headerMap, 'SourceType'),
         userId: getRowValueByHeader_(row, headerMap, 'UserId'),
         groupId: getRowValueByHeader_(row, headerMap, 'GroupId'),
@@ -479,7 +483,11 @@ function processSingleNewsUrlTask_(task) {
   const error = failure;
   const errorText = error && error.message ? error.message : String(error);
   const errorType = error && error.errorType ? error.errorType : classifyNewsUrlError_(errorText);
-  const retryCount = Number(task.retryCount || 0) + 1;
+  const quota = getAiQuotaRetryHint_(error);
+  const createdAt = Number(task.createdAtMs);
+  const quotaDeadline = createdAt > 0 && createdAt <= now.getTime() ? createdAt + MAX_NEWS_QUEUE_QUOTA_WAIT_MS : 0;
+  const deferredWithoutCall = !!quota && quota.modelCalls === 0;
+  const retryCount = Number(task.retryCount || 0) + (deferredWithoutCall ? 0 : 1);
   const retryableHint = error && typeof error.retryable === 'boolean' ? error.retryable : null;
   const httpStatus = Number(error && error.httpStatus || 0);
   const shouldRetry = shouldRetryNewsUrlError_(errorType, errorText, retryableHint, httpStatus);
@@ -489,14 +497,18 @@ function processSingleNewsUrlTask_(task) {
     errorReason: normalizeAiErrorReason_(error && error.errorReason),
     readerRoute: String(error && error.readerRoute || ''),
     httpStatus: httpStatus,
-    retryable: shouldRetry
+    retryable: shouldRetry,
+    retryNotBeforeMs: quota ? quota.retryNotBeforeMs : null
   }));
 
   // 暫時性錯誤才重試；已知永久性錯誤，例如 unsupported_social_platform，不應排回 pending。
-  const retry = shouldRetry && retryCount < MAX_NEWS_QUEUE_RETRY_COUNT;
+  const nextRunAt = Math.max(now.getTime() + (deferredWithoutCall ? 60000 : retryCount * 2 * 60 * 1000),
+    quota ? quota.retryNotBeforeMs : 0);
+  const retry = shouldRetry && retryCount < MAX_NEWS_QUEUE_RETRY_COUNT &&
+    (!deferredWithoutCall || nextRunAt < quotaDeadline);
   const updates = { UpdatedAt: now, RetryCount: retryCount, LastErrorType: errorType,
     LastErrorText: truncateForSheet(diagnosticText), Status: retry ? 'pending' : 'failed' };
-  if (retry) updates.NextRunAt = new Date(now.getTime() + retryCount * 2 * 60 * 1000);
+  if (retry) updates.NextRunAt = new Date(nextRunAt);
   else updates.FinishedAt = now;
   return withQueueTaskResult_(NEWS_URL_QUEUE_SHEET_NAME, task, updates, function() {
     if (!retry) createPendingReplyFromTask(task, getBotTextNewsUrlFailed_(task.url, error), 'news_url_failed');
@@ -516,7 +528,7 @@ function createNewsUrlReaderError_(webResult) {
   if (typeof result.retryable === 'boolean') error.retryable = result.retryable;
   // 明確的 httpStatus=0 代表沒有 provider HTTP response，不可因 0 為 falsy 而退回 raw page 的 200。
   error.httpStatus = getReaderFailureHttpStatus_(result);
-  return error;
+  return Object.assign(error, getAiQuotaRetryHint_(result));
 }
 
 /**
@@ -1200,154 +1212,6 @@ function isRemovedWeeklyNews24HourQuery_(userPrompt) {
   // v1.12.3 起移除低頻的 24 小時檢視；保留明確提示，避免舊指令被誤解為仍有最近一天篩選。
   const text = String(userPrompt || '').replace(/\s+/g, ' ').trim();
   return /24\s*小時|24\s*小时|一天|1\s*天/.test(text);
-}
-
-function handleNewsQuestion_(event, conversationId, userPrompt, aiExecutionContext) {
-  const queryOptions = parseNewsQuestionOptions_(userPrompt);
-  if (!queryOptions.question) {
-    return getBotTextNewsQuestionNeedQuestion_();
-  }
-
-  const items = getRecentNewsInboxItems_(conversationId, queryOptions.days);
-  const filteredItems = filterWeeklyNewsItems_(items, queryOptions);
-  if (!filteredItems.length) {
-    return getBotTextNewsQuestionNoData_(queryOptions);
-  }
-
-  const prompt = buildNewsQuestionPrompt_(conversationId, filteredItems, queryOptions);
-  // 跨多筆 NewsInbox 問答固定走 thinking_high 文字 task。
-  const answerText = String(requireAiText_(runAiTextTask(
-    'news_question',
-    prompt,
-    requireAiCallOptionsForExecutionContext_(aiExecutionContext)
-  )) || '').trim();
-  return answerText || getBotTextEmptyReply_();
-}
-
-function parseNewsQuestionOptions_(userPrompt) {
-  let text = String(userPrompt || '').replace(/\s+/g, ' ').trim();
-  const options = {
-    days: DEFAULT_WEEKLY_NEWS_DAYS,
-    onlyHighPotential: false,
-    categoryFilter: '',
-    question: '',
-    rawText: text
-  };
-
-  if (!text) return options;
-
-  if (text.indexOf('高潛力') >= 0) {
-    options.onlyHighPotential = true;
-    text = text.replace(/高潛力/g, ' ').replace(/\s+/g, ' ').trim();
-  }
-
-  const categoryResult = extractNewsQuestionCategory_(text);
-  if (categoryResult.categoryFilter) {
-    options.categoryFilter = categoryResult.categoryFilter;
-    text = categoryResult.questionText;
-  }
-
-  options.question = text.trim();
-  return options;
-}
-
-function extractNewsQuestionCategory_(text) {
-  const match = String(text || '').match(/^(.*?)分類\s+(.+)$/);
-  if (!match) {
-    return {
-      categoryFilter: '',
-      questionText: String(text || '').trim()
-    };
-  }
-
-  const beforeText = String(match[1] || '').trim();
-  const tailText = String(match[2] || '').trim();
-  const categories = getAllNewsCategoryValues_().slice().sort(function(a, b) {
-    return b.length - a.length;
-  });
-
-  for (let i = 0; i < categories.length; i++) {
-    const category = categories[i];
-    if (tailText === category || tailText.indexOf(category + ' ') === 0 || tailText.indexOf(category + '　') === 0) {
-      return {
-        categoryFilter: category,
-        questionText: [beforeText, tailText.slice(category.length).trim()].filter(function(part) {
-          return part !== '';
-        }).join(' ')
-      };
-    }
-  }
-
-  return {
-    categoryFilter: '',
-    questionText: String(text || '').trim()
-  };
-}
-
-function buildNewsQuestionPrompt_(conversationId, items, queryOptions) {
-  const options = queryOptions || {};
-  const archiveText = getRecentWeeklySummaryText(
-    conversationId,
-    DEFAULT_WEEKLY_NEWS_ARCHIVE_MEMORY_COUNT,
-    WEEKLY_ARCHIVE_TYPE_NEWS
-  );
-
-  return [
-    '請根據以下 NewsInbox 新聞素材，回答使用者的問題。',
-    '',
-    '使用者問題：',
-    options.question,
-    '',
-    '範圍：',
-    '最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天' +
-      (options.onlyHighPotential ? '、高潛力' : '') +
-      (options.categoryFilter ? '、分類「' + options.categoryFilter + '」' : ''),
-    '',
-    '回答規則：',
-    '1. 只能根據下方 NewsInbox 與新聞封存脈絡回答，不要補充外部資訊。',
-    '2. NewsInbox 是主要依據；新聞封存只能作為過去脈絡，不可當成本週新聞事實。',
-    '3. 如果資料不足，請明確說「目前素材池看不出來」。',
-    '4. 回答中的相關素材必須附完整原文網址，不可只寫網域。',
-    '5. 使用繁體中文，不要使用 Markdown 表格。',
-    '6. 請用以下格式：',
-    '簡答：',
-    '依據：',
-    '相關素材：',
-    '',
-    'NewsInbox 素材：',
-    formatNewsItemsForQuestion_(items),
-    '',
-    '過去新聞封存脈絡（可作輔助，不可取代 NewsInbox）：',
-    archiveText || '無'
-  ].join('\n');
-}
-
-function formatNewsItemsForQuestion_(items) {
-  return (items || []).slice()
-    .sort(function(a, b) {
-      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : 0;
-      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : 0;
-      return (isNaN(bTime) ? 0 : bTime) - (isNaN(aTime) ? 0 : aTime);
-    })
-    .slice(0, MAX_NEWS_QUESTION_ITEMS)
-    .map(function(item, index) {
-      return [
-        '【素材 ' + (index + 1) + '】',
-        '故事線：' + normalizeStoryKey_(item.storyKey, item),
-        '分類：' + (item.category || '待分類'),
-        item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
-        item.matchedEntities && item.matchedEntities !== '無' ? '辨識實體：' + item.matchedEntities : '',
-        '標題：' + (item.title || '未取得標題'),
-        '簡介：' + (item.brief || '無'),
-        '大綱：' + (item.outline || '無'),
-        '切角：' + (item.angle || '無'),
-        '節目潛力：' + (item.topicPotential || '中'),
-        item.classificationWarning ? '分類警告：' + item.classificationWarning : '',
-        '原文網址：' + (item.url || '未記錄網址')
-      ].filter(function(line) {
-        return line !== '';
-      }).join('\n');
-    }).join('\n\n');
 }
 
 function parseWeeklyNewsQueryOptions_(userPrompt) {
@@ -2216,31 +2080,6 @@ function formatCountMap_(countMap) {
   }).map(function(key) {
     return '・' + key + '：' + countMap[key];
   }).join('\n');
-}
-
-function getRecentNewsInboxTextForTopics_(conversationId, days, limit) {
-  const items = getRecentNewsInboxItems_(conversationId, days)
-    .slice()
-    .sort(function(a, b) {
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    })
-    .slice(0, Math.max(1, Number(limit) || DEFAULT_RECENT_NEWS_INBOX_COUNT))
-    .reverse();
-
-  return items.map(function(item, index) {
-    return [
-      '【NewsInbox ' + (index + 1) + '】',
-      '標題：' + (item.title || '未取得標題'),
-      '故事線：' + normalizeStoryKey_(item.storyKey, item),
-      '分類：' + (item.category || '待分類'),
-      item.specialTopic && item.specialTopic !== '無' ? '特殊主題：' + item.specialTopic : '',
-      '網址：' + (item.url || ''),
-      '內容大綱：' + (item.outline || item.brief || '無'),
-      '節目切角：' + (item.angle || '無'),
-      '節目潛力：' + (item.topicPotential || '中'),
-      item.classificationWarning ? '分類警告：' + item.classificationWarning : ''
-    ].filter(function(line) { return line !== ''; }).join('\n');
-  }).join('\n\n');
 }
 
 function handleManualNewsSupplement_(event, conversationId, userText, aiExecutionContext) {

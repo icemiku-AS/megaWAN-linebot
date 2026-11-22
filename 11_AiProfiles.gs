@@ -8,9 +8,9 @@
 //
 // 維護注意：
 // 1. 此處不讀 key、不呼叫 API；business schema 在 13_AiSchemas.gs，payload 在 provider adapter。
-// 2. active routes 明確指定 HIGH；相容旗標由 capability list 推導，不能另成一套能力來源。
+// 2. 任務 reasoning effort 依 model 能力驗證；相容旗標由 capability list 推導。
 // 3. profile timeout 是上限，同步 caller 另受 webhook cap 約束；retryPolicy 僅描述 caller-owned 策略。
-// 4. Gemini 保持 dormant；切換 provider 須先驗證 adapter 能力，不提供自動 fallback。
+// 4. Gemini 是唯一 active provider；DeepSeek 保留 dormant，不提供自動 fallback。
 // ======================================================
 
 const AI_PROVIDER_REGISTRY = {
@@ -19,15 +19,22 @@ const AI_PROVIDER_REGISTRY = {
     // 函式只在 dispatch 時呼叫；不依賴 GAS 檔案載入順序或做 top-level 初始化。
     adapter: function(request) { return callDeepSeekProvider_(request); },
     validateRequest: function(request) { return validateDeepSeekRequest_(request); },
-    status: 'active'
+    status: 'dormant'
   },
   gemini: {
     id: 'gemini',
     adapter: function(request) { return callGeminiProvider_(request); },
     validateRequest: function(request) { return validateGeminiRequest_(request); },
-    status: 'dormant'
+    quotaPolicy: {
+      scope: function(request) { return getGeminiQuotaScope_(request); },
+      read: function(scope) { return readGeminiQuotaBlocks_(scope); },
+      record: function(scope, model, result, startedAtMs) { return recordGeminiQuotaBlock_(scope, model, result, startedAtMs); }
+    },
+    status: 'active'
   }
 };
+
+const GEMINI_MODEL_CAPABILITIES = ['text', 'thinking', 'vision', 'structuredOutput', 'webSearch', 'clientTools'];
 
 const AI_MODEL_REGISTRY = {
   deepseek_flash: {
@@ -37,12 +44,17 @@ const AI_MODEL_REGISTRY = {
     // 這是本專案已驗證的 model policy，不是所有 provider 的 reasoning 限制。
     reasoning: { modes: ['enabled', 'disabled'], efforts: ['high', 'max'], samplingWhileThinking: false }
   },
-  gemini_flash_lite_dormant: {
-    provider: 'gemini',
-    model: 'gemini-3.1-flash-lite',
-    dormant: true,
-    capabilities: ['text'],
-    reasoning: { modes: ['disabled'], efforts: [], samplingWhileThinking: false }
+  gemini_4_hydrogen: {
+    provider: 'gemini', model: 'gemini-4-hydrogen', capabilities: GEMINI_MODEL_CAPABILITIES,
+    reasoning: { modes: ['enabled'], efforts: ['low', 'medium', 'high', 'xhigh'], samplingWhileThinking: false }
+  },
+  gemini_38_flash: {
+    provider: 'gemini', model: 'gemini-3.8-flash', capabilities: GEMINI_MODEL_CAPABILITIES,
+    reasoning: { modes: ['enabled'], efforts: ['low', 'medium', 'high'], samplingWhileThinking: false }
+  },
+  gemini_35_flash_lite: {
+    provider: 'gemini', model: 'gemini-3.5-flash-lite', capabilities: GEMINI_MODEL_CAPABILITIES,
+    reasoning: { modes: ['enabled'], efforts: ['minimal', 'low', 'medium', 'high'], samplingWhileThinking: false }
   }
 };
 
@@ -57,11 +69,11 @@ const AI_RETRYABLE_ERROR_TYPES = [
 ];
 
 const AI_EXECUTION_PROFILES = {
-  // 結構化 HIGH：max_tokens 同時計入 reasoning 與最終 JSON；欄位 validator 仍屬功能層。
+  // 結構化 profile 共用 JSON 與 timeout；任務可指定 reasoning effort。
   // 一般 8000，短補充／封存另縮小，週編輯台另擴大；背景 timeout 保持 60 秒。
   thinking_json: {
     thinking: { type: 'enabled' },
-    reasoningEffort: 'high',
+    reasoningEffort: 'low',
     allowSampling: false,
     outputMode: 'json',
     maxOutputTokens: 8000,
@@ -74,7 +86,7 @@ const AI_EXECUTION_PROFILES = {
   // 獨立 profile 避免一般 JSON 取得長文預算；同步 caller 仍受共同 deadline 約束。
   long_extraction_json: {
     thinking: { type: 'enabled' },
-    reasoningEffort: 'high',
+    reasoningEffort: 'low',
     allowSampling: false,
     outputMode: 'json',
     maxOutputTokens: 28000,
@@ -83,11 +95,10 @@ const AI_EXECUTION_PROFILES = {
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   },
 
-  // 一般聊天、圖片與跨素材分析共用 HIGH 文字 profile，token/timeout 差異由 task 決定。
-  // 不送 sampling 欄位；8000 包含 reasoning 與最終文字，webhook 另套 30 秒 cap。
-  thinking_high: {
+  // 一般聊天、圖片與脈絡比對共用文字 profile，webhook 另套 30 秒 cap。
+  thinking_text: {
     thinking: { type: 'enabled' },
-    reasoningEffort: 'high',
+    reasoningEffort: 'low',
     allowSampling: false,
     outputMode: 'text',
     maxOutputTokens: 8000,
@@ -96,95 +107,55 @@ const AI_EXECUTION_PROFILES = {
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   },
   image_caption_fast: {
-    thinking: { type: 'disabled' }, allowSampling: false, outputMode: 'text',
-    maxOutputTokens: 320, timeoutSeconds: 10, requiredFinishReason: 'stop',
+    thinking: { type: 'enabled' }, reasoningEffort: 'minimal', allowSampling: false, outputMode: 'text',
+    // 保留短回答與 MINIMAL thinking 的輸出餘裕。
+    maxOutputTokens: 1024, timeoutSeconds: 10, requiredFinishReason: 'stop',
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   }
 };
 
 const AI_TASK_ROUTES = {
-  // 短回覆原有 1200 加 3600 reasoning 空間；不放大同步 timeout。
+  // 兩種 Key 共用模型候選；只有明確搜尋才會掛 Search。
   general_chat: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_text', expectedThinking: 'enabled', fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'], expectedReasoningEffort: 'low',
     maxOutputTokens: 4800, timeoutSeconds: 45, capabilities: ['webSearch', 'clientTools']
   },
-
-  // 3200 → 8000，為分類稽核與 StoryKey 推理留空間；schema/normalizer 不變。
   news_analysis: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_json', expectedThinking: 'enabled', fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'], expectedReasoningEffort: 'low',
     maxOutputTokens: 8000, timeoutSeconds: 60
   },
-
-  // 4000 → 8000，保留原摘要 JSON 空間並加入 reasoning；validator 留在 WebTaskQueue。
-  web_lazy_summary: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 8000, timeoutSeconds: 60
-  },
-
-  // legacy raw HTML 需要保留大量 mainText，使用獨立長輸出 profile。
   raw_html_extraction: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'long_extraction_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high', legacyJson: true
-  },
-
-  // 新聞問答需跨多筆 NewsInbox 素材推理，固定使用 high。
-  // 原本已包含 reasoning 的 token/timeout 維持不變。
-  news_question: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 7000, timeoutSeconds: 90
-  },
-
-  // 節目分析需要同時判斷脈絡、爭議與節目切角，固定使用 high thinking。
-  program_topic_analysis: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 8000, timeoutSeconds: 120
-  },
-
-  // 統整話題跨 ConversationLog、Highlights、NewsInbox、WebSummary 與封存記憶。
-  integrate_topics: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 9000, timeoutSeconds: 120
-  },
-
-  // 封存從 1800/2600 增至 6000/7000，兼顧來源統整的 reasoning 與短 JSON。
-  archive_topics: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 6000, timeoutSeconds: 60
+    provider: 'gemini', model: 'gemini_38_flash', profile: 'long_extraction_json', expectedThinking: 'enabled', fallbackModels: ['gemini_35_flash_lite'], expectedReasoningEffort: 'low', legacyJson: true
   },
   archive_news: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 7000, timeoutSeconds: 60
+    provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_json', expectedThinking: 'enabled',
+    fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'],
+    reasoningEffort: 'medium', expectedReasoningEffort: 'medium', maxOutputTokens: 7000, timeoutSeconds: 60
   },
-
-  // 3200 → 10000：最多 30 則新聞聚類及對話去重，需要比單篇 JSON 更多 reasoning。
   weekly_editorial_digest: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
-    maxOutputTokens: 10000, timeoutSeconds: 60
+    provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_json', expectedThinking: 'enabled',
+    fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'],
+    reasoningEffort: 'medium', expectedReasoningEffort: 'medium', maxOutputTokens: 10000, timeoutSeconds: 60
   },
-
-  // 1800 → 5000：短輸入只保留較小 reasoning 空間，既有人工 fallback 不變。
   manual_news_supplement: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    provider: 'gemini', model: 'gemini_35_flash_lite', profile: 'thinking_json', expectedThinking: 'enabled', expectedReasoningEffort: 'low',
     maxOutputTokens: 5000, timeoutSeconds: 60
   },
-
-  // memory bridge 要判斷跨週延續與反轉，屬跨素材推理，但失敗只回空字串。
   news_memory_bridge: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_text', expectedThinking: 'enabled', fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'], expectedReasoningEffort: 'low',
     maxOutputTokens: 5000, timeoutSeconds: 90
   },
-
-  // 圖片研究與普通分析都保留 8000-token 空間；僅 research route 提供 Search／tools。
-  // 同步仍受 30 秒 cap 與下載耗時扣除。
   multimodal_research: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_text', expectedThinking: 'enabled', fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'],
+    reasoningEffort: 'medium', expectedReasoningEffort: 'medium',
     maxOutputTokens: 8000, timeoutSeconds: 60, capabilities: ['vision', 'webSearch', 'clientTools']
   },
   image_analysis: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'thinking_high', expectedThinking: 'enabled', expectedReasoningEffort: 'high',
+    provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_text', expectedThinking: 'enabled', fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'], expectedReasoningEffort: 'low',
     maxOutputTokens: 8000, timeoutSeconds: 60, capabilities: ['vision']
   },
   image_semantic_caption: {
-    provider: 'deepseek', model: 'deepseek_flash', profile: 'image_caption_fast', expectedThinking: 'disabled',
+    provider: 'gemini', model: 'gemini_35_flash_lite', profile: 'image_caption_fast', expectedThinking: 'enabled', expectedReasoningEffort: 'minimal',
     capabilities: ['vision']
   }
 };
@@ -222,7 +193,8 @@ function resolveAiTaskConfig_(task) {
   if (thinkingType !== route.expectedThinking) {
     throw createAiConfigurationError_('AI task thinking/profile mismatch: ' + taskName);
   }
-  if (profile.reasoningEffort !== route.expectedReasoningEffort) {
+  const reasoningEffort = Object.prototype.hasOwnProperty.call(route, 'reasoningEffort') ? route.reasoningEffort : profile.reasoningEffort;
+  if (reasoningEffort !== route.expectedReasoningEffort) {
     throw createAiConfigurationError_('AI task reasoning effort/profile mismatch: ' + taskName);
   }
   if (['text', 'json'].indexOf(profile.outputMode) < 0) {
@@ -230,13 +202,13 @@ function resolveAiTaskConfig_(task) {
   }
   const reasoning = modelEntry.reasoning || {};
   if (!Array.isArray(reasoning.modes) || !Array.isArray(reasoning.efforts) || reasoning.modes.indexOf(thinkingType) < 0 ||
-      (thinkingType === 'enabled' && (reasoning.efforts || []).indexOf(profile.reasoningEffort) < 0)) {
+      (thinkingType === 'enabled' && (reasoning.efforts || []).indexOf(reasoningEffort) < 0)) {
     throw createAiConfigurationError_('Model does not support the requested reasoning mode/effort.');
   }
   if (thinkingType === 'enabled' && profile.allowSampling === true && reasoning.samplingWhileThinking !== true) {
     throw createAiConfigurationError_('Model does not support sampling while thinking.');
   }
-  if (thinkingType === 'disabled' && profile.reasoningEffort) {
+  if (thinkingType === 'disabled' && reasoningEffort) {
     throw createAiConfigurationError_('Non-thinking profile must not set reasoning effort: ' + route.profile);
   }
 
@@ -269,6 +241,8 @@ function resolveAiTaskConfig_(task) {
     provider: route.provider,
     providerAdapter: provider.adapter,
     validateProviderRequest: provider.validateRequest,
+    quotaPolicy: provider.quotaPolicy || null,
+    fallbackModels: Array.isArray(route.fallbackModels) ? route.fallbackModels.slice() : [],
     model: modelEntry.model,
     modelRegistryKey: route.model,
     // 舊 callers 可繼續讀相容旗標，source of truth 是 capability list。
@@ -279,7 +253,7 @@ function resolveAiTaskConfig_(task) {
     modelCapabilities: modelEntry.capabilities || [],
     profile: route.profile,
     thinking: { type: thinkingType },
-    reasoningEffort: profile.reasoningEffort || '',
+    reasoningEffort: reasoningEffort || '',
     allowSampling: profile.allowSampling === true,
     outputMode: profile.outputMode,
     temperature: typeof route.temperature === 'number' ? route.temperature : profile.temperature,
@@ -287,14 +261,38 @@ function resolveAiTaskConfig_(task) {
     maxOutputTokens: maxOutputTokens,
     timeoutSeconds: timeoutSeconds,
     requiredFinishReason: route.requiredFinishReason || profile.requiredFinishReason || 'stop',
-    // 僅提供 Queue/caller 判斷；10_AiService.gs 不讀此欄位執行 retry。
+    // 一般失敗仍由 Queue/caller 處理；Gemini 快切另外遵守 quotaPolicy。
     retryPolicy: route.retryPolicy || profile.retryPolicy || { strategy: 'caller_owned', maxAttemptsInService: 1 }
   };
 }
 
+/** 依本任務的白名單保持等級或就近降低，跳過不合能力契約的模型。 */
+function resolveAiFallbackCandidates_(config, request) {
+  const levels = ['minimal', 'low', 'medium', 'high', 'xhigh'];
+  const candidates = [{ model: request.model, reasoningEffort: request.reasoningEffort }];
+  if (!config.quotaPolicy) return candidates;
+  for (const key of config.fallbackModels) {
+    const target = AI_MODEL_REGISTRY[key];
+    if (!target || target.provider !== config.provider || target.dormant || typeof target.model !== 'string' ||
+        candidates.some(function(candidate) { return candidate.model === target.model; }) ||
+        !Array.isArray(target.capabilities) || request.capabilities.some(function(capability) {
+          return target.capabilities.indexOf(capability) < 0;
+        })) continue;
+    const reasoning = target.reasoning || {};
+    if (!Array.isArray(reasoning.modes) || reasoning.modes.indexOf(request.thinking.type) < 0 ||
+        !Array.isArray(reasoning.efforts) || (request.allowSampling && !reasoning.samplingWhileThinking)) continue;
+    const effort = levels.slice(0, levels.indexOf(request.reasoningEffort) + 1).reverse().find(function(level) {
+      return reasoning.efforts.indexOf(level) >= 0;
+    });
+    if (request.thinking.type === 'enabled' && !effort) continue;
+    candidates.push({ model: target.model, reasoningEffort: effort || '' });
+  }
+  return candidates;
+}
+
 /**
  * 判斷穩定 typed error 是否可由 Queue / caller 重試。
- * AiService 自己不 sleep、不 retry；這份清單只是讓既有 Queue 在不解析錯誤文字的前提下做決策。
+ * 既有 Queue 用這份清單決定是否重試；Gemini 的單次快切另由 AiService 配額規則決定。
  */
 function isAiErrorTypeRetryable_(errorType) {
   return AI_RETRYABLE_ERROR_TYPES.indexOf(String(errorType || '').trim()) >= 0;

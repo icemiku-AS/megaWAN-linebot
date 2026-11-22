@@ -1,20 +1,15 @@
 # MEGA浣 / 小浣
 
-住在群組裡的浣熊夥伴：陪群友聊天、查資料，也協助 Podcast「現正熱潮中」整理新聞與節目素材。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 DeepSeek Flash。
+住在群組裡的浣熊夥伴，陪群友聊天、看圖、查資料，也協助 Podcast「現正熱潮中」收集與整理每週新聞。使用 Google Apps Script、Google Sheets、LINE Messaging API 與 Gemini。
 
-本文件描述 **v1.17.0 Weekly News Archive Edition** 的版本契約。工作分支 `codex/v1170-weekly-news-archive`，以當時本機 main / `8231700` 為開發基準；實際 Git 提交、推送與 merge 狀態以 repository refs 為準，GAS production deployment 與驗收由維護者另外確認。**DeepSeek Flash 仍是唯一 active provider，Gemini 仍 dormant，Luna／OpenAI 未接入**。詳細契約見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+目前版本為 **v2.0.0 Gemini Architecture Edition**（2026-11-22）。工作分支 `feature/v200-gemini-migration`，基準為 `main` 的 `ad0e861`。實際 Git 狀態以 refs 為準，GAS production deployment 由維護者手動更新。模型配置、配額規則和部署清單見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 現在能做什麼
 
-- 收集群組新聞網址，整理分類、簡介、大綱與故事線，製作本週編輯台。
-- 一般聊天可搜尋最新資訊，也可查目前聊天室的近期使用者對話、新聞、人工重點與封存記憶；研究工具全部只讀。
-- 私訊傳圖或引用圖片自然提問。需要查證時，可用同一個圖片研究流程結合網路與聊天室資料，另外列出來源。
-- 小浣可把圖片理解保存為同聊天室可搜尋的短文字脈絡，不保存原圖；群組直接貼圖仍不會收到回覆。
-- 新聞分析、快讀、封存、週編輯台與人工補充使用 JSON Schema；程式仍負責分類、完整性與資料寫入驗證。
-- 保留多輪文字記憶、人工畫重點、明確封存與二段確認清理。
-- 文字引用由程式精確查找原文並區分說話者；一般聊天不再預設延伸節目企劃。
-- 出錯時直接顯示已確認的原因、處理方向與診斷碼；正常聊天依話題換句型、接梗，深入問題補有用例子。
-- 指定聊天室可啟用週三中午固定週期新聞封存；手動與每日排程共用防重、進度及失敗補跑，未設定時維持舊行為。
+- 私訊或群組聊天、精確引用群友文字、看圖與圖片研究。
+- 明確要求時啟用 Google 搜尋並附來源，也能只讀查目前聊天室的近期對話、新聞與封存。
+- 群組貼網址靜默收件，私訊可同步取得簡介。用 `#本週新聞` 查看群組話題、事件整理與分類新聞。
+- 可手動封存，或為指定聊天室開啟固定週三週期。私訊和群組都能查看處理狀態及待回覆。
 
 ## 使用方式
 
@@ -22,20 +17,17 @@
 
 ### 聊天與研究
 
-- `#小浣 幫我想五個節目標題`：一般創作，不需要查資料。
-- `#小浣 幫我查最新進度`：明確要求搜尋，失敗時會誠實回報。
+- `#小浣 幫我想五個標題` 是一般創作，無須聯網。
+- `#小浣 幫我查最新進度` 會啟用 Google 搜尋，完成後另附來源。
 - `#小浣 我們這週有沒有收過 Anthropic 的新聞？`
 - `#小浣 上週是不是聊過這件事？`
-- `#小浣 之前畫過哪些相關重點？`
 - 私訊或 `#小浣` 詢問「這篇網址跟之前收過的新聞有沒有重複？」可只讀比對，不會把研究網址自動新增為新聞。
 
-普通聊天由模型判斷是否需要搜尋；「幫我查／搜尋／上網查」會強制要求。明確問「聊過／收過／封存／畫過重點」時，程式先查指定資料。對話查詢限目前聊天室的過去使用者文字與圖片衍生摘要，並標明兩者來源；圖片摘要只表示小浣當時的辨識，不代表使用者說過或圖片主張已查證。查過但沒有結果、取得候選資料、尚未查詢／失敗會分開處理。來源依實際搜尋或工具取得的公開網址列出，最多三筆；來源 bubble 與主回答分開。
+一般聊天預設不聯網。「幫我查／搜尋／上網查」會啟用 Google 搜尋。明確問「聊過／收過／封存」時，程式先查指定資料。對話查詢限目前聊天室的過去使用者文字與圖片衍生摘要，並標明兩者來源；圖片摘要只表示小浣當時的辨識，不代表使用者說過或圖片主張已查證。查過但沒有結果、取得候選資料、尚未查詢／失敗會分開處理。來源依實際搜尋或工具取得的公開網址列出，最多三筆；來源 bubble 與主回答分開。
 
 ### 錯誤回覆
 
-回覆中的「錯誤代碼」可直接用於排修，例如 `SEARCH_UNAVAILABLE｜HTTP 200` 是搜尋工具回報不可用，`SEARCH_RESULT_MISMATCH` 是結果配對異常，`AI_AUTH_ERROR｜HTTP 401` 是驗證或存取拒絕，`API_NO_RESPONSE` 是未取得有效 HTTP 回應，`LOCAL_TIME_BUDGET` 是本機回覆時間不足。API 限流與搜尋工具限流也分開顯示。未知原因明確標示，不直接判成使用者網路壞掉。
-
-需要追查時，貼錯誤回覆、發生時間及 GAS 的 `AI_CALL_METADATA`；其中 `errorReason` 是相同代碼的小寫值。請勿提供 API Key、完整請求／回應或工具正文。網址與圖片錯誤使用各自的固定代碼。可信 `usedWebSearch === true` 時，包含截斷、空答案、時間不足與指定資料失敗，都會顯示一次「搜尋已執行，但完整回覆沒有完成」，並保留真正失敗原因；只有來源網址或搜尋要求不能推定已搜尋。
+回覆會顯示原因與診斷碼。`MISSING_GEMINI_SEARCH_API_KEY` 表示還沒設定搜尋 Key，`SEARCH_NOT_EXECUTED` 表示搜尋未確認完成，`LOCAL_TIME_BUDGET` 表示同步時間不足。配額等待會附最早可重試時間。排查時提供發生時間、錯誤回覆及 GAS 的 `AI_CALL_METADATA`，憑證與原始請求留在私有環境。
 
 ### 文字引用
 
@@ -45,112 +37,86 @@
 
 引用中的搜尋或清理指令不等於你現在的要求。原文與當前問題分開；未解析與圖片引用不保存目標 ID，既有圖片路徑仍可使用。`#reset` 清短期脈絡；`#清空紀錄 確認` 刪目前聊天室紀錄並清短期脈絡；不新增引用快取。
 
-Pending Reply 維持 v1.16.0 契約：任何文字訊息都可優先交付舊結果，包含未觸發的群組普通文字與 reply。普通 reply 不代表在問小浣，不追加「重新引用」提醒，也不呼叫 AI；普通網址在交付時仍依既有規則靜默收件。只有已觸發的文字引用問題才追加尚未處理提醒，請重新引用提問，且不額外研究或收件。沒有 Pending Reply 時，普通群組聊天本身保持安靜。
+任何文字訊息都可優先交付待回覆，包含未觸發的群組普通文字與引用。普通 reply 不代表在問小浣，不追加「重新引用」提醒，也不呼叫 AI；普通網址在交付時仍依既有規則靜默收件。只有已觸發的文字引用問題才追加尚未處理提醒，請重新引用提問，且不額外研究或收件。沒有 Pending Reply 時，普通群組聊天本身保持安靜。
 
 ### 圖片
 
 私訊直接傳 JPEG/PNG，或用 LINE「回覆」引用圖片後輸入「這是什麼？」。群組請引用圖片後輸入 `#小浣 <問題>`，舊 `#小浣 看圖 <問題>` 仍可使用。
 
-普通圖片問題使用簡單分析；「幫我查最新進度／查證／來源」才要求圖片加搜尋。明確要求聊過的內容、收過的新聞、封存記憶、人工重點時，同一流程先取得指定的只讀候選資料。文字中的單一網址先讀內容；網址只在圖中時先辨識，再於一次工具續接內讀取。必要來源未讀取不能當完整成功。單純要求圖片重點或問「這是真的嗎？」不強制開研究；圖片逾時、Search 失敗、指定資料未完成與一般服務異常分開提示。
+普通圖片問題使用簡單分析；「幫我查最新進度／查證／來源」才要求圖片加搜尋。明確要求聊過的內容、收過的新聞或封存記憶時，同一流程先取得指定的只讀候選資料。文字中的單一網址先讀內容；網址只在圖中時先辨識，再於一次工具續接內讀取。必要來源未讀取不能當完整成功。單純要求圖片重點或問「這是真的嗎？」不強制開研究；圖片逾時、Search 失敗、指定資料未完成與一般服務異常分開提示。
 
 一次只處理一張 JPEG/PNG，原圖上限 4 MiB，完整 AI request 上限 8 MiB。私訊多圖只處理第一張；缺少有效圖片索引時提示重新選圖。沒有引用時不猜上一張圖片，不保存原圖、Base64 或圖片配對。已分析圖片在同一次 Vision 呼叫中可產生短語意記憶；群組直接貼圖維持靜默，每聊天室限頻產生短文字摘要。語意文字經有界與敏感字串清理，重看細節仍須重新引用或傳圖。
 
-### 新聞與節目素材
+### 新聞收件、週報與封存
 
 | 用法 | 行為 |
 | --- | --- |
 | 群組直接貼網址 | 靜默進 NewsUrlQueue，背景分析後寫入 NewsInbox；錯誤待下次訊息交付 |
-| 私訊直接貼網址 | 同步讀取、回覆 Brief 並收件；預算不足使用既有背景 Queue |
+| 私訊直接貼網址 | 同步讀取、回覆 Brief 並收件；預算或配額不足時改由背景 Queue 處理 |
 | `#本週新聞` / `#本週新聞 精簡` | 最近七天編輯台、群組話題、多篇事件群與分類新聞 |
 | `#本週新聞 高潛力` | 高潛力分類列表，不呼叫編輯台 |
 | `#本週新聞 詳細` | 大綱與切角；無篩選時可比對過去新聞封存 |
 | `#本週新聞 分類 <分類名>` | 指定分類，例如科技與 AI |
 | `#本週新聞 診斷` | 分類信心、故事線與重複素材檢查 |
-| `#新聞問答 <問題>` | 根據 NewsInbox 與新聞封存回答，附原文網址；不自行查外部資料 |
 | `#狀態回報` | 最近七天收件、Queue、失敗及待交付狀態；固定週期封存進度與失敗原因 |
 | `#新聞補充 <網址與內容>` | 使用者明確新增素材；解析失敗保留人工補件 fallback |
-| `#懶人包 <網址>` | 背景快讀，保存至 WebSummary |
-| `#節目話題分析 <問題或網址>` | 有網址走背景分析；無網址參考近期對話與素材 |
-| `#統整話題` | 整合對話、人工重點、新聞大綱、快讀及封存脈絡 |
-| `#畫重點 <內容>` | 保存人工釘選內容至 TopicHighlights |
-| `#封存本週話題` | 只封存 ConversationLog 使用者對話 |
 | `#封存本週新聞` | 已設定聊天室補存最早到期的固定週期；未設定時仍封存最近七天 NewsInbox |
 
 一般網站顯示 raw Title；X/Twitter 單篇 status 優先顯示 `X｜Brief`，缺資料再回退。這只是展示規則，不修改 Title、Brief、StoryKey、排序、cache 或封存契約。
 
-固定週期是台灣時間「週三 12:00（含）～下週三 12:00（不含）」，按 NewsInbox.CreatedAt 入庫時間、同聊天室及 Status=ok 選取；發表日期不影響歸期。每日中午約 12:00～12:30 檢查，週三處理新到期週期，其餘日補跑；GAS 排程不保證準時。每次每聊天室最多一週，先處理最早未完成週期，可重試失敗每日一次、同一期自動最多三次，包含首次進度寫入的短暫儲存失敗；設定／資料或不可重試錯誤須處理後手動補跑。關閉自動時，狀態明確提示手動補跑。沒有資料只記進度，不建立空摘要。`#本週新聞` 查詢仍是滾動最近七天。
+固定週期是台灣時間「週三 12:00（含）～下週三 12:00（不含）」，按 NewsInbox.CreatedAt 入庫時間、同聊天室及 Status=ok 選取；發表日期不影響歸期。每日中午約 12:00～12:30 檢查，週三處理新到期週期，其餘日補跑；GAS 排程不保證準時。每次每聊天室最多一週，優先處理最早未完成的週期。可重試失敗每日一次，同一期自動最多三次。全候選配額預阻擋、零模型 HTTP 時延後，不扣嘗試額度。關閉自動時，狀態明確提示手動補跑。沒有資料只記進度，不建立空摘要。`#本週新聞` 查詢仍是滾動最近七天。
 
-週編輯台保留已驗證的群組話題；長訊息可在少於 1200 字的完整段落分割，容量不足只省略新聞並顯示數量。共用分段同時核對剩餘訊息容量，避免短前言讓原本放得下的長回覆被截斷，搜尋來源仍另占一則。文字切割、來源與省略提示的截斷保留 UTF-16 配對字元，避免把 emoji 拆成半個字元；保留完整字元後仍超限時明示省略。對話讀取失敗、整體整理失敗、模型回空話題，以及話題全數／部分未通過檢查分別提示，不強迫 AI 產生主題；快取也保留差異，版本改為 v1.17.0，舊 key 自然失效。對話仍僅讀同聊天室、全表尾端最多 2500 列內的合格使用者文字，保留既有最多 60 則／每則 240 字元／合計 6000 字元限制。
+週編輯台保留已驗證的群組話題；長訊息可在少於 1200 字的完整段落分割，容量不足只省略新聞並顯示數量。共用分段同時核對剩餘訊息容量，避免短前言讓原本放得下的長回覆被截斷，搜尋來源仍另占一則。文字切割、來源與省略提示的截斷保留 UTF-16 配對字元，避免把 emoji 拆成半個字元；保留完整字元後仍超限時明示省略。對話讀取失敗、整體整理失敗、模型回空話題，以及話題全數／部分未通過檢查分別提示，不強迫 AI 產生主題。v2.0.0 快取保留這些區別，舊供應商的快取自然失效。對話仍僅讀同聊天室、全表尾端最多 2500 列內的合格使用者文字，保留既有最多 60 則／每則 240 字元／合計 6000 字元限制。
 
 入庫時間戳與寫入／flush、固定封存來源快照共用短鎖，避免截止時漏封存；AI 在鎖外執行，提交只在原 deadline 內等鎖，失敗保留安全狀態供補跑。清理在同一把外層鎖內讀列、刪列及 flush，包含未設定固定封存的聊天室；鎖忙只回報未完成。Pending Reply 仍在 LINE 成功後才刪除。
 
-新聞與快讀／網址節目分析 Queue 已改為按唯一 TaskId 重新定位，核對聊天室、processing 狀態及本次 StartedAt；結果保存、狀態更新與清理共用短鎖。`#清空新聞`／`#清空快讀` 確認後，被刪除的舊工作不再寫回素材或通知；其他聊天室與新入隊任務照常處理。既有 PendingReplies 另用 `#清空待回覆` 清理。
-
-鎖持續忙碌或多表寫入中斷時，工作可能仍為 processing 或留下部分結果。先依 `QUEUE_TASK_STATUS` 核對 Queue、素材與待回覆，再決定補處理；不直接重設 pending，以免重複生成。這項補修不新增欄位、設定或觸發器，實際服務仍待上傳後驗收，詳見 CURRENT_VERSION。
+新聞 Queue 領取與提交時重新核對任務、聊天室、狀態及開始時間。配額不足依 `NextRunAt` 延後。`#清空新聞 確認` 取消被刪任務的遲到結果，待回覆另用 `#清空待回覆` 清除。鎖持續忙碌或多表寫入中斷時，先核對 Queue、素材與待回覆再決定補處理。
 
 ### Help、版本與清理
 
-`#help` 顯示核心功能；其他入口有 `#help 進階`、`#help 清理`、`#help 管理`、`#help 資料`、`#help 全部`。`#版本` 顯示版本，`#版本紀錄` 只列最近六筆。`#reset` 只清除目前聊天室的短期 Cache 記憶。
+`#help` 顯示核心功能；其他入口有 `#help 進階`、`#help 清理`、`#help 管理`、`#help 資料`、`#help 全部`。`#版本` 顯示版本，`#版本紀錄` 只列最近六筆。`#reset` 清除目前聊天室的短期快取並推進世代，避免執行中的舊請求寫回。
 
 清理限目前聊天室，必須先看影響範圍，再輸入「原指令 確認」：
 
 | 指令 | 範圍 |
 | --- | --- |
 | `#清空紀錄` | ConversationLog（含圖片衍生文字）與短期記憶 |
-| `#清空重點` | TopicHighlights |
-| `#清空快讀` | WebSummary、WebTaskQueue |
-| `#清空封存` | 目前聊天室的話題與新聞 WeeklySummary；固定週期進度跳到最新已截止邊界並取消執行中工作，舊週不回補，下週照常 |
+| `#清空封存` | 目前聊天室的全部 WeeklySummary，包含歷史話題與新聞封存；固定週期進度跳到最新已截止邊界並取消執行中工作，舊週不回補，下週照常 |
 | `#清空新聞` | NewsInbox、NewsUrlQueue |
 | `#清空待回覆` | PendingReplies |
 
 ## 現行架構
 
-`Feature → AiService → capability / profile → provider adapter → normalized result → business validator → LINE / deterministic storage`
+功能入口由 AI 服務選擇任務及模型，供應商轉接層處理 Gemini 協議。AI 結果通過程式驗證後才回覆 LINE 或入庫。共 22 個 `.gs`，共用 GAS 全域命名空間。
 
 | 領域 | 檔案 |
 | --- | --- |
-| Core、LINE、儲存、記憶、圖片 | `00_Config.gs`～`07_LineImages.gs`，共 8 檔 |
-| AI service、設定、Prompt | `10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs` |
-| JSON Schema、只讀工具 | `13_AiSchemas.gs`、`14_AiTools.gs` |
-| Provider adapters | `15_DeepSeekProvider.gs`、`16_GeminiProvider.gs` |
-| Reader、背景任務 | `20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs` |
-| 新聞、編輯台、固定封存 | `30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、`36_NewsArchive.gs` |
-| 重點、話題 | `40_TopicHighlights.gs`、`45_TopicFeatures.gs` |
+| 設定、LINE 入口和回覆 | `00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs` |
+| 工具、儲存、記憶與圖片 | `04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs` |
+| AI 調度、模型與提示詞 | `10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs` |
+| 結構化輸出、只讀工具 | `13_AiSchemas.gs`、`14_AiTools.gs` |
+| 供應商與配額 | `15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`、`17_GeminiQuota.gs` |
+| 網址讀取 | `20_ReaderLayer.gs`、`21_WebReader.gs` |
+| 新聞、編輯台與固定封存 | `30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、`36_NewsArchive.gs` |
 | 資料維護 | `50_DataCleanup.gs` |
 
-共 24 個 runtime `.gs`，共用 GAS global namespace；數字只供導航，不是載入順序。
+Gemini 是唯一啟用的 AI 供應商。DeepSeek 保留為 dormant，日常功能無須 `DEEPSEEK_API_KEY`。模型依任務從 Hydrogen、3.8 Flash 或 3.5 Flash-Lite 起跑，在能力相容及剩餘時間允許時按配額降級。搜尋沿用同一用途的 Key。聊天只在讀快取與提交時持有短鎖。
 
-DeepSeek 依能力選擇 Chat Completions（普通文字／Vision／legacy extraction）、Responses（JSON Schema）或 Anthropic Messages（Search／只讀工具／圖片研究）。Gemini 保持 dormant，沒有自動 provider fallback。業務層不建立 vendor payload。
+一般公開網址先用 Jina Reader。X/Twitter 單篇 status 用 FxTwitter，Classic PTT 用直接讀取與 over18 驗證，符合條件時最多一次 Jina。收件保留既有 HTML 抽取後備，`read_url` 工具只讀且不再呼叫 AI。Gemini `url_context` 尚未接入。
 
-### Provider 維護邊界
-
-- `11_AiProfiles.gs` 以 Provider Registry 註冊純 `validateRequest(request)` 與 `adapter(request)` 函式，以 Model Registry 宣告 capabilities、reasoning modes／efforts／sampling policy。Task/profile 表達是否需要推理及 effort；`high/max` 是目前 DeepSeek 已驗證的 policy，不是所有 provider 的限制。正式 task 的 HIGH、token／timeout 與 non-thinking caption 預算不變。
-- AiService 只調度 messages、能力、business schema、trusted scope、required evidence、只讀 tools 與共同 deadline；adapter 負責 endpoint、secret、payload、Search、Vision、structured output、finish／usage 及私有 continuation。能力組合先驗證；序列化、body limit 與 deadline 通過後才讀該 provider 的 Script Property，HTTP 不自動跟隨 redirect。
-- `buildAiProviderResult_()` 統一 adapter 結果欄位；首輪與 continuation 均經 `validateAiProviderResult_()` 檢查完整欄位、型別與 tools／callback 一致性，違反契約以 `ai_invalid_provider_response` 拒絕，未知 HTTP 次數記 null。新增白名單 `errorReason`，缺省仍相容舊 adapter，有值必須通過 guard；LINE 和 metadata 保留細項，unknown 不輸出原文。callback 只在本次 service 內使用，最多一次，原始 turn／reasoning／tool data 不進 feature、history 或 Sheet。已驗證完成的 Search metadata 在後段失敗仍保留，非法或 pending Search 不當成完成。Gemini 僅補安全性與契約一致性，不啟用新能力。
-- `AI_CALL_METADATA` 保留安全 usage／Search／來源數與成本計數。缺少或無效 token 欄位為 `null`；多輪總數必須每輪都有該欄位才相加。`modelCalls` 計實際 HTTP 嘗試，`requiredEvidenceReads`／`clientToolCalls` 計工具執行嘗試，`continuationCount` 計續接嘗試。`contextTextChars` 計首輪文字 context；`toolDefinitionChars` 自 v1.16.0 起只計 provider-neutral client tool definitions 的 JSON 字元數，無工具為 0，不包含 built-in Search schema。Search intent 另記 `webSearchMode`，實際執行另記 `usedWebSearch`。這些不是 token、帳單或完整 wire payload 大小。
-
-未來增加 provider，工作應集中於新增 adapter、更新 Provider／Model Registry 與必要 profile／route、加入 adapter tests，驗證後才配置該 provider 的 key 與切換 route。LINE、圖片下載、ConversationLog、Reader、client tool implementations 和 business validators 不需因供應商改寫。本版沒有 OpenAI stub、OpenAI API 呼叫或必要的 `OPENAI_API_KEY`；Search `max_uses=3` 不變。
-
-Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁等不支援。Classic PTT article 限 `ptt.cc`／`www.ptt.cc`，先正規化 HTTPS，以 over18 cookie 直接讀取並驗證 main-content／article-meta；符合條件的失敗最多使用一次既有 Jina，共用原 deadline。PTT 不進 AI extraction，404／410 不 fallback；term.ptt.cc 走一般網站流程。Facebook／Threads 只嘗試公開可讀內容。一般收件保留 legacy AI extraction fallback；工具 `read_url` 禁止 AI fallback，讀不到便安全回報。
-
-資料表：ConversationLog、TopicHighlights、WeeklySummary、WebTaskQueue、WebSummary、NewsUrlQueue、NewsInbox、PendingReplies。Pending Reply 在 LINE Reply 成功後才刪除；失敗保留，仍可能在 acknowledge 失敗後重送，不承諾 exactly-once。
+活躍資料表為 `ConversationLog`、`WeeklySummary`、`NewsUrlQueue`、`NewsInbox`、`PendingReplies`。舊 `TopicHighlights`、`WebTaskQueue`、`WebSummary` 分頁及歷史話題封存保留。待回覆在 LINE 確認送達後才刪除，若送達後刪除中斷則可能重送。
 
 ## Setup、部署與維護
 
-1. 將所有 active `.gs` 同步到 GAS 專案；不可把 tests、Markdown 或 Node 模組部署到 GAS。
-   從完整 v1.16.2 升級，需同步 12 個 runtime 檔（含新增 36_NewsArchive.gs），清單見 CURRENT_VERSION；部署基準不確定時同步同版全部 24 檔。
-2. Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`、`DEEPSEEK_API_KEY`。不得把值提交至 Git。`GEMINI_API_KEY` 非正常 runtime 必需。
-3. **v1.16.0 → v1.16.1 有 schema 補欄**：先備份 Sheet，再以同版程式執行 `setupLogSheet()`，確認 ConversationLog 新增 `QuotedMessageId`、`QuoteStatus`，舊欄位／資料保留。首次寫入也會補缺欄，但建議部署前明確完成；不回填舊引用、不修復失真 ID。新 ID 以文字 literal 寫入，需在實際 Sheet 驗收超長 ID。既有 Trigger 不重建；首次建置才另外執行 `installWebTaskQueueTrigger()`。
-4. **固定封存先只做準備**：依 CURRENT_VERSION 備份、設定 `autoEnabled=false`、預覽舊期間並執行 `setupNewsArchiveStorage()`。切換期間暫停新聞封存指令，不安裝封存觸發器；未設定預設關閉。
-5. **先更新 Web App deployment**：維護者建立 GAS version，更新既有 Web App deployment 並保留 URL，自動封存仍關閉。Git commit／push／merge 不等於 GAS 部署。
-6. **再驗證新版手動入口**：由 LINE `#版本` 確認 v1.17.0，確認舊版執行已結束，完成測試聊天室手動防重、狀態與對話整理驗收。部署前後檢查 `doPost`、`processWebTaskQueue`、`processNewsUrlQueue` 與既有排程。
-7. **最後啟用自動封存**：驗收通過才將該聊天室 autoEnabled 改為 true，再執行 `installNewsArchiveTrigger()`。具體步驟見 [CURRENT_VERSION.md](CURRENT_VERSION.md)；本機修改與 PR 不會調整實際 Sheets 或 Trigger。
+Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`。`GEMINI_API_KEY` 供一般任務，`GEMINI_SEARCH_API_KEY` 只在啟用 Google 搜尋時讀取。可分用免費與付費專案，或兩格同填已連結 Google AI Pro 抵免額的付費 Key。填同一 Key 時兩路共用該專案的配額與帳務。憑證值只放 Script Properties。 [Google AI Pro 抵免額說明](https://blog.google/innovation-and-ai/technology/developers-tools/google-cloud-credits-gdp-ai-studio/)
 
-必要 production smoke gate：真實 LINE webhook 的 MessageId 與已確認文字 QuotedMessageId，經 writer 寫入及 `SpreadsheetApp getValues()` 回讀後，必須仍為 string 且與原始 ID 完全相等。Mock 不能代替這項實測；目前未執行 live 驗證，完整檢查式見 CURRENT_VERSION。
+1. 依 [CURRENT_VERSION.md](CURRENT_VERSION.md) 備份，先將自動封存設定為 `autoEnabled=false`，手動卸除 `processWebTaskQueue` Trigger，確認舊工作結束。同步 22 個同版 `.gs`，加入 `17_GeminiQuota.gs`，從 GAS 移除 `25_WebTaskQueue.gs`、`40_TopicHighlights.gs` 與 `45_TopicFeatures.gs`。Markdown 與測試留在 Git。
+2. 首次建置執行 `setupLogSheet()`。首次啟用固定封存先設定 `NEWS_ARCHIVE_CONFIG`，保持自動關閉，再執行 `previewNewsArchiveSetup()` 及 `setupNewsArchiveStorage()`。已完成 v1.17.0 建置者沿用現有資料與封存進度。
+3. **先更新 Web App deployment**。在 GAS 建立版本並更新原部署，保留 URL。核對每分鐘一個 `processNewsUrlQueue`，必要時執行 `installNewsUrlQueueTrigger()`。
+4. **再驗證新版手動入口**。以 LINE `#版本`、一般聊天、搜尋、圖片、新聞入庫、週報與手動封存驗證 v2.0.0。按 [CURRENT_VERSION.md](CURRENT_VERSION.md) 完成 production smoke，確認真實 `MessageId` 和 `QuotedMessageId` 寫入後仍是原字串。
+5. **最後啟用自動封存**。將已通過測試的聊天室設為 `autoEnabled=true`，核對既有 `processScheduledNewsArchives`。首次安裝或需重建時執行 `installNewsArchiveTrigger()`。
 
-本機檢查：`node tests/v1140_smoke.cjs` 及 `node tests/v1170_archive.cjs`。使用 Node 內建模組與記憶體 mock，沒有新增 runtime dependency；不會呼叫真實 GAS／LINE／DeepSeek／Sheets。目前結果及 live 限制見 CURRENT_VERSION。
-
-修改規則見 [AGENTS.md](AGENTS.md)：先看現行 caller 與契約、在非 main 工作分支修改、檢查 diff，發布與 GAS 同步由維護者處理。
+本機回歸使用 `node tests/v1140_smoke.cjs` 與 `node tests/v1170_archive.cjs`，由記憶體模擬 GAS／LINE／Sheets／Gemini。修改規則見 [AGENTS.md](AGENTS.md)，完整部署步驟與未驗收項目見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 版本沿革摘要
 
@@ -172,3 +138,4 @@ Reader：一般網站先 Jina、X 單篇 status 使用 FxTwitter；X 個人頁�
 | v1.16.1 | 使用者文字引用、作者脈絡、跨作者去重修正與人格／task 分層；ConversationLog 補兩欄，部署需另行驗收 |
 | v1.16.2 | AI／搜尋／Reader／圖片錯誤診斷碼與自然聊天變化；無新資料欄位、設定或模型呼叫 |
 | v1.17.0 | 固定週三新聞封存、手動／自動防重與補跑；保留週編輯台話題，啟用需補四欄、設定與手動安裝 Trigger |
+| v2.0 | Gemini 雙 Key 與三段配額降級、聊天短鎖、舊快讀與話題功能退場；保留新聞收件與週三封存 |

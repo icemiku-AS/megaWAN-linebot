@@ -5,7 +5,7 @@
 // 職責與協作：
 // 1. doPost() 接收 LINE events；setupLogSheet() 與 Trigger 安裝函式供維護者手動執行。
 // 2. 指令解析與 Reply API 交給 02_LineCommands.gs，固定文案交給 03_ResponseTexts.gs。
-// 3. 新聞、圖片、話題與清理交由各功能檔處理；模型工作透過 AiService，不在此組 provider payload。
+// 3. 新聞、圖片與清理交由各功能檔處理；模型工作透過 AiService，不在此組 provider payload。
 //
 // 維護注意：
 // 1. Pending Reply 優先交付；群組無 trigger 的一般訊息保持安靜，普通網址走靜默收件。
@@ -14,61 +14,51 @@
 // ======================================================
 
 /**
- * 公開管理入口：建立或補齊既有資料表，回傳完成的 Sheet 名稱。
+ * 公開管理入口：初始化五張活躍資料表，回傳完成的 Sheet 名稱。
  * 這是維護者可能在 GAS editor 直接執行的函式；名稱與既有 schema 都是相容性邊界，
  * 不新增 AI Log Sheet，也不進行資料 migration。
  */
 function setupLogSheet() {
   const logSheet = ensureLogSheet_();
-  const highlightSheet = ensureTopicHighlightsSheet_();
   const weeklySheet = ensureWeeklySummarySheet_();
-  const webTaskSheet = ensureWebTaskQueueSheet_();
   const newsQueueSheet = ensureNewsUrlQueueSheet_();
   const newsInboxSheet = ensureNewsInboxSheet_();
   const pendingReplySheet = ensurePendingRepliesSheet_();
-  const webSummarySheet = ensureWebSummarySheet_();
 
   return [
     'Sheet setup completed:',
     logSheet.getName(),
-    highlightSheet.getName(),
     weeklySheet.getName(),
-    webTaskSheet.getName(),
     newsQueueSheet.getName(),
     newsInboxSheet.getName(),
-    pendingReplySheet.getName(),
-    webSummarySheet.getName()
+    pendingReplySheet.getName()
   ].join(', ');
 }
 
-/**
- * 公開 Trigger 安裝入口：重建既有 WebTaskQueue / NewsUrlQueue 每分鐘排程。
- * 副作用是刪除同名 handler 的舊 trigger 後重建；保留函式名稱避免維護流程失效。
- * Source layout 版本不新增 trigger，也不改變任何 handler 名稱。
- */
+/** 相容入口：移除舊快讀排程，再重建新聞分鐘排程。 */
 function installWebTaskQueueTrigger() {
-  const triggers = ScriptApp.getProjectTriggers();
-
-  // 同一個安裝函式同時管理舊 WebTaskQueue 與新 NewsUrlQueue 的排程。
-  // 保留函式名稱 installWebTaskQueueTrigger()，避免既有維護習慣失效。
-  triggers.forEach(function(trigger) {
-    const handler = trigger.getHandlerFunction();
-    if (handler === 'processWebTaskQueue' || handler === 'processNewsUrlQueue') {
+  ScriptApp.getProjectTriggers().forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'processWebTaskQueue') {
       ScriptApp.deleteTrigger(trigger);
     }
   });
+  return installNewsUrlQueueTrigger();
+}
 
-  ScriptApp.newTrigger('processWebTaskQueue')
-    .timeBased()
-    .everyMinutes(1)
-    .create();
+/** 公開管理入口：獨立重建 NewsUrlQueue 的每分鐘排程。 */
+function installNewsUrlQueueTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(trigger) {
+    if (trigger.getHandlerFunction() === 'processNewsUrlQueue') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
 
   ScriptApp.newTrigger('processNewsUrlQueue')
     .timeBased()
     .everyMinutes(1)
     .create();
 
-  return 'processWebTaskQueue and processNewsUrlQueue triggers installed.';
+  return 'processNewsUrlQueue trigger installed.';
 }
 
 /**
@@ -180,8 +170,10 @@ function handleLineEvent(event, webhookStartedAtMs) {
   const isTextQuoteRequest = textQuote.status === 'text_found' && isNaturalQuoteRequest;
   const isQuotedImageRequest = commandInfo.mode === 'image_analysis' || isNaturalQuotedImageRequest;
   // 只有可觸發回答的自然研究問題才跳過收件；群組非 trigger 網址仍保持原靜默收件。
+  const explicitWebSearch = commandInfo.mode === 'chat' && isExplicitWebSearchRequest_(commandInfo.userPrompt);
   const isResearchUrlRequest = commandInfo.mode === 'chat' && (sourceType === 'user' || hasTriggerPrefix(userText)) &&
-    shouldUseWebReading(commandInfo.userPrompt) && /重複|收過|之前|比對|查證|聊過|討論過|封存|重點|內容|讀取|閱讀/.test(commandInfo.userPrompt);
+    shouldUseWebReading(commandInfo.userPrompt) &&
+    (explicitWebSearch || /重複|收過|之前|比對|查證|聊過|討論過|封存|重點|內容|讀取|閱讀/.test(commandInfo.userPrompt));
   // 看圖問題也屬圖片輸入；先遮蔽編碼，再交給 Sheet 或 Pending Reply 流程。
   if (isQuotedImageRequest) userText = redactAiMediaText_(userText);
 
@@ -201,8 +193,8 @@ function handleLineEvent(event, webhookStartedAtMs) {
   // 沿用任何文字都可交付 pending 的例外；是否追加引用提醒另由當前 request 判斷。
   const pendingDelivery = deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
     // 引用／網址研究不趁交付舊結果時轉成新聞收件；保留 Pending Reply 優先交付。
-    const enqueueResult = isTextQuoteRequest || isQuotedImageRequest || isResearchUrlRequest ? null
-      : enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText);
+    const enqueueResult = isTextQuoteRequest || isQuotedImageRequest || isResearchUrlRequest || !shouldUseWebReading(userText)
+      ? null : handleSilentNewsUrlMessage_(event, conversationId, userText);
     return getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
       (isTextQuoteRequest ? '\n\n這則引用問題尚未處理，請重新引用再問一次。' :
         isQuotedImageRequest ? (commandInfo.mode === 'image_analysis' ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' : '\n\n這則引用尚未處理，請重新引用再問一次。') :
@@ -259,7 +251,11 @@ function handleLineEvent(event, webhookStartedAtMs) {
   }
 
   if (userText === '#reset' || userText === '#小浣 reset') {
-    clearConversationHistory(conversationId);
+    try { clearConversationHistory(conversationId); }
+    catch (error) {
+      replyToLine(event.replyToken, getBotTextAiError_(error));
+      return;
+    }
     const resetText = getBotTextResetDone_();
     replyToLine(event.replyToken, resetText);
     logAssistantReplyToSheet(event, conversationId, resetText, 'reset');
@@ -286,43 +282,9 @@ function handleLineEvent(event, webhookStartedAtMs) {
       return;
     }
 
-    if (cleanupInfo.key === 'conversation_log') {
-      clearConversationHistory(conversationId);
-    }
-
     const doneText = getBotTextCleanupDone_(cleanupInfo, cleanupResult);
     replyToLine(event.replyToken, doneText);
     logAssistantReplyToSheet(event, conversationId, doneText, 'cleanup_done');
-    return;
-  }
-
-  if (userText.startsWith('#畫重點')) {
-    const highlightText = userText.replace('#畫重點', '').trim();
-    if (!highlightText) {
-      const emptyText = getBotTextHighlightEmpty_();
-      replyToLine(event.replyToken, emptyText);
-      logAssistantReplyToSheet(event, conversationId, emptyText, 'highlight_empty');
-      return;
-    }
-
-    saveTopicHighlight_(event, conversationId, userText, highlightText);
-    const savedText = getBotTextHighlightSaved_();
-    replyToLine(event.replyToken, savedText);
-    logAssistantReplyToSheet(event, conversationId, savedText, 'highlight_saved');
-    return;
-  }
-
-  if (userText === '#封存本週話題') {
-    let archiveReply = '';
-    try {
-      archiveReply = archiveWeeklyTopics(event, conversationId, aiExecutionContext);
-    } catch (error) {
-      console.error('archiveWeeklyTopics error:', error && error.stack ? error.stack : error);
-      archiveReply = getBotTextArchiveError_(error);
-    }
-
-    replyToLine(event.replyToken, archiveReply);
-    logAssistantReplyToSheet(event, conversationId, archiveReply, 'archive_weekly');
     return;
   }
 
@@ -372,14 +334,8 @@ function handleLineEvent(event, webhookStartedAtMs) {
       aiReply = analyzeLineImage_(event, conversationId, event.message.quotedMessageId, commandInfo.userPrompt, aiExecutionContext, false, imageReplyMetadata);
       aiFinalMessage = imageReplyMetadata.finalMessage || '';
 
-    } else if (commandInfo.mode === 'integrate_topics') {
-      aiReply = integrateRecentTopics(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
-
     } else if (commandInfo.mode === 'weekly_news') {
       aiReply = handleWeeklyNewsDigest_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
-
-    } else if (commandInfo.mode === 'news_question') {
-      aiReply = handleNewsQuestion_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
 
     } else if (commandInfo.mode === 'news_status_report') {
       aiReply = handleNewsStatusReport_(event, conversationId);
@@ -390,30 +346,12 @@ function handleLineEvent(event, webhookStartedAtMs) {
     } else if (commandInfo.mode === 'archive_weekly_news') {
       aiReply = archiveWeeklyNews(event, conversationId, aiExecutionContext);
 
-    } else if (commandInfo.mode === 'program_topic_analysis') {
-      const urls = extractUrls(commandInfo.userPrompt);
-      if (urls.length > 0) {
-        const enqueueResult = enqueueWebTask(event, conversationId, commandInfo.userPrompt, TASK_TYPE_PROGRAM_TOPIC_ANALYSIS);
-        aiReply = enqueueResult.ok
-          ? buildWebTaskAcceptedText_(TASK_TYPE_PROGRAM_TOPIC_ANALYSIS, enqueueResult.urls.length)
-          : enqueueResult.error || getBotTextNoReadableUrl_();
-      } else {
-        aiReply = analyzeProgramTopicFromRecentContext(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
-      }
-
-    } else if (commandInfo.mode === 'web_read') {
-      const enqueueResult = enqueueWebTask(event, conversationId, commandInfo.userPrompt, TASK_TYPE_WEB_LAZY_SUMMARY);
-      aiReply = enqueueResult.ok
-        ? buildWebTaskAcceptedText_(TASK_TYPE_WEB_LAZY_SUMMARY, enqueueResult.urls.length)
-        : enqueueResult.error || getBotTextNoReadableUrl_();
-
     } else {
       if (shouldUseWebReading(commandInfo.userPrompt) && !isResearchUrlRequest) {
         const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
         aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
         aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
       } else {
-        const explicitWebSearch = isExplicitWebSearchRequest_(commandInfo.userPrompt);
         const generalChatResult = runAiMemoryTask(
           'general_chat',
           conversationId,

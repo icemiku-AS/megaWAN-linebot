@@ -4,7 +4,7 @@
 //
 // 職責與協作：
 // 1. 供 setup、對話、新聞、話題與背景任務存取既有 Sheets，並提供共用 header helpers。
-// 2. 管理資料存取與格式化；功能流程、AI Prompt 與 LINE 排版留在各功能檔。
+// 2. 管理資料存取、格式化與共用 PendingReplies 交付；LINE 排版交給 02_LineCommands.gs。
 //
 // 維護注意：
 // 1. Sheet 名稱、headers、欄位順序與 Script Property 名稱皆為部署相容性邊界。
@@ -278,7 +278,7 @@ function appendWeeklySummaryRow_(item) {
     ReusableAngles: truncateForSheet(item.reusableAngles || ''),
     FollowUpQuestions: truncateForSheet(item.followUpQuestions || ''),
     RawMessageCount: Number(item.rawMessageCount || sourceItemCount || 0),
-    ArchiveType: item.archiveType || WEEKLY_ARCHIVE_TYPE_TOPIC,
+    ArchiveType: WEEKLY_ARCHIVE_TYPE_NEWS,
     PeriodStart: item.periodStart || '',
     PeriodEnd: item.periodEnd || '',
     SourceItemCount: sourceItemCount,
@@ -288,32 +288,9 @@ function appendWeeklySummaryRow_(item) {
     ArchiveOrigin: item.archiveOrigin || ''
   };
 
-  // WeeklySummary 同時保存話題封存與新聞封存。
+  // 新列一律是新聞封存；既有 topic 列沿用原類型。
   // 這裡依實際表頭寫入，讓既有 Sheet 只追加新欄位，不需要重排或 migration。
   appendRowByHeaders_(sheet, valuesByHeader);
-}
-
-function ensureWebTaskQueueSheet_() {
-  const headers = [
-    'TaskId',
-    'CreatedAt',
-    'UpdatedAt',
-    'ConversationId',
-    'SourceType',
-    'UserId',
-    'GroupId',
-    'RoomId',
-    'UserPrompt',
-    'Urls',
-    'Status',
-    'ResultText',
-    'ErrorText',
-    'StartedAt',
-    'FinishedAt',
-    'TaskType'
-  ];
-
-  return ensureSheetWithHeaders_(WEB_TASK_QUEUE_SHEET_NAME, headers);
 }
 
 function ensurePendingRepliesSheet_() {
@@ -334,32 +311,119 @@ function ensurePendingRepliesSheet_() {
   return ensureSheetWithHeaders_(PENDING_REPLIES_SHEET_NAME, headers);
 }
 
-function ensureWebSummarySheet_() {
-  const headers = [
-    'SummaryId',
-    'CreatedAt',
-    'ConversationId',
-    'SourceType',
-    'UserId',
-    'GroupId',
-    'RoomId',
-    'OriginalMessage',
-    'Url',
-    'Title',
-    'SiteName',
-    'Author',
-    'PublishedAt',
-    'Summary',
-    'KeyPoints',
-    'ContentType',
-    'TopicPotential',
-    'ExtractionConfidence',
-    'Warnings',
-    'Status',
-    'ErrorText'
-  ];
+// ======================================================
+// PendingReplies 交付機制
+// ======================================================
 
-  return ensureSheetWithHeaders_(WEB_SUMMARY_SHEET_NAME, headers);
+function createPendingReplyFromTask(taskRowData, replyText, replyMode) {
+  const sheet = ensurePendingRepliesSheet_();
+
+  const pendingId = createSimpleId('pending');
+  const now = new Date();
+
+  sheet.appendRow([
+    pendingId,
+    now,
+    taskRowData.conversationId || '',
+    taskRowData.sourceType || '',
+    taskRowData.userId || '',
+    taskRowData.groupId || '',
+    taskRowData.roomId || '',
+    truncateForSheet(replyText || ''),
+    'pending',
+    '',
+    replyMode || taskRowData.taskType || ''
+  ]);
+
+  return pendingId;
+}
+
+/**
+ * Pending Reply 的 at-least-not-lost 交付邊界：在同一把 ScriptLock 內讀取、送 LINE、成功後刪除。
+ * LINE 非 2xx／exception 時 replyToLine() 會拋錯，row 因此保留；若送達後程序在刪除前中斷，
+ * 下次可能重送一次，但不會先刪後遺失。ponytail: 全域鎖涵蓋 Sheet／callback 與 10 秒 transport cap；
+ * 若併發量需要改善，再設計可恢復的同聊天室 claim，不能只把 HTTP 移出鎖造成正常路徑重送。
+ */
+function deliverPendingReply_(conversationId, replyToken, buildDeliveryText) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(1000)) return null;
+
+  try {
+    const sheet = ensurePendingRepliesSheet_();
+    const pendingReply = findPendingReply_(sheet, conversationId);
+    if (!pendingReply) return null;
+
+    const deliveryText = typeof buildDeliveryText === 'function'
+      ? buildDeliveryText(pendingReply)
+      : getBotTextPendingDelivery_(pendingReply.text, false);
+
+    replyToLine(replyToken, deliveryText, true);
+    // 只有 Reply API 確認 2xx 才 consume；刪除失敗會保留 row，符合 at-least-not-lost。
+    deletePendingReplyById_(sheet, pendingReply.pendingId);
+    SpreadsheetApp.flush();
+
+    return {
+      text: String(deliveryText || ''),
+      replyMode: pendingReply.replyMode
+    };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function findPendingReply_(sheet, conversationId) {
+  const headerMap = getHeaderMap_(sheet);
+  const lastRow = sheet.getLastRow();
+
+  if (lastRow <= 1) {
+    return null;
+  }
+
+  const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+
+  // 從上往下找最早完成的 pending reply
+  for (let i = 0; i < values.length; i++) {
+    const row = values[i];
+
+    const rowConversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
+    const pendingId = getRowValueByHeader_(row, headerMap, 'PendingId');
+    const replyText = getRowValueByHeader_(row, headerMap, 'ReplyText');
+    const status = getRowValueByHeader_(row, headerMap, 'Status');
+    const replyMode = getRowValueByHeader_(row, headerMap, 'ReplyMode');
+
+    if (rowConversationId === conversationId && status === 'pending' && replyText) {
+      return {
+        pendingId: String(pendingId || ''),
+        text: String(replyText || ''),
+        replyMode: String(replyMode || '')
+      };
+    }
+  }
+
+  return null;
+}
+
+function deletePendingReplyById_(sheet, pendingId) {
+  const headerMap = getHeaderMap_(sheet);
+  const lastRow = sheet.getLastRow();
+  if (!pendingId || lastRow <= 1) throw new Error('Pending Reply acknowledge failed.');
+
+  const values = sheet.getRange(2, 1, lastRow - 1, sheet.getLastColumn()).getValues();
+  for (let i = 0; i < values.length; i++) {
+    if (String(getRowValueByHeader_(values[i], headerMap, 'PendingId') || '') === pendingId) {
+      sheet.deleteRow(i + 2);
+      return;
+    }
+  }
+
+  // LINE 可能已送達；找不到原 row 時不可刪除其他列，保留 at-least-once 的保守邊界。
+  throw new Error('Pending Reply acknowledge failed.');
+}
+
+// v1.14.1 compatibility：舊名稱不再刪除資料，避免外部診斷誤用時重現 delete-before-send。
+// 正式 runtime 一律使用 deliverPendingReply_() 完成交付與 acknowledge。
+function getAndDeletePendingReply(conversationId) {
+  return findPendingReply_(ensurePendingRepliesSheet_(), conversationId);
 }
 
 // ======================================================
@@ -484,55 +548,6 @@ function createTextQuoteLookup_(conversationId, executionContext, beforeTimestam
       return { status: 'failed', reason: failure };
     }
   };
-}
-
-// ======================================================
-// WebSummary 寫入
-// ======================================================
-
-function saveWebSummary_(task, summaryResult) {
-  try {
-    const sheet = ensureWebSummarySheet_();
-
-    const summaryId = createSimpleId('websummary');
-    const now = new Date();
-
-    const keyPointsText = summaryResult.keyPoints && summaryResult.keyPoints.length > 0
-      ? summaryResult.keyPoints.join('\n')
-      : '';
-
-    const warningsText = summaryResult.warnings && summaryResult.warnings.length > 0
-      ? summaryResult.warnings.join('\n')
-      : '';
-
-    sheet.appendRow([
-      summaryId,
-      now,
-      task.conversationId || '',
-      task.sourceType || '',
-      task.userId || '',
-      task.groupId || '',
-      task.roomId || '',
-      truncateForSheet(task.userPrompt || ''),
-      summaryResult.url || '',
-      summaryResult.title || '',
-      summaryResult.siteName || '',
-      summaryResult.author || '',
-      summaryResult.publishedAt || '',
-      truncateForSheet(summaryResult.summary || ''),
-      truncateForSheet(keyPointsText),
-      summaryResult.contentTypeLabel || '',
-      summaryResult.topicPotential || '',
-      summaryResult.extractionConfidence || 0,
-      truncateForSheet(warningsText),
-      summaryResult.ok ? 'ok' : 'failed',
-      truncateForSheet(summaryResult.error || '')
-    ]);
-
-  } catch (error) {
-    console.error('WEB_SUMMARY_WRITE_FAILED');
-    throw error;
-  }
 }
 
 // ======================================================
@@ -736,99 +751,6 @@ function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxSca
       text: item.text
     };
   });
-}
-
-function getRecentWebSummariesText(conversationId, limit) {
-  try {
-    const sheet = ensureWebSummarySheet_();
-    const headerMap = getHeaderMap_(sheet);
-    const lastRow = sheet.getLastRow();
-
-    if (lastRow <= 1) {
-      return '';
-    }
-
-    const lastCol = sheet.getLastColumn();
-
-    // 最多往回讀最近 200 筆 WebSummary
-    const readRows = Math.min(lastRow - 1, 200);
-    const startRow = lastRow - readRows + 1;
-
-    const values = sheet
-      .getRange(startRow, 1, readRows, lastCol)
-      .getValues();
-
-    const matched = [];
-
-    for (let i = values.length - 1; i >= 0; i--) {
-      const row = values[i];
-
-      const rowConversationId = getRowValueByHeader_(row, headerMap, 'ConversationId');
-      const status = getRowValueByHeader_(row, headerMap, 'Status');
-
-      if (rowConversationId !== conversationId) {
-        continue;
-      }
-
-      const url = getRowValueByHeader_(row, headerMap, 'Url');
-      const title = getRowValueByHeader_(row, headerMap, 'Title');
-      const summary = getRowValueByHeader_(row, headerMap, 'Summary');
-      const keyPoints = getRowValueByHeader_(row, headerMap, 'KeyPoints');
-      const contentType = getRowValueByHeader_(row, headerMap, 'ContentType');
-      const topicPotential = getRowValueByHeader_(row, headerMap, 'TopicPotential');
-      const originalMessage = getRowValueByHeader_(row, headerMap, 'OriginalMessage');
-      const errorText = getRowValueByHeader_(row, headerMap, 'ErrorText');
-
-      if (!url && !summary && !errorText) {
-        continue;
-      }
-
-      matched.push({
-        status: status,
-        url: url,
-        title: title,
-        summary: summary,
-        keyPoints: keyPoints,
-        contentType: contentType,
-        topicPotential: topicPotential,
-        originalMessage: originalMessage,
-        errorText: errorText
-      });
-
-      if (matched.length >= limit) {
-        break;
-      }
-    }
-
-    matched.reverse();
-
-    return matched.map(function(item, index) {
-      if (item.status === 'failed') {
-        return [
-          '【網址快讀 ' + (index + 1) + '】',
-          '狀態：讀取失敗',
-          '網址：' + item.url,
-          '錯誤：' + item.errorText,
-          '原始訊息：' + item.originalMessage
-        ].join('\n');
-      }
-
-      return [
-        '【網址快讀 ' + (index + 1) + '】',
-        '標題：' + (item.title || '未取得標題'),
-        '網址：' + item.url,
-        '類型：' + (item.contentType || '未分類'),
-        '節目潛力：' + (item.topicPotential || '未判斷'),
-        '摘要：' + (item.summary || '無摘要'),
-        '重點：' + (item.keyPoints || '無'),
-        '原始訊息：' + (item.originalMessage || '無')
-      ].join('\n');
-    }).join('\n\n');
-
-  } catch (error) {
-    console.error('getRecentWebSummariesText error:', error);
-    return '';
-  }
 }
 
 function getRecentWeeklySummaryText(conversationId, limit, archiveType, readOnly) {

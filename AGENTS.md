@@ -10,7 +10,7 @@
 
 本專案正式名稱為 MEGA浣，小名小浣。
 
-用途是協助 Podcast「現正熱潮中」進行新聞素材收集、網址讀取、素材整理、節目話題分析、重點保存與長期記憶封存。
+用途是提供聊天、圖片研究與資料查詢，協助 Podcast「現正熱潮中」收集新聞、讀取網址、整理每週素材與封存新聞。
 
 本專案目前是 Google Apps Script 專案。
 
@@ -90,16 +90,15 @@ Codex 不需要把 CURRENT_VERSION.md 當成操作規則；操作規則以本 AG
 
 ### 現行 `.gs` 導航與建議閱讀順序
 
-目前專案有 24 個 active runtime source，依領域區段排列：
+目前專案有 22 個 active runtime source，依領域區段排列：
 
 1. Core／LINE transport／Shared foundation：`00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`04_Utils.gs`、`05_Storage.gs`、`06_Memory.gs`、`07_LineImages.gs`
-2. AI configuration／orchestration／schemas／read-only tools／providers：`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`
-3. Reader／Web workflows／background jobs：`20_ReaderLayer.gs`、`21_WebReader.gs`、`25_WebTaskQueue.gs`
+2. AI configuration／orchestration／schemas／read-only tools／providers：`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`、`15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`、`17_GeminiQuota.gs`
+3. Reader／Web workflows：`20_ReaderLayer.gs`、`21_WebReader.gs`
 4. News／Editorial：`30_NewsInbox.gs`、`35_WeeklyEditorialDigest.gs`、`36_NewsArchive.gs`
-5. Topic／material workflows：`40_TopicHighlights.gs`、`45_TopicFeatures.gs`
-6. Data operations／maintenance：`50_DataCleanup.gs`
+5. Data operations／maintenance：`50_DataCleanup.gs`
 
-閱讀實際功能時，不必機械式依檔號讀完全部檔案；先讀入口與該領域，再沿 caller/dependency 追蹤。例如 AI 任務先讀 `10_AiService.gs` → `11_AiProfiles.gs` → 對應 Provider，圖片流程先讀 `01_Main.gs` → `07_LineImages.gs` → `10_AiService.gs` → `15_DeepSeekProvider.gs`，網址流程先讀 `20_ReaderLayer.gs` → `21_WebReader.gs` / `25_WebTaskQueue.gs`，新聞流程先讀 `30_NewsInbox.gs` → `35_WeeklyEditorialDigest.gs`。
+閱讀實際功能時，不必機械式依檔號讀完全部檔案；先讀入口與該領域，再沿 caller/dependency 追蹤。例如 AI 任務先讀 `10_AiService.gs` → `11_AiProfiles.gs` → 對應 Provider，圖片流程先讀 `01_Main.gs` → `07_LineImages.gs` → `10_AiService.gs` → `16_GeminiProvider.gs`，網址流程先讀 `20_ReaderLayer.gs` → `21_WebReader.gs`，新聞流程先讀 `30_NewsInbox.gs` → `35_WeeklyEditorialDigest.gs`。
 
 檔號規則：
 
@@ -116,23 +115,27 @@ Codex 不需要把 CURRENT_VERSION.md 當成操作規則；操作規則以本 AG
 * 不得依賴檔名、檔號或排序執行 top-level executable side effect。
 * 新檔案應先判斷所屬領域，再使用該區段的保留空號。
 * 不要為了完美插入順序任意重編整個專案。
-* DeepSeek／Gemini vendor adapters 的 active 檔名是 `15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`；正式 service 層是 `10_AiService.gs`。
+* DeepSeek／Gemini vendor adapters 的檔名是 `15_DeepSeekProvider.gs`、`16_GeminiProvider.gs`；正式 service 層是 `10_AiService.gs`。
 * Provider 檔名調整不授權修改既有 provider function、compatibility wrapper 或 dispatch contract。
 
 AI 工作先追 `10_AiService.gs` → `11_AiProfiles.gs` → `13_AiSchemas.gs` / `14_AiTools.gs` → 對應 Provider。Feature 只描述能力需求，不建立 vendor payload；不支援的能力必須在 HTTP 前明確失敗。Schema 不取代既有 business validator。
 
-Internal tools 僅可讀目前 conversationId；scope 由 trusted code 注入，不接受模型指定。禁止 write tool、ensureSheet 副作用、任意 GAS function dispatch 與 read_url 巢狀 AI。工具、圖片、reasoning 和 provider continuation 不得永久保存或寫原文 log；同步最多一次 continuation，沿用共同 absolute deadline。Gemini 保持 dormant，沒有自動 provider fallback。
+Internal tools 僅可讀目前 conversationId；scope 由 trusted code 注入，不接受模型指定。禁止 write tool、ensureSheet 副作用、任意 GAS function dispatch 與 read_url 巢狀 AI。工具、圖片、reasoning 和 provider continuation 不得永久保存或寫原文 log；同步最多一次 continuation，沿用共同 absolute deadline。Gemini 是唯一 active provider。DeepSeek adapter 保留 dormant，跨供應商自動派送仍禁止。
 
 ### Provider adapter 維護契約
 
+* Gemini 依 task 白名單選擇同供應商且通過目標 model capability／thinking 驗證的候選。派送前跳過已阻擋候選，耗盡時以零 HTTP 回傳最早可試時間。只允許在首輪可切換的 429 後、共用 deadline 尚有文字至少 12 秒／JSON 至少 15 秒時快切一次。靜默 caption、輔助 memory bridge、零額度與工具續接期間均不得快切，整個同步 AI task 最多兩次 HTTP。
+* v2.0.0 的十條任務起點、推理強度與候選順序以 `11_AiProfiles.gs` 為準，發版設定表見 `CURRENT_VERSION.md`。
+* `GEMINI_QUOTA_STATE` 按 `free` 與 `search_paid` 分開記錄各模型的阻擋狀態。Search 降級沿用同一 Key 類別。若兩個 Script Properties 使用同一付費 Key，Google 端仍共用專案配額，`keyScope` 只代表派送用途。只接受結構化且非零的日額度證據鎖到下一個 PT 午夜；其他 429 採有界 cooldown。共享狀態只可在短鎖內重讀合併，前一日的遲到 429 和一般成功都不得改寫當日阻擋。
+* `runAiMemoryTask()` 只在讀快取和提交時短鎖；同聊天室的成功輪次按提交順序合併。重設和已確認的對話清理推進記憶世代；遲到結果仍能回覆，世代不符或快取消失即放棄記憶寫入。
 * 新 provider 在 `11_AiProfiles.gs` 註冊 `validateRequest(request)` 與 `adapter(request)` 函式；AiService 不增加 vendor switch，也不組 Search／reasoning／Vision／JSON payload。
 * Model Registry 宣告 capabilities 與 reasoning modes／efforts／sampling policy；task/profile 的 thinking enabled/disabled 是能力需求，不是直接轉送的 vendor block。Provider/model 歸屬與 profile 預期先由 resolver 驗證，能力組合再由 adapter 的純 validation 拒絕。不得把某一 provider 的 effort 限制變成通用規則。
-* `validateRequest` 不讀 key、不編碼圖片、不執行 HTTP／Sheet／Reader。真正 adapter 先驗證 payload、大小和剩餘 deadline，再 lazy-load 自己的 Script Property；unused provider 缺 key 不影響 active route。HTTP 不自動跟隨 redirect，exception/body 不得原樣外傳。
+* `validateRequest` 不讀 key、不編碼圖片、不執行 HTTP／Sheet／Reader。真正 adapter 先驗證 payload、大小和剩餘 deadline，再 lazy-load 自己的 Script Property；unused provider 缺 key 不影響 active route。Gemini 只在啟用 Google Search 時讀 `GEMINI_SEARCH_API_KEY`，其餘呼叫只讀 `GEMINI_API_KEY`。HTTP 不自動跟隨 redirect，exception/body 不得原樣外傳。
 * Adapter 使用 `buildAiProviderResult_()`，回傳 `ok/text/finishReason/usage/elapsedMs/httpStatus/transport/usedWebSearch/sources/toolCalls/continueWithToolResults/modelCalls/errorType/errorMessage/retryable`。Finish reason 統一為空值、`stop/length/tool_calls/content_filter/incomplete/error`；usage 只用有效非負整數或 null，不能猜 cache／reasoning tokens。`modelCalls` 為當次 adapter 的 HTTP 嘗試數（0 或 1），不是供應商帳單推估。
-* 首輪與 continuation 都必須通過 `validateAiProviderResult_()`；不得省略 contract 欄位或用 builder defaults 掩蓋 malformed 回傳。違規以不可重試的 `ai_invalid_provider_response` 拒絕；無可信 modelCalls 時只有 service failure metadata 可記 null，不推測 HTTP 次數。Transport 是最多64字元的 lowercase 字母／數字／底線識別碼或空值，不可放 endpoint 或 body。
+* 每次派送、快切與 continuation 都必須通過 `validateAiProviderResult_()`；不得省略 contract 欄位或用 builder defaults 掩蓋 malformed 回傳。違規以不可重試的 `ai_invalid_provider_response` 拒絕；無可信 modelCalls 時只有 service failure metadata 可記 null，不推測 HTTP 次數。Transport 是最多64字元的 lowercase 字母／數字／底線識別碼或空值，不可放 endpoint 或 body。
 * Search metadata 只能在 adapter 驗證正式協議、result 和來源後標為完成；pending／malformed／protocol markup 不算成功。已完成觀測須保留到後段 failure，partial answer 不得保存；跨輪由 service 合併，usage 缺值不得偽造。
 * Continuation callback 只接受共用 tool results 與 deadline，vendor state 留在 adapter closure；只能消耗一次且不可延長原 deadline。Service 執行 `runAiReadOnlyTool_()` 並拒絕第二批 calls，最後結果不得外傳 callback／原始 tool state。
-* `toolDefinitionChars` 只計共用 client tool definitions，built-in Search 以 `webSearchMode/usedWebSearch` 分別記錄意圖與執行。Metadata 不得含 prompt、URL 正文、raw evidence、reasoning、圖片或 secret；失敗仍保留可信用量與 transport，缺少任一輪用量則該累計欄位為 null。
+* `toolDefinitionChars` 只計共用 client tool definitions，built-in Search 以 `webSearchMode/usedWebSearch` 分別記錄意圖與執行。Gemini 僅以 keyScope 記錄實際 dispatch 的金鑰類別（free 或 search_paid）。`requestedModel` 是任務起點，`model` 是最後有可信 HTTP 計數的型號，`attemptedModels` 按 HTTP 順序記錄；降級原因與配額延後僅使用白名單碼及時間戳。Metadata 不得含 prompt、URL 正文、raw evidence、reasoning、圖片或 secret；失敗仍保留可信用量與 transport，缺少任一輪用量則該累計欄位為 null。
 * 新 provider 先加 adapter tests、驗證官方契約，再由維護者切 route／配置 key。不得預建猜測性 OpenAI payload 或要求未啟用 provider 的 key。Compatibility wrappers 沒有 repo caller 仍不足以證明沒有 GAS 手動／外部 caller。
 
 ---
@@ -331,16 +334,15 @@ Secret value 應由維護者放在 Apps Script Script Properties。
 
 本專案主要使用 Google Sheets 作為資料儲存層。
 
-常見資料表包含：
+活躍資料表：
 
 * ConversationLog
-* TopicHighlights
 * WeeklySummary
-* WebTaskQueue
-* WebSummary
 * NewsUrlQueue
 * NewsInbox
 * PendingReplies
+
+TopicHighlights、WebTaskQueue、WebSummary 及 WeeklySummary 的舊 topic 列保留。#清空封存 確認 仍清除目前聊天室的全部 WeeklySummary 列，並取消該聊天室執行中的固定週期封存。
 
 修改任何資料表相關邏輯時，必須注意：
 
@@ -363,7 +365,7 @@ Reader Layer 的目標是把「讀網址」與「後續 LLM 整理」拆開。
 
 修改網址讀取流程時，請優先維持統一 webResult 契約，讓下游流程可以繼續使用穩定欄位。
 
-目前讀取策略請以 CURRENT_VERSION.md 與 `20_ReaderLayer.gs` 為準；legacy raw HTML extraction 位於 `21_WebReader.gs`，背景快讀與 PendingReplies 位於 `25_WebTaskQueue.gs`。
+目前讀取策略請以 CURRENT_VERSION.md 與 `20_ReaderLayer.gs` 為準；legacy raw HTML extraction 位於 `21_WebReader.gs`，背景新聞收件位於 `30_NewsInbox.gs`，PendingReplies 位於 `05_Storage.gs`。
 
 不要自行假設已整合：
 

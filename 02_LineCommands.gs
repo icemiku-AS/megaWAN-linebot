@@ -3,36 +3,13 @@
 // 用途：LINE transport：指令解析、Help、Reply API 與長文字分段。
 //
 // 職責與協作：
-// 1. 01_Main.gs 使用本檔解析指令、顯示 Help、傳送回覆及處理 Pending 交付時的新網址。
+// 1. 01_Main.gs 使用本檔解析指令、顯示 Help 與傳送回覆。
 // 2. 固定回覆由 03_ResponseTexts.gs 提供；AI、Reader、News 與 Sheet 流程交由各功能檔負責。
 //
 // 維護注意：
 // 1. 指令名稱、參數解析、Help 分層與 reply token 使用方式須保持相容。
 // 2. 單次 Reply API 最多五則訊息；有來源時保留最後一格，主回答沿用既有 splitter。
 // ======================================================
-
-function enqueueWebTaskFromCurrentMessageIfNeeded_(event, conversationId, userText) {
-  if (!shouldUseWebReading(userText)) {
-    return null;
-  }
-
-  if (userText.startsWith('#節目話題分析')) {
-    return enqueueWebTask(event, conversationId, userText, TASK_TYPE_PROGRAM_TOPIC_ANALYSIS);
-  }
-
-  if (userText.startsWith('#懶人包')) {
-    return enqueueWebTask(event, conversationId, userText, TASK_TYPE_WEB_LAZY_SUMMARY);
-  }
-
-  // Pending 交付時的一般網址以靜默新聞收件處理；圖片／研究問題由主流程先排除。
-  // 若此訊息同時觸發 pending reply 交付，新網址仍會入 NewsUrlQueue；
-  // 不支援或入隊失敗的網址則另建 PendingReplies，避免錯誤直接洗版。
-  return handleSilentNewsUrlMessage_(event, conversationId, userText);
-}
-
-function buildWebTaskAcceptedText_(taskType, urlCount) {
-  return getBotTextWebTaskAccepted_(taskType, urlCount);
-}
 
 function hasTriggerPrefix(text) {
   return TRIGGER_PREFIXES.some(function(prefix) {
@@ -47,19 +24,13 @@ function isExplicitWebSearchRequest_(text) {
 }
 
 function getUserLogMode(text) {
-  if (text.startsWith('#節目話題分析')) return 'program_topic_analysis_command';
-  if (text.startsWith('#統整話題')) return 'integrate_topics_command';
   if (text.startsWith('#本週新聞')) return 'weekly_news_command';
-  if (text.startsWith('#新聞問答')) return 'news_question_command';
   if (text.startsWith('#狀態回報')) return 'news_status_report_command';
   if (text.startsWith('#新聞補充')) return 'manual_news_supplement_command';
   if (text.startsWith('#封存本週新聞')) return 'archive_news_command';
-  if (text.startsWith('#封存本週話題')) return 'archive_command';
-  if (text.startsWith('#懶人包')) return 'web_read_command';
-  if (text.startsWith('#清空')) return 'cleanup_command';
+  if (text.startsWith('#清空') && getCleanupCommandInfo_(text)) return 'cleanup_command';
   if (text.startsWith('#版本紀錄')) return 'version_history_command';
   if (text.startsWith('#版本')) return 'version_command';
-  if (text.startsWith('#畫重點')) return 'highlight_command';
   if (text.startsWith('#小浣')) return 'assistant_command';
   if (text.startsWith('#reset')) return 'reset_command';
   if (text.startsWith('#help')) return 'help_command';
@@ -77,21 +48,9 @@ function parseCommand(text) {
     mode = 'image_analysis';
     userPrompt = text.replace(/^#小浣\s+看圖\s*/, '').trim();
 
-  } else if (text.startsWith('#節目話題分析')) {
-    mode = 'program_topic_analysis';
-    userPrompt = text.replace('#節目話題分析', '').trim();
-
-  } else if (text.startsWith('#統整話題')) {
-    mode = 'integrate_topics';
-    userPrompt = text.replace('#統整話題', '').trim();
-
   } else if (text.startsWith('#本週新聞')) {
     mode = 'weekly_news';
     userPrompt = text.replace('#本週新聞', '').trim();
-
-  } else if (text.startsWith('#新聞問答')) {
-    mode = 'news_question';
-    userPrompt = text.replace('#新聞問答', '').trim();
 
   } else if (text.startsWith('#狀態回報')) {
     mode = 'news_status_report';
@@ -105,26 +64,14 @@ function parseCommand(text) {
     mode = 'archive_weekly_news';
     userPrompt = text.replace('#封存本週新聞', '').trim();
 
-  } else if (text.startsWith('#懶人包')) {
-    mode = 'web_read';
-    userPrompt = text.replace('#懶人包', '').trim();
-
   } else if (text.startsWith('#小浣')) {
     mode = 'chat';
     userPrompt = text.replace('#小浣', '').trim();
   }
 
   if (!userPrompt) {
-    if (mode === 'web_read') {
-      userPrompt = '請提供要讀取的網址。';
-    } else if (mode === 'program_topic_analysis') {
-      userPrompt = '請根據最近使用者聊天內容、人工畫重點、網址快讀摘要與封存記憶，判斷目前最值得分析的節目話題。';
-    } else if (mode === 'integrate_topics') {
-      userPrompt = '請統整最近使用者聊天內容、人工畫重點、NewsInbox 新聞素材、網址快讀摘要與封存記憶，整理出近期可用節目話題。';
-    } else if (mode === 'weekly_news') {
+    if (mode === 'weekly_news') {
       userPrompt = '請整理最近 7 天 NewsInbox 中的新聞素材。';
-    } else if (mode === 'news_question') {
-      userPrompt = '';
     } else if (mode === 'news_status_report') {
       userPrompt = '請回報最近 7 天新聞收件、入庫、背景處理與失敗狀態。';
     } else if (mode === 'manual_news_supplement') {
@@ -228,7 +175,7 @@ function splitTextForLineMessagesWithMeta_(text, maxMessageCount) {
   const maxCount = isFinite(requestedMaxCount) && requestedMaxCount > 0
     ? Math.min(LINE_REPLY_MAX_MESSAGE_COUNT, Math.floor(requestedMaxCount))
     : LINE_REPLY_MAX_MESSAGE_COUNT;
-  const omittedNotice = '內容太多，後面已省略。可以用 #本週新聞 分類 <分類名>、#本週新聞 詳細 或 #新聞問答 追問。';
+  const omittedNotice = '內容太多，後面已省略。可以用 #本週新聞 分類 <分類名> 或 #本週新聞 詳細 再查詢。';
   const messages = [];
   const splitIndexes = [];
   let remainingText = rawText;
@@ -386,19 +333,15 @@ function getHelpTextByCommand_(text) {
 
 function getHelpText() {
   return [
-    '小浣住在群組裡，陪你聊天、翻找資料，也能整理新聞與節目素材。',
-    '',
-    '常用功能：',
     '・回覆引用群友的文字再提問；群組加 #小浣。找到原文時會分清誰說的，找不到請補貼內容。',
     '・私訊可直接傳圖片或回覆圖片提問；群組請回覆圖片並用 #小浣 <問題>。舊 #小浣 看圖 仍可使用。',
-    '・引用圖片可問「幫我查最新進度」；一般聊天也可問「我們收過這則新聞嗎？」或「之前畫過哪些重點？」。',
+    '・引用圖片可問「幫我查最新進度」；一般聊天也可問「我們收過這則新聞嗎？」或「上週封存了什麼？」。',
     '・研究工具只讀目前聊天室資料；新增、封存、清理仍使用明確指令。',
     '・看圖支援 JPEG/PNG、每張最多 4 MiB；不永久保存原圖，逾時請重送。',
-    '・一般聊天需要最新資訊時，小浣可自行使用網路搜尋；有搜尋會另附來源訊息。',
-    '・群組直接貼網址：靜默進背景佇列，整理後收進 NewsInbox。',
+    '・一般聊天預設不聯網；說「幫我查」或「搜尋」才會開 Google 搜尋，完成後另附來源。',
+    '・貼網址：群組靜默收件，私訊單篇可直接回覆簡介。',
     '・#本週新聞：整合最近 7 天群組話題、焦點故事線與其他分類新聞。',
     '・#本週新聞 高潛力：只看高潛力素材，依分類精簡顯示。',
-    '・#新聞問答 <問題>：根據最近 7 天新聞素材回答並附原文網址。',
     '・#狀態回報：查看最近 7 天收件、佇列及固定週期新聞封存進度。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
     '・#封存本週新聞：已設定聊天室補存最早到期的週三中午週期；未設定時封存最近 7 天。',
@@ -414,20 +357,11 @@ function getHelpText() {
 
 function getHelpAdvancedText_() {
   return [
-    '進階功能：',
-    '',
-    '新聞檢視：',
+    '新聞檢視',
     '・#本週新聞 詳細：依分類展開完整大綱、切角、節目潛力與分類。',
     '・#本週新聞 精簡：等同 #本週新聞，使用週編輯台整理群組話題與多篇故事線。',
     '・#本週新聞 分類 <分類名>：只看指定分類，依分類精簡顯示。',
-    '・#本週新聞 診斷：保留 StoryKey，檢查分類異常、故事線與重複素材。',
-    '',
-    '素材整理：',
-    '・#懶人包 網址：產生網址快讀摘要。',
-    '・#節目話題分析：分析網址或近期素材。',
-    '・#統整話題：整理近期節目話題地圖。',
-    '・#畫重點 內容：寫入 TopicHighlights。',
-    '・#封存本週話題：只根據 ConversationLog 封存近期對話記憶。'
+    '・#本週新聞 診斷：檢查分類、故事線與重複素材。'
   ].join('\n');
 }
 
@@ -439,9 +373,7 @@ function getHelpCleanupText_() {
     '所有清理都需要二段確認。',
     '',
     '・#清空紀錄：ConversationLog，並清除短期記憶。',
-    '・#清空重點：TopicHighlights。',
-    '・#清空快讀：WebSummary 與 WebTaskQueue。',
-    '・#清空封存：WeeklySummary。',
+    '・#清空封存：本聊天室的全部 WeeklySummary 封存。',
     '・#清空新聞：NewsInbox 與 NewsUrlQueue。',
     '・#清空待回覆：PendingReplies。',
     '',
@@ -455,10 +387,8 @@ function getHelpAdminText_() {
     '',
     '・#版本：查看目前版本。',
     '・#版本紀錄：查看近期版本紀錄。',
-    '・#狀態回報：查看新聞素材池與背景佇列狀態。',
-    '・#reset：清除短期對話記憶，不動 Google Sheet。',
-    '・#help 清理：查看資料清理指令。',
-    '・#help 資料：查看各 Sheet 用途。'
+    '・#狀態回報：查看新聞收件、背景處理與封存進度。',
+    '・#reset：清除本聊天室的短期對話記憶。'
   ].join('\n');
 }
 
@@ -467,13 +397,10 @@ function getHelpDataText_() {
     '主要資料表：',
     '',
     '・ConversationLog：原始對話紀錄。',
-    '・TopicHighlights：#畫重點 的人工重點。',
-    '・WeeklySummary：#封存本週話題 與 #封存本週新聞 的長期記憶，透過 ArchiveType 區分來源。',
-    '・WebTaskQueue：#懶人包 與網址分析任務。',
-    '・WebSummary：網址快讀摘要。',
-    '・NewsUrlQueue：多網址或同步整理失敗時的待處理網址。',
-    '・NewsInbox：新聞素材池，保存短 Brief、完整 Outline、候選事件提示 StoryKey、SpecialTopic、CategoryReason、CategoryConfidence、MatchedEntities 與 ClassificationWarning。',
-    '・PendingReplies：背景任務完成後等待交付的回覆。'
+    '・WeeklySummary：新聞封存與舊話題封存，依 ArchiveType 區分。',
+    '・NewsUrlQueue：群組收件、多網址與同步整理失敗的待處理佇列。',
+    '・NewsInbox：新聞素材、分類、簡介、大綱及故事線等資訊。',
+    '・PendingReplies：等待交付的背景回覆。'
   ].join('\n');
 }
 

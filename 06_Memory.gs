@@ -15,43 +15,74 @@
 // 短期記憶讀寫與修剪
 // ======================================================
 
-function getConversationHistory(conversationId) {
-  const cache = CacheService.getScriptCache();
-  const key = getHistoryCacheKey(conversationId);
-  const raw = cache.get(key);
-
-  if (!raw) {
-    return [];
-  }
-
+/** 舊陣列快取在第一次讀取快照時原樣轉入新世代。 */
+function readConversationMemory_(conversationId) {
+  const raw = CacheService.getScriptCache().get(getHistoryCacheKey(conversationId));
+  if (!raw) return { generation: '', history: [] };
   try {
-    const history = JSON.parse(raw);
-
-    if (!Array.isArray(history)) {
-      return [];
+    const saved = JSON.parse(raw);
+    if (Array.isArray(saved)) return { generation: '', history: trimHistory(saved) };
+    if (saved && typeof saved.generation === 'string' && saved.generation && Array.isArray(saved.history)) {
+      return { generation: saved.generation, history: trimHistory(saved.history) };
     }
-
-    return trimHistory(history);
-
   } catch (error) {
     console.error('Parse history error');
-    return [];
   }
+  return { generation: '', history: [] };
+}
+
+function writeConversationMemoryLocked_(conversationId, generation, history) {
+  CacheService.getScriptCache().put(getHistoryCacheKey(conversationId),
+    JSON.stringify({ generation: generation, history: trimHistory(history) }), MEMORY_TTL_SECONDS);
+}
+
+function getConversationHistory(conversationId) {
+  return readConversationMemory_(conversationId).history;
 }
 
 function saveConversationHistory(conversationId, history) {
-  const cache = CacheService.getScriptCache();
-  const key = getHistoryCacheKey(conversationId);
-  const safeHistory = trimHistory(history);
+  const result = withDataMutationLock_(function() {
+    writeConversationMemoryLocked_(conversationId, Utilities.getUuid(), history);
+    return { status: 'saved' };
+  });
+  if (result.status === 'busy') throw createAiExecutionBudgetError_('Conversation memory lock is busy.');
+}
 
-  cache.put(key, JSON.stringify(safeHistory), MEMORY_TTL_SECONDS);
+function clearConversationHistoryLocked_(conversationId) {
+  writeConversationMemoryLocked_(conversationId, Utilities.getUuid(), []);
 }
 
 function clearConversationHistory(conversationId) {
-  const cache = CacheService.getScriptCache();
-  const key = getHistoryCacheKey(conversationId);
+  const result = withDataMutationLock_(function() {
+    clearConversationHistoryLocked_(conversationId);
+    return { status: 'cleared' };
+  });
+  if (result.status === 'busy') throw createAiExecutionBudgetError_('Conversation memory lock is busy.');
+}
 
-  cache.remove(key);
+function snapshotConversationMemory_(conversationId, deadlineAtMs) {
+  const remaining = Number(deadlineAtMs) > 0 ? deadlineAtMs - Date.now() : 1000;
+  if (remaining <= 0) return { status: 'busy' };
+  return withDataMutationLock_(function() {
+    const memory = readConversationMemory_(conversationId);
+    if (!memory.generation) {
+      memory.generation = Utilities.getUuid();
+      writeConversationMemoryLocked_(conversationId, memory.generation, memory.history);
+    }
+    return { generation: memory.generation, history: memory.history };
+  }, Math.min(1000, remaining));
+}
+
+function commitConversationTurn_(conversationId, generation, turn, deadlineAtMs) {
+  const remaining = Number(deadlineAtMs) > 0 ? deadlineAtMs - Date.now() : 1000;
+  if (remaining <= 0) return;
+  withDataMutationLock_(function() {
+    const latest = readConversationMemory_(conversationId);
+    // 清理或 cache 已失效時保守捨棄；同世代以完成順序接上最新快取。
+    if (latest.generation === generation) {
+      writeConversationMemoryLocked_(conversationId, generation, latest.history.concat(turn));
+    }
+  }, Math.min(1000, remaining));
 }
 
 function getHistoryCacheKey(conversationId) {
