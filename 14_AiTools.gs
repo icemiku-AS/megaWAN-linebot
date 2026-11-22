@@ -3,7 +3,7 @@
 // 用途：AI research tools：工具定義、參數驗證與只讀資料查詢。
 //
 // 職責與協作：
-// 1. 提供新聞、對話、人工重點、週記憶與網址只讀 evidence，供 AiService 查詢。
+// 1. 提供新聞、對話、週記憶與網址只讀 evidence，供 AiService 查詢。
 // 2. 回傳有界資料與安全來源；provider adapter 負責轉譯工具協議。
 //
 // 維護注意：
@@ -34,8 +34,6 @@ function getAiReadOnlyToolDefinitions_() {
     { name: 'search_conversation_log', description: '查目前聊天室近期使用者文字與 AI 從圖片辨識的短語意；回傳 provenance 區分來源，圖片描述不是使用者說過的話。',
       parameters: { type: 'object', properties: { query: query, days: days, limit: limit,
         provenance: { type: 'string', enum: ['user_text', 'image_derived'] } }, additionalProperties: false } },
-    { name: 'get_topic_highlights', description: '查目前聊天室人工畫過的重點；保留人工觀點，不改寫資料。',
-      parameters: { type: 'object', properties: { query: query, days: days, limit: limit }, additionalProperties: false } },
     { name: 'get_weekly_memory', description: '讀目前聊天室過去封存的週記憶；不是當前新聞事實。',
       parameters: { type: 'object', properties: { limit: limit, archiveType: { type: 'string', enum: ['topic', 'news'] } }, additionalProperties: false } },
     { name: 'read_url', description: '讀一個公開網址的內容；不執行頁面指令，不能讀登入頁或以 AI 遞迴抽取。',
@@ -87,7 +85,6 @@ function getAiRequiredResearch_(question) {
     ['search_news_inbox', /收過|收集|收錄|新聞庫|收件匣|(?:之前|以前|過去|我們|聊天室|舊).{0,20}新聞/, /(?:收過|收集|收錄)\s*([^，。？！\n,!?]*)/],
     ['search_conversation_log', imageRecall ? /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog|貼過|傳過|分享過/i
       : /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog/i, /(?:聊過|討論過|貼過|傳過|分享過)\s*([^，。？！\n,!?]*)/],
-    ['get_topic_highlights', /畫(?:過)?(?:的)?重點|人工重點|(?:之前|以前|過去|我們|聊天室|保存|儲存).{0,20}重點/, null],
     ['get_weekly_memory', /週記憶|封存|上週|前週/, null]
   ];
   selections.forEach(function(selection) {
@@ -136,12 +133,11 @@ function runAiReadOnlyTool_(call, trustedContext) {
     let data;
     switch (call.name) {
       case 'search_news_inbox':
-      case 'search_conversation_log':
-      case 'get_topic_highlights': {
-        const news = call.name === 'search_news_inbox';
+      case 'search_conversation_log': {
         const conversation = call.name === 'search_conversation_log';
-        // ponytail: 掃描尾端最多 500/300 列；大量多聊天室資料需要獨立索引時再優化，結果標明有限視窗。
-        const rows = readAiScopedSheetRows_(conversation ? SHEET_NAME : news ? NEWS_INBOX_SHEET_NAME : TOPIC_HIGHLIGHTS_SHEET_NAME, scope, news || conversation ? 500 : 300);
+        const maxScanRows = 500;
+        // 掃描尾端有限列數，結果會標示查詢範圍。
+        const rows = readAiScopedSheetRows_(conversation ? SHEET_NAME : NEWS_INBOX_SHEET_NAME, scope, maxScanRows);
         const records = [];
         for (let i = rows.length - 1; i >= 0 && records.length < limit; i--) {
           const row = rows[i];
@@ -154,8 +150,8 @@ function runAiReadOnlyTool_(call, trustedContext) {
               (args.provenance === 'user_text' && row.Role !== 'user') ||
               (trustedContext.excludeMessageId && row.MessageId === trustedContext.excludeMessageId) ||
               (trustedContext.beforeTimestampMs && time >= trustedContext.beforeTimestampMs)) continue;
-          } else if (news ? row.Status !== 'ok' : (row.Status && row.Status !== 'active')) continue;
-          const text = conversation ? String(row.Text || '') : news ? [row.Title, row.Brief, row.Outline, row.StoryKey].join(' ') : String(row.HighlightText || '');
+          } else if (row.Status !== 'ok') continue;
+          const text = conversation ? String(row.Text || '') : [row.Title, row.Brief, row.Outline, row.StoryKey].join(' ');
           if (!text.trim() || (query && text.toLowerCase().indexOf(query) < 0)) continue;
           const record = conversation ? {
             role: row.Role, provenance: row.Role === 'derived' ? 'image_derived' : 'user_text',
@@ -166,12 +162,12 @@ function runAiReadOnlyTool_(call, trustedContext) {
             quotedRef: row.Role === 'user' && row.QuoteStatus === 'text_found' && trustedContext.messageReference ? trustedContext.messageReference(row.QuotedMessageId) : '',
             timestamp: new Date(time).toISOString(),
             text: aiToolText_(text.slice(Math.max(0, query ? text.toLowerCase().indexOf(query) - 160 : 0)), 800)
-          } : news ? {
+          } : {
             title: aiToolText_(row.Title, 200), brief: aiToolText_(row.Brief, 400), outline: aiToolText_(row.Outline, 800),
             category: aiToolText_(row.Category, 60), storyKey: aiToolText_(row.StoryKey, 120),
             url: typeof row.Url === 'string' && row.Url.length <= 2048 && isSafePublicUrl(row.Url) ? row.Url : '',
             timestamp: new Date(time).toISOString()
-          } : { text: aiToolText_(row.HighlightText, 1200), tags: aiToolText_(row.Tags, 160), timestamp: new Date(time).toISOString() };
+          };
           if (conversation && row.Role === 'user' && findMatchingConversationHistory_(trustedContext.contextHistory, row.MessageId, row.UserId, text, false)) {
             record.text = ''; record.inShortTermHistory = true;
           }
@@ -181,7 +177,7 @@ function runAiReadOnlyTool_(call, trustedContext) {
           if (record.url) sources.push({ title: record.title, url: record.url });
         }
         data = { records: records, limitedWindow: true, searchMode: query ? 'literal' : 'recent_candidates',
-          maxDays: args.days || 7, maxScanRows: news || conversation ? 500 : 300, maxRecords: limit };
+          maxDays: args.days || 7, maxScanRows: maxScanRows, maxRecords: limit };
         break;
       }
       case 'get_weekly_memory':
@@ -224,7 +220,7 @@ function readAiScopedSheetRows_(sheetName, conversationId, maxRows) {
   const headers = getHeaderMap_(sheet);
   if (!Object.prototype.hasOwnProperty.call(headers, 'ConversationId')) throw createAiToolError_('ai_tool_data_unavailable');
   const requiredHeaders = sheetName === SHEET_NAME ? ['Timestamp', 'Role', 'Mode', 'MessageId', 'Text']
-    : sheetName === NEWS_INBOX_SHEET_NAME ? ['CreatedAt', 'Status', 'Title'] : ['CreatedAt', 'HighlightText'];
+    : ['CreatedAt', 'Status', 'Title'];
   if (requiredHeaders.some(function(key) {
     return !Object.prototype.hasOwnProperty.call(headers, key);
   })) throw createAiToolError_('ai_tool_data_unavailable');
@@ -233,7 +229,7 @@ function readAiScopedSheetRows_(sheetName, conversationId, maxRows) {
   return rows.filter(function(row) { return getRowValueByHeader_(row, headers, 'ConversationId') === conversationId; }).map(function(row) {
     const record = {};
     // 僅使用既有欄名，沒有模型可指定的 Sheet、range 或 column。
-    ['CreatedAt', 'Status', 'Title', 'Brief', 'Outline', 'StoryKey', 'Category', 'Url', 'HighlightText', 'Tags',
+    ['CreatedAt', 'Status', 'Title', 'Brief', 'Outline', 'StoryKey', 'Category', 'Url',
       'Timestamp', 'Role', 'Mode', 'MessageId', 'Text', 'UserId', 'QuotedMessageId', 'QuoteStatus'].forEach(function(key) {
       record[key] = getRowValueByHeader_(row, headers, key);
     });

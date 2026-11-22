@@ -7,7 +7,7 @@
 // 2. 01_Main.gs 負責顯示警告與回覆；本檔只管理清理規則及執行，不呼叫 AI。
 //
 // 維護注意：
-// 1. 執行前須二段確認，例如 #清空重點 → #清空重點 確認。
+// 1. 執行前須二段確認，例如 #清空新聞 → #清空新聞 確認。
 // 2. 保留其他聊天室、Sheet 與表頭；不得把資料列清理擴大為全表刪除。
 // 3. 指令、目標 Sheet 集合與刪除範圍皆屬高風險契約，修改時須追蹤主流程 caller。
 // ======================================================
@@ -37,18 +37,6 @@ function getCleanupCommandInfo_(text) {
       label: 'ConversationLog 對話紀錄',
       sheets: ['ConversationLog'],
       description: '清除目前聊天室的原始對話紀錄，並清除短期記憶。'
-    },
-    '#清空重點': {
-      key: 'topic_highlights',
-      label: 'TopicHighlights 人工重點',
-      sheets: ['TopicHighlights'],
-      description: '清除目前聊天室用 #畫重點 釘選的人工重點素材。'
-    },
-    '#清空快讀': {
-      key: 'web_data',
-      label: 'WebSummary / WebTaskQueue 快讀資料',
-      sheets: ['WebSummary', 'WebTaskQueue'],
-      description: '清除目前聊天室的網址快讀摘要與快讀／網址分析任務；處理中的舊任務取消，不再寫入素材或待回覆。'
     },
     '#清空封存': {
       key: 'weekly_summary',
@@ -140,14 +128,9 @@ function performDataCleanupLocked_(cleanupKey, conversationId) {
   }
 
   if (cleanupKey === 'conversation_log') {
-    addDetail(SHEET_NAME, deleteConversationRowsLocked_(ensureLogSheet_(), conversationId));
-
-  } else if (cleanupKey === 'topic_highlights') {
-    addDetail(TOPIC_HIGHLIGHTS_SHEET_NAME, deleteConversationRowsLocked_(ensureTopicHighlightsSheet_(), conversationId));
-
-  } else if (cleanupKey === 'web_data') {
-    addDetail(WEB_SUMMARY_SHEET_NAME, deleteConversationRowsLocked_(ensureWebSummarySheet_(), conversationId));
-    addDetail(WEB_TASK_QUEUE_SHEET_NAME, deleteConversationRowsLocked_(ensureWebTaskQueueSheet_(), conversationId));
+    const sheet = ensureLogSheet_();
+    clearConversationHistoryLocked_(conversationId);
+    addDetail(SHEET_NAME, deleteConversationRowsLocked_(sheet, conversationId));
 
   } else if (cleanupKey === 'weekly_summary') {
     clearNewsArchiveProgress_(conversationId);

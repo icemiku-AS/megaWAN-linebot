@@ -31,14 +31,6 @@ function getAiTaskOutputSchema_(task) {
         schema.required = schema.required.filter(function(key) { return key !== 'outline'; });
       }
       break;
-    case 'web_lazy_summary':
-      schema = getWebLazySummarySchema_();
-      schema.properties.contentTypeLabel.enum = ['新聞資訊', '社群爭議', '平台政策', '技術文章', '娛樂事件', '財經資訊', '政治公共議題', '生活資訊', '其他'];
-      schema.properties.topicPotential.enum = ['低', '中', '高'];
-      schema.properties.extractionConfidence.minimum = 0;
-      schema.properties.extractionConfidence.maximum = 1;
-      break;
-    case 'archive_topics':
     case 'archive_news':
       schema = { type: 'object', properties: {
         topicTitle: { type: 'string' }, summary: { type: 'string' },
@@ -79,9 +71,9 @@ function closeAiObjectSchema_(schema) {
 // 結構驗證與失敗重試語意
 // ======================================================
 
-/** 保留既有功能的缺欄重試語意：新聞／快讀可由 Queue retry，封存與編輯台仍由 caller fallback。 */
+/** 保留既有功能的缺欄重試語意：新聞收件可由 Queue retry，封存與編輯台仍由 caller fallback。 */
 function isAiStructuredValidationRetryable_(task) {
-  return task === 'news_analysis' || task === 'web_lazy_summary';
+  return task === 'news_analysis';
 }
 
 /** 僅實作本版實際使用的 JSON Schema subset；未知 keyword 是設定錯誤，不能靜默忽略。 */

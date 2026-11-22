@@ -121,8 +121,8 @@ function sanitizeImageSemanticContext_(text) {
 function selectImageResearchToolNames_(question) {
   const text = String(question || '');
   const names = getAiRequiredResearch_(text).map(function(item) { return item.name; });
-  // ponytail: 只辨識目前問題的明確資料線索；模糊的舊資料比對保留三種內部來源，完整語意選擇留待成本優化。
-  if (!names.length && /之前|以前|過去|重複/.test(text)) names.push('search_news_inbox', 'get_topic_highlights', 'get_weekly_memory');
+  // ponytail: 只辨識目前問題的明確資料線索；模糊的舊資料比對使用新聞與週封存來源，完整語意選擇留待成本優化。
+  if (!names.length && /之前|以前|過去|重複/.test(text)) names.push('search_news_inbox', 'get_weekly_memory');
   return names;
 }
 

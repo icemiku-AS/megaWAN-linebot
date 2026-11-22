@@ -3,8 +3,8 @@
 // 用途：Reader／Web workflows：統一網址讀取策略與 webResult。
 //
 // 職責與協作：
-// 1. 供 NewsInbox 與 WebTaskQueue 取得正文；X status 用 FxTwitter，PTT 用 over18 cookie，一般網站先用 Jina。
-// 2. 一般讀取在 Jina 失敗後可走 21_WebReader.gs 的 legacy extraction；快讀契約由 25_WebTaskQueue.gs 管理。
+// 1. 供 NewsInbox 與只讀研究工具取得正文；X status 用 FxTwitter，PTT 用 over18 cookie，一般網站先用 Jina。
+// 2. 一般讀取在 Jina 失敗後可走 21_WebReader.gs 的 legacy extraction。
 //
 // 維護注意：
 // 1. 維持 URL 安全檢查、共用 deadline 與 webResult 欄位；httpStatus=0 不得當成缺值。
@@ -26,8 +26,6 @@ const WEB_READER_ROUTE_JINA = 'jina_reader';
 const WEB_READER_ROUTE_PTT_OVER18 = 'ptt_over18_cookie';
 const WEB_READER_ROUTE_UNSUPPORTED_SOCIAL = 'unsupported_social_platform';
 const WEB_READER_ROUTE_LEGACY = 'legacy_raw_html_ai';
-// 歷史 Sheet / log 值不 migration；診斷或顯示舊資料時必須繼續辨識此值。
-const WEB_READER_ROUTE_LEGACY_GEMINI = 'legacy_raw_html_gemini';
 const WEB_READER_ROUTE_FXTWITTER_API = 'fxtwitter_api';
 
 // Reader 可用性門檻。
@@ -115,7 +113,8 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
     {
       retryable: combinedRetryable,
       httpStatus: combinedHttpStatus,
-      errorReason: hasLegacyAiError ? legacyResult.errorReason : ''
+      errorReason: hasLegacyAiError ? legacyResult.errorReason : '',
+      ...getAiQuotaRetryHint_(legacyResult)
     }
   );
 }
@@ -220,15 +219,6 @@ function fetchAndExtractWebPageLegacy_(url, executionContext) {
   // 目前 21_WebReader.gs 的 fetchAndExtractWebPage(url) 代表 raw HTML + AI extraction 流程。
   // 若未來把 fetchAndExtractWebPage(url) 改成也走 Reader Layer，這裡必須同步重構，避免遞迴。
   return fetchAndExtractWebPage(url, executionContext);
-}
-
-/**
- * 舊 route 值相容判斷。新資料使用 legacy_raw_html_ai；歷史 legacy_raw_html_gemini
- * 不改寫，仍應被診斷工具視為同一類 legacy fallback。
- */
-function isLegacyRawHtmlReaderRoute_(readerRoute) {
-  const route = String(readerRoute || '').trim();
-  return route === WEB_READER_ROUTE_LEGACY || route === WEB_READER_ROUTE_LEGACY_GEMINI;
 }
 
 // ======================================================
@@ -899,7 +889,7 @@ function buildReaderLayerErrorResult_(url, readerRoute, errorType, errorMessage,
   if (Object.prototype.hasOwnProperty.call(safeMetadata, 'httpStatus')) {
     result.httpStatus = Number(safeMetadata.httpStatus || 0);
   }
-  return result;
+  return Object.assign(result, getAiQuotaRetryHint_(Object.assign({}, safeMetadata, { errorType: result.errorType })));
 }
 
 function isAiTypedReaderFailure_(result) {

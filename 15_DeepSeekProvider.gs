@@ -678,7 +678,7 @@ function callDeepSeekWithWebReading(conversationId, userText, mode) {
   const urls = extractUrls(userText).slice(0, MAX_URLS_PER_MESSAGE);
   if (!urls.length) return callDeepSeekWithMemory(conversationId, userText, mode);
   const webResults = urls.map(function(url) { return fetchAndExtractWebPageByReaderLayer_(url); });
-  const prompt = buildWebReadingPrompt(userText, webResults, task);
+  const prompt = buildWebReadingPrompt(userText, webResults);
   return requireAiText_(runAiMemoryTask(task, conversationId, userText, prompt));
 }
 
