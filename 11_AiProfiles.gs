@@ -116,12 +116,21 @@ const AI_EXECUTION_PROFILES = {
     thinking: { type: 'enabled' }, reasoningEffort: 'minimal', allowSampling: false, outputMode: 'json',
     maxOutputTokens: 256, timeoutSeconds: 8, requiredFinishReason: 'stop',
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
+  },
+  daily_state_text: {
+    thinking: { type: 'enabled' }, reasoningEffort: 'minimal', allowSampling: false, outputMode: 'text',
+    maxOutputTokens: 256, timeoutSeconds: 4, requiredFinishReason: 'stop',
+    retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   }
 };
 
 const AI_TASK_ROUTES = {
   chat_gatekeeper: {
     provider: 'gemini', model: 'gemini_35_flash_lite', profile: 'gatekeeper_json',
+    expectedThinking: 'enabled', expectedReasoningEffort: 'minimal'
+  },
+  bot_daily_state: {
+    provider: 'gemini', model: 'gemini_35_flash_lite', profile: 'daily_state_text',
     expectedThinking: 'enabled', expectedReasoningEffort: 'minimal'
   },
   // 兩種 Key 共用模型候選；只有明確搜尋才會掛 Search。

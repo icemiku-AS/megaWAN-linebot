@@ -12,11 +12,22 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v2.1.1 Context, Persona & Natural Wake-up Edition';
+const BOT_CURRENT_VERSION = 'v2.2.3 Heartflow, Member Memory & Daily Life Edition';
 const BOT_CURRENT_VERSION_DATE = '2026-11-23';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v2.2.3 Heartflow, Member Memory & Daily Life Edition',
+    date: '2026-11-23',
+    summary: '小浣更容易接住明確點名和群友續聊，也能記住你在這個聊天室設定的稱呼與筆記。',
+    changes: [
+      '明確點名和引用已送達的小浣回覆可直通。熱聊可跨群友續接，最多兩輪；主動插話按語境評分並保留冷卻。',
+      '可以說「以後叫我小美」或「幫我記住我不吃香菜」。用 #我的記憶 查看，或用 #忘記我 清除自己在這個聊天室的設定。',
+      '小浣有按台灣日期準備的角色小日常。主回覆送達後才用剩餘預算生成，聊到日常時自然帶入。',
+      '自然喚醒記錄安全的判斷原因與分數，便於排查漏回或過度接話。'
+    ]
+  },
   {
     version: 'v2.1.1 Context, Persona & Natural Wake-up Edition',
     date: '2026-11-23',

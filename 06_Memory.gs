@@ -72,6 +72,7 @@ function clearConversationHistoryLocked_(conversationId) {
 function clearConversationHistory(conversationId) {
   const result = withDataMutationLock_(function() {
     clearConversationHistoryLocked_(conversationId);
+    invalidateMemberMemoryCache_(conversationId);
     return { status: 'cleared' };
   });
   if (result.status === 'busy') throw createAiExecutionBudgetError_('Conversation memory lock is busy.');

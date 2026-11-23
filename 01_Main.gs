@@ -14,7 +14,7 @@
 // ======================================================
 
 /**
- * 公開管理入口：初始化五張活躍資料表，回傳完成的 Sheet 名稱。
+ * 公開管理入口：初始化活躍資料表，回傳完成的 Sheet 名稱。
  * 這是維護者可能在 GAS editor 直接執行的函式；名稱與既有 schema 都是相容性邊界，
  * 不新增 AI Log Sheet，也不進行資料 migration。
  */
@@ -24,6 +24,12 @@ function setupLogSheet() {
   const newsQueueSheet = ensureNewsUrlQueueSheet_();
   const newsInboxSheet = ensureNewsInboxSheet_();
   const pendingReplySheet = ensurePendingRepliesSheet_();
+  const memberMemory = withDataMutationLock_(function() {
+    const sheet = ensureMemberMemorySheet_();
+    SpreadsheetApp.flush();
+    return { name: sheet.getName() };
+  });
+  if (!memberMemory.name) throw createAiExecutionBudgetError_('Member memory sheet setup is busy.');
 
   return [
     'Sheet setup completed:',
@@ -31,7 +37,8 @@ function setupLogSheet() {
     weeklySheet.getName(),
     newsQueueSheet.getName(),
     newsInboxSheet.getName(),
-    pendingReplySheet.getName()
+    pendingReplySheet.getName(),
+    memberMemory.name
   ].join(', ');
 }
 
@@ -78,10 +85,13 @@ function doPost(e) {
     const body = JSON.parse(e.postData.contents);
     const events = body.events || [];
 
+    let dailyStateDeadline = 0;
     events.forEach(function(event) {
-      try { handleLineEvent(event, webhookStartedAtMs, true); }
+      try { dailyStateDeadline = handleLineEvent(event, webhookStartedAtMs, true) || dailyStateDeadline; }
       catch (ignore) { console.error('LINE_EVENT_FAILED'); }
     });
+    // 先交付整批事件，再用剩餘預算準備角色日常，避免第一則的輔助呼叫延誤後面的主回覆。
+    if (dailyStateDeadline) maybeGenerateBotDailyState_(dailyStateDeadline);
 
     return HtmlService.createHtmlOutput('OK');
 
@@ -147,12 +157,21 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
       rememberLineReply_(chatKey, turnContext.lineChatState, event, pendingReceipt, false);
       return;
     }
-    // 舊版 LINE 可能只提供 imageSet.id，不能把每張都誤當第一張。
-    const imageMetadata = {};
-    const imageReply = imageSet && imageSet.index !== 1 ? getBotTextImageError_('image_album_unknown_index')
-      : analyzeLineImage_(event, conversationId, event.message.id, '', aiExecutionContext, false, imageMetadata) +
-        (imageSet && Number(imageSet.total) > 1 ? '\n\n這次只分析多圖中的第一張；其他圖片請分次傳送。' : '');
-    sendLineReplyWithLog_(event, conversationId, turnContext, { text: imageReply, mode: 'image_analysis', followUp: imageMetadata.ok });
+    if (pendingReceipt.busy) return;
+    const reserved = reserveLineAutoReply_(chatKey, turnContext.lineChatState, aiExecutionContext.deadlineAtMs, before, 'explicit');
+    if (!reserved.id) return;
+    try {
+      // 舊版 LINE 可能只提供 imageSet.id，不能把每張都誤當第一張。
+      const imageMetadata = {};
+      const imageReply = imageSet && imageSet.index !== 1 ? getBotTextImageError_('image_album_unknown_index')
+        : analyzeLineImage_(event, conversationId, event.message.id, '', aiExecutionContext, false, imageMetadata) +
+          (imageSet && Number(imageSet.total) > 1 ? '\n\n這次只分析多圖中的第一張；其他圖片請分次傳送。' : '');
+      sendLineReplyWithLog_(event, conversationId, turnContext, {
+        text: imageReply, mode: 'image_analysis', followUp: imageMetadata.ok, leaseId: reserved.id
+      });
+    } finally {
+      finishLineAutoReply_(chatKey, reserved.id);
+    }
     return;
   }
 
@@ -178,11 +197,17 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
   const recentReplies = turnContext.lineChatState && turnContext.lineChatState.replies;
   const confirmedTarget = isExactLineMessageId_(quotedMessageId) && Array.isArray(recentReplies) &&
     recentReplies.find(function(reply) { return reply.at <= before && reply.ids.includes(quotedMessageId); });
-  if (textQuote.status === 'not_found' && confirmedTarget) {
+  if (textQuote.status !== 'text_found' && textQuote.reason !== 'assistant_message' && confirmedTarget) {
     textQuote = { status: 'unsupported', reason: 'assistant_message', messageId: quotedMessageId, sentAtMs: confirmedTarget.at };
   }
   turnContext.textQuote = textQuote;
   turnContext.quoteLookup = quoteLookup;
+  const quotesBot = isLineQuoteOfDeliveredBot_(event, turnContext.lineChatState, textQuote, before);
+  const quoteFastLane = quotesBot && !isLineChatClosingNoise_(userText);
+  const playfulFastLane = isGroupLike && commandInfo.mode === 'chat' && isDirectLinePlayfulRequest_(userText);
+  const memberRequest = commandInfo.mode === 'chat' && !helpText && !cleanupInfo
+    ? getLineMemberMemoryRequest_(event.message.text, event.message, sourceType === 'user' || directCall || quoteFastLane) : null;
+  turnContext.memberMemoryRequest = memberRequest;
   // 可信文字先走文字路徑；包括誤用舊「看圖」指令的文字引用，也不下載它。
   const quoteIsText = textQuote.status === 'text_found' || textQuote.reason === 'assistant_message';
   if (quoteIsText && commandInfo.mode === 'image_analysis') commandInfo.mode = 'chat';
@@ -194,18 +219,19 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
       ? (!hasTriggerPrefix(userText) || userText.startsWith('#小浣'))
       : (isGroupLike && directCall)
   );
-  const isNaturalQuotedImageRequest = !quoteIsText && isNaturalQuoteRequest;
-  const isTextQuoteRequest = quoteIsText && isNaturalQuoteRequest;
+  const isNaturalQuotedImageRequest = !memberRequest && !quoteIsText && isNaturalQuoteRequest;
+  const isTextQuoteRequest = !memberRequest && quoteIsText && (isNaturalQuoteRequest || quoteFastLane);
   const isQuotedImageRequest = commandInfo.mode === 'image_analysis' || isNaturalQuotedImageRequest;
-  let asksForNote = commandInfo.mode === 'chat' && isWeeklyNoteRequest_(commandInfo.userPrompt);
-  if (!asksForNote && commandInfo.mode === 'chat' && hasWeeklyNoteAction_(commandInfo.userPrompt)) {
+  let asksForNote = !memberRequest && commandInfo.mode === 'chat' && isWeeklyNoteRequest_(commandInfo.userPrompt);
+  if (!memberRequest && !asksForNote && commandInfo.mode === 'chat' && hasWeeklyNoteAction_(commandInfo.userPrompt)) {
     loadLineAmbientContext_(conversationId, aiExecutionContext);
     asksForNote = isWeeklyNoteRequest_(commandInfo.userPrompt, turnContext);
   }
   turnContext.weeklyNoteRequested = asksForNote;
   turnContext.weeklyNoteResearch = asksForNote ? getWeeklyNoteResearchIntent_(commandInfo.userPrompt) : null;
-  const isResearchUrlRequest = commandInfo.mode === 'chat' && (asksForNote ? turnContext.weeklyNoteResearch.url :
-    isLineUrlResearchRequest_(commandInfo.userPrompt, sourceType === 'user' || directCall));
+  const isResearchUrlRequest = commandInfo.mode === 'chat' && (memberRequest ? isLineUrlResearchRequest_(memberRequest.question, true)
+    : asksForNote ? turnContext.weeklyNoteResearch.url
+    : isLineUrlResearchRequest_(commandInfo.userPrompt, sourceType === 'user' || directCall || quoteFastLane || playfulFastLane));
   // 看圖問題也屬圖片輸入；先遮蔽編碼，再交給 Sheet 或 Pending Reply 流程。
   if (isQuotedImageRequest) {
     userText = redactAiMediaText_(userText);
@@ -216,8 +242,8 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
     event: event,
     conversationId: conversationId,
     role: 'user',
-    text: isQuotedImageRequest ? redactAiMediaText_(event.message.text) : String(event.message.text || ''),
-    mode: getUserLogMode(userText),
+    text: memberRequest ? '[個人記憶操作]' : isQuotedImageRequest ? redactAiMediaText_(event.message.text) : String(event.message.text || ''),
+    mode: memberRequest ? 'member_memory_command' : getUserLogMode(userText),
     textQuote: textQuote
   });
 
@@ -227,20 +253,24 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
 
   // 沿用任何文字都可交付 pending 的例外；是否追加引用提醒另由當前 request 判斷。
   const pendingReceipt = {};
+  const pendingHot = isGroupLike && getLineHotChat_(turnContext.lineChatState, before, Date.now());
+  const pendingChain = pendingHot ? pendingHot.chain : 0;
   const pendingDelivery = deliverPendingReply_(conversationId, event.replyToken, function(pendingReply) {
     // 引用／網址研究不趁交付舊結果時轉成新聞收件；保留 Pending Reply 優先交付。
-    const enqueueResult = isTextQuoteRequest || isQuotedImageRequest || isResearchUrlRequest || asksForNote || !shouldUseWebReading(userText)
+    const enqueueResult = isTextQuoteRequest || isQuotedImageRequest || isResearchUrlRequest || asksForNote || memberRequest || !shouldUseWebReading(userText)
       ? null : handleSilentNewsUrlMessage_(event, conversationId, userText);
     return getBotTextPendingDelivery_(pendingReply.text, !!(enqueueResult && enqueueResult.ok)) +
       (isTextQuoteRequest ? '\n\n這則引用問題尚未處理，請重新引用再問一次。' :
         isQuotedImageRequest ? (commandInfo.mode === 'image_analysis' ? '\n\n這張圖片尚未分析，請重新回覆圖片再問一次。' : '\n\n這則引用尚未處理，請重新引用再問一次。') :
         isResearchUrlRequest ? '\n\n這個網址問題尚未研究，請再問一次。' :
-        asksForNote && (directCall || sourceType === 'user') ? '\n\n這筆註記尚未處理，請再叫我一次。' : '');
+        memberRequest ? '\n\n這則個人記憶指令尚未處理，請再叫我一次。' :
+        asksForNote && (directCall || sourceType === 'user' || quoteFastLane) ? '\n\n這筆註記尚未處理，請再叫我一次。' : '');
   }, pendingReceipt);
 
   if (pendingDelivery) {
     logAssistantReplyToSheet(event, conversationId, pendingDelivery.text, pendingDelivery.replyMode || 'pending_reply_delivery', pendingReceipt);
     rememberLineReply_(chatKey, turnContext.lineChatState, event, pendingReceipt, false);
+    if (isGroupLike && commandInfo.mode === 'chat') logLineChatWakeStatus_('skipped_pending_delivery', null, pendingChain);
     return;
   }
 
@@ -249,7 +279,8 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
   // ======================================================
 
   if (isGroupLike && !canRunFixedCommands && !directCall) {
-    if (shouldUseWebReading(userText) && !isResearchUrlRequest && !asksForNote) {
+    if (shouldUseWebReading(userText) && !isResearchUrlRequest && !asksForNote && !memberRequest && !quoteFastLane) {
+      logLineChatWakeStatus_('skipped_url_intake', null, pendingChain);
       try {
         handleSilentNewsUrlMessage_(event, conversationId, userText);
       } catch (error) {
@@ -264,29 +295,14 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
       return;
     }
 
-    if (!pendingReceipt.busy) {
-      handleGatedLineChat_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
-    }
-    return;
+    if (pendingReceipt.busy) return logLineChatWakeStatus_('skipped_pending_busy', null, pendingChain);
+    const fastOutcome = quoteFastLane ? 'quote_fast_lane' : memberRequest ? 'member_memory_fast_lane' :
+      playfulFastLane ? 'playful_fast_lane' : '';
+    const deliveredChat = handleGatedLineChat_(event, conversationId, commandInfo.userPrompt, aiExecutionContext, fastOutcome);
+    return finishLineDailyState_(deliveredChat, aiExecutionContext.deadlineAtMs, fromWebhook);
   }
 
-  if (helpText) {
-    sendLineReplyWithLog_(event, conversationId, turnContext, { text: helpText, mode: 'help' });
-    return;
-  }
-
-  if (userText === '#版本' || userText === '#小浣 版本') {
-    const versionText = getBotVersionText_();
-    sendLineReplyWithLog_(event, conversationId, turnContext, { text: versionText, mode: 'version' });
-    return;
-  }
-
-  if (userText === '#版本紀錄' || userText === '#小浣 版本紀錄') {
-    const versionHistoryText = getBotVersionHistoryText_();
-    sendLineReplyWithLog_(event, conversationId, turnContext, { text: versionHistoryText, mode: 'version_history' });
-    return;
-  }
-
+  // 資料控制指令可作廢正在執行的舊回合，不等待舊回合完成。
   if (userText === '#reset' || userText === '#小浣 reset') {
     try { clearConversationHistory(conversationId); }
     catch (error) {
@@ -320,20 +336,51 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
     return;
   }
 
-  if (userText === '#封存本週新聞') {
-    let archiveNewsReply = '';
-    try {
-      archiveNewsReply = archiveWeeklyNews(event, conversationId, aiExecutionContext);
-    } catch (error) {
-      console.error('archiveWeeklyNews error:', error && error.stack ? error.stack : error);
-      archiveNewsReply = getBotTextNewsArchiveError_(error);
-    }
-
-    sendLineReplyWithLog_(event, conversationId, turnContext, { text: archiveNewsReply, mode: 'archive_weekly_news' });
+  let fixedReply;
+  if (helpText) fixedReply = { text: helpText, mode: 'help' };
+  else if (userText === '#版本' || userText === '#小浣 版本') fixedReply = { text: getBotVersionText_(), mode: 'version' };
+  else if (userText === '#版本紀錄' || userText === '#小浣 版本紀錄') {
+    fixedReply = { text: getBotVersionHistoryText_(), mode: 'version_history' };
+  }
+  const reportsWake = isGroupLike && commandInfo.mode === 'chat' && !fixedReply;
+  const route = { userText: userText, isNaturalQuotedImageRequest: isNaturalQuotedImageRequest,
+    isTextQuoteRequest: isTextQuoteRequest, isResearchUrlRequest: isResearchUrlRequest };
+  // 固定指令與明示聊天共用同房資格，均不受一般自動接話間隔限制。
+  if (pendingReceipt.busy) {
+    if (reportsWake) logLineChatWakeStatus_('skipped_pending_busy', null, pendingChain);
     return;
   }
+  const reserved = reserveLineAutoReply_(chatKey, turnContext.lineChatState, aiExecutionContext.deadlineAtMs, before, 'explicit');
+  if (!reserved.id) {
+    if (reportsWake) logLineChatWakeStatus_(reserved.outcome, null, pendingChain);
+    return;
+  }
+  let deliveredChat;
+  try {
+    if (fixedReply) {
+      fixedReply.leaseId = reserved.id;
+      sendLineReplyWithLog_(event, conversationId, turnContext, fixedReply);
+    } else {
+      deliveredChat = handleRequestedLineReply_(event, conversationId, commandInfo, aiExecutionContext, route, reserved.id);
+      if (reportsWake) logLineChatWakeStatus_('explicit_fast_lane', { triggerType: 'direct_call' });
+    }
+  } finally {
+    finishLineAutoReply_(chatKey, reserved.id);
+  }
+  return finishLineDailyState_(deliveredChat, aiExecutionContext.deadlineAtMs, fromWebhook);
+}
 
-  if (isNaturalQuotedImageRequest && !asksForNote) {
+function finishLineDailyState_(deliveredChat, deadline, fromWebhook) {
+  if (!deliveredChat) return;
+  if (fromWebhook) return deadline;
+  maybeGenerateBotDailyState_(deadline);
+}
+
+function handleRequestedLineReply_(event, conversationId, commandInfo, aiExecutionContext, route, lease) {
+  const turnContext = aiExecutionContext.conversationContext;
+  const userText = route.userText;
+  const asksForNote = turnContext.weeklyNoteRequested;
+  if (route.isNaturalQuotedImageRequest && !asksForNote && !turnContext.memberMemoryRequest) {
     const imageReplyMetadata = {};
     const naturalImageQuestion = userText.startsWith('#小浣')
       ? userText.replace(/^#小浣\s*/, '').trim()
@@ -341,7 +388,7 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
     const naturalImageReply = analyzeLineImage_(
       event,
       conversationId,
-      quotedMessageId,
+      event.message.quotedMessageId,
       naturalImageQuestion,
       aiExecutionContext,
       true,
@@ -349,7 +396,7 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
     );
     if (naturalImageReply !== null) {
       sendLineReplyWithLog_(event, conversationId, turnContext, { text: naturalImageReply, mode: 'image_analysis',
-        finalMessage: imageReplyMetadata.finalMessage, followUp: imageReplyMetadata.ok });
+        finalMessage: imageReplyMetadata.finalMessage, followUp: imageReplyMetadata.ok, leaseId: lease });
       return;
     }
   }
@@ -381,22 +428,25 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
       aiReply = archiveWeeklyNews(event, conversationId, aiExecutionContext);
 
     } else {
-      if (shouldUseWebReading(commandInfo.userPrompt) && !isResearchUrlRequest && !asksForNote && !isTextQuoteRequest) {
+      if (shouldUseWebReading(commandInfo.userPrompt) && !route.isResearchUrlRequest && !asksForNote &&
+          !route.isTextQuoteRequest && !turnContext.memberMemoryRequest) {
         const directNewsResult = handleDirectNewsUrlMessage_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
         aiReply = directNewsResult.replyText || getBotTextNoReadableUrl_();
         aiReplyMode = directNewsResult.replyMode || commandInfo.mode;
       } else {
-        chatReply = buildLineChatReply_(event, conversationId, commandInfo.userPrompt, aiExecutionContext);
+        chatReply = buildLineChatReply_(event, conversationId, commandInfo.userPrompt, aiExecutionContext, null, lease);
       }
     }
 
   } catch (error) {
     console.error('LINE_CHAT_FAILED');
-    aiReply = getBotTextAiError_(error);
+    aiReply = commandInfo.mode === 'archive_weekly_news' ? getBotTextNewsArchiveError_(error) : getBotTextAiError_(error);
   }
 
-  sendLineReplyWithLog_(event, conversationId, turnContext, chatReply || { text: aiReply, mode: aiReplyMode,
-    finalMessage: aiFinalMessage, followUp: imageSuccess });
+  const reply = chatReply || { text: aiReply, mode: aiReplyMode, finalMessage: aiFinalMessage, followUp: imageSuccess };
+  reply.leaseId = lease;
+  const sent = sendLineReplyWithLog_(event, conversationId, turnContext, reply);
+  return sent && chatReply && chatReply.mode === 'chat';
 }
 
 function loadLineAmbientContext_(conversationId, executionContext) {
@@ -408,30 +458,64 @@ function loadLineAmbientContext_(conversationId, executionContext) {
   return context.ambientContext;
 }
 
-function handleGatedLineChat_(event, conversationId, text, executionContext) {
+function handleGatedLineChat_(event, conversationId, text, executionContext, fastOutcome) {
   const context = executionContext.conversationContext;
   const key = context.lineChatKey;
   const signals = getLineChatWakeSignals_(event, key, context.lineChatState, text, context.textQuote, context.weeklyNoteRequested);
-  if (!signals) return;
-  const lease = reserveLineAutoReply_(key, context.lineChatState, executionContext.deadlineAtMs, context.beforeTimestampMs, signals.quotesBot);
-  if (!lease) return;
-  try {
-    const ambient = loadLineAmbientContext_(conversationId, executionContext);
-    const decision = classifyLineChatWake_(text, signals, ambient, executionContext);
-    if (!decision) return;
-    const reply = buildLineChatReply_(event, conversationId, text, executionContext, decision, lease);
-    if (reply && authorizeLineAutoReply_(key, lease, executionContext.deadlineAtMs, reply.easterEgg)) {
-      sendLineReplyWithLog_(event, conversationId, context, reply);
+  const chain = signals.followUpChain;
+  if (!fastOutcome) {
+    if (signals.noise || signals.otherAction) {
+      closeLineHotChat_(context, signals.hot);
+      return logLineChatWakeStatus_('skipped_no_signal', null, chain);
     }
-  } catch (ignore) {
-    console.warn('LINE_AUTO_REPLY_SKIPPED');
-  } finally {
+    if (!signals.named && !(signals.teasing && !signals.hot) && !signals.work && !signals.followUp &&
+        !signals.easterEggAvailable && !signals.ambientBanterAvailable) {
+      return logLineChatWakeStatus_(chain >= CHAT_MAX_FOLLOW_UP_CHAIN ? 'skipped_chain_limit' :
+        signals.interjectionThrottled ? 'skipped_cooldown' : context.lineChatState ? 'skipped_no_signal' : 'skipped_budget_or_error', null, chain);
+    }
+  }
+  const lane = fastOutcome ? 'fast' : signals.followUp ? 'follow_up' : 'auto';
+  const reserved = reserveLineAutoReply_(key, context.lineChatState, executionContext.deadlineAtMs, context.beforeTimestampMs, lane);
+  const lease = reserved.id;
+  if (!lease) return logLineChatWakeStatus_(reserved.outcome, null, chain);
+  let outcome = 'skipped_budget_or_error';
+  let scored;
+  let updatedChain = chain;
+  try {
+    const evaluation = fastOutcome ? { outcome: fastOutcome, decision: { triggerType: 'direct_call', fastLane: true,
+      noteAction: context.weeklyNoteRequested ? 'save_weekly_note' : 'none' } }
+      : classifyLineChatWake_(text, signals, loadLineAmbientContext_(conversationId, executionContext), executionContext, lease);
+    scored = evaluation.decision || evaluation.scored;
+    const decision = evaluation.decision;
+    if (!decision) {
+      outcome = evaluation.outcome;
+      if (signals.followUp && outcome === 'gatekeeper_ignore') closeLineHotChat_(context, signals.hot, lease);
+      return;
+    }
+    const reply = buildLineChatReply_(event, conversationId, text, executionContext, decision, lease);
+    if (reply) reply.triggerType = decision.triggerType;
+    if (reply && authorizeLineAutoReply_(key, lease, executionContext.deadlineAtMs, decision.triggerType) &&
+        sendLineReplyWithLog_(event, conversationId, context, reply)) {
+      outcome = evaluation.outcome;
+      if (reply.followUp) updatedChain = decision.triggerType === 'follow_up' ? chain + 1 : 0;
+      return reply.mode === 'chat' && !reply.easterEgg;
+    }
+  } catch (ignore) { /* 自動接話錯誤時維持安靜。 */ }
+  finally {
     finishLineAutoReply_(key, lease);
+    logLineChatWakeStatus_(outcome, scored, updatedChain);
   }
 }
 
 function buildLineChatReply_(event, conversationId, text, executionContext, decision, lease) {
   const context = executionContext.conversationContext;
+  const memberRequest = context.memberMemoryRequest;
+  const memberReply = memberRequest ? {
+    text: applyLineMemberMemoryRequest_(conversationId, context.currentUserId, memberRequest, lease, executionContext.deadlineAtMs),
+    mode: 'member_memory', leaseId: lease
+  } : null;
+  if (memberReply && !memberRequest.question) return memberReply;
+  if (memberReply) text = memberRequest.question;
   loadLineAmbientContext_(conversationId, executionContext);
   const easterEgg = !!decision && decision.triggerType === 'easter_egg';
   const note = !easterEgg && context.weeklyNoteRequested && (!decision || decision.noteAction === 'save_weekly_note')
@@ -449,12 +533,13 @@ function buildLineChatReply_(event, conversationId, text, executionContext, deci
     return noteReply;
   }
   const options = buildAiCallOptionsForExecutionContext_(executionContext, {
-    forceWebSearch: search, maxModelCalls: decision ? 1 : 2,
+    forceWebSearch: search, maxModelCalls: decision && !decision.fastLane ? 1 : 2,
     disableClientResearch: easterEgg,
     weeklyNoteResult: note, weeklyNoteQuestion: research && research.question,
     easterEggReply: easterEgg, excludeMessageId: context.currentMessageId
   });
   const failed = function(result) {
+    if (memberReply) return memberReply;
     if (noteReply) {
       stageLineNoteMemory_(conversationId, text, noteReply.text, executionContext);
       return noteReply;
@@ -478,8 +563,10 @@ function buildLineChatReply_(event, conversationId, text, executionContext, deci
   // 儲存回執由程式定稿，混合請求同時保留模型回答的研究內容。
   if (noteReply) answer = noteReply.text + '\n\n' + answer;
   const sources = result.usedWebSearch || result.sources.length ? buildWebSearchSourcesBubble_(result.sources) : '';
+  if (memberReply) return Object.assign(memberReply, { text: memberReply.text + '\n\n' + answer,
+    memoryText: answer, finalMessage: sources, followUp: true });
   return { text: answer, mode: note ? 'weekly_note' : sources ? 'general_chat_search' : 'chat',
-    finalMessage: sources, followUp: !easterEgg, leaseId: lease, easterEgg: easterEgg,
+    finalMessage: sources, followUp: true, leaseId: lease, easterEgg: easterEgg,
     weeklyNotesBoundary: noteReply ? noteReply.weeklyNotesBoundary : undefined };
 }
 
@@ -504,14 +591,15 @@ function sendLineReplyWithLog_(event, conversationId, context, reply) {
     reply.text = context.recheckWeeklyReport();
   }
   const receipt = {};
-  if (replyToLine(event.replyToken, reply.text, false, reply.finalMessage || '', receipt) === false) return;
+  if (replyToLine(event.replyToken, reply.text, false, reply.finalMessage || '', receipt) === false) return false;
   if (reply.leaseId) {
     const state = readLineChatState_(context.lineChatKey);
-    if (!state || !state.lease || state.lease.id !== reply.leaseId) return;
+    if (!state || !state.lease || state.lease.id !== reply.leaseId) return false;
   }
-  if (receipt.sentAtMs && commitMemory) commitMemory(receipt, reply.text);
-  logAssistantReplyToSheet(event, conversationId, reply.text, reply.mode, receipt);
-  rememberLineReply_(context.lineChatKey, context.lineChatState, event, receipt, reply.followUp, reply.leaseId, reply.easterEgg);
+  if (receipt.sentAtMs && commitMemory) commitMemory(receipt, reply.memoryText || reply.text);
+  logAssistantReplyToSheet(event, conversationId, reply.mode === 'member_memory' ? '[個人記憶操作回覆]' : reply.text, reply.mode, receipt);
+  rememberLineReply_(context.lineChatKey, context.lineChatState, event, receipt, reply.followUp, reply.leaseId, reply.triggerType);
+  return !!receipt.sentAtMs;
 }
 
 /**

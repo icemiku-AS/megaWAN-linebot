@@ -190,6 +190,10 @@ function runAiReadOnlyTool_(call, trustedContext) {
             url: typeof row.Url === 'string' && row.Url.length <= 2048 && isSafePublicUrl(row.Url) ? row.Url : '',
             timestamp: new Date(time).toISOString()
           };
+          if (conversation && trustedContext.nicknameForUser) {
+            const nickname = trustedContext.nicknameForUser(row.UserId);
+            if (nickname) record[row.Role === 'derived' ? 'sharedByNickname' : 'nickname'] = nickname;
+          }
           if (conversation && row.Role === 'user' && findMatchingConversationHistory_(trustedContext.contextHistory, row.MessageId, row.UserId, text, false)) {
             record.text = ''; record.inShortTermHistory = true;
           }

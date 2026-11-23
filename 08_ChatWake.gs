@@ -68,22 +68,44 @@ function isChatEasterEggAvailable_(key, now) {
   catch (ignore) { return false; }
 }
 
-function getLineChatWakeSignals_(event, key, state, text, quote, weeklyNoteRequested) {
-  if (!state) return null;
-  const before = Number(event.timestamp) || Date.now();
-  const userId = event.source && event.source.userId;
+function isLineQuoteOfDeliveredBot_(event, state, quote, before) {
+  if (!state) return false;
   const replies = Array.isArray(state.replies) ? state.replies : [];
-  const followUp = !!userId && replies.some(function(reply) {
-    return reply.userId === userId && reply.at <= before && before - reply.at <= CHAT_FOLLOW_UP_WINDOW_MS;
-  });
   const quotedId = event.message.quotedMessageId;
   const resetAtMs = state.resetAtMs || 0;
-  const quotesBot = isExactLineMessageId_(quotedId) && (quote.reason === 'assistant_message' &&
+  return isExactLineMessageId_(quotedId) && (quote.reason === 'assistant_message' &&
     quote.sentAtMs <= before && quote.sentAtMs > resetAtMs || replies.some(function(reply) {
       return reply.at <= before && reply.at > resetAtMs && reply.ids.includes(quotedId);
     }));
+}
+
+function isLineChatClosingNoise_(text) {
   const compact = text.replace(/[^\p{L}\p{N}]+/gu, '');
-  if (!followUp && !quotesBot && (!compact || /^(?:[wｗ]+|笑死|OP|OK|1|哈+|嗯+|喔+|哦+)$/iu.test(compact))) return null;
+  return !compact || /^(?:[wｗ]+|笑死(?:了)?|OP|OK(?:ay|啦|了)?|1|哈+|嗯+|喔+|哦+|好+(?:的|喔|哦|啦|吧|呀|啊)?|收到|了解|(?:好)?先這樣(?:喔|哦|啦|吧)?)$/iu.test(compact);
+}
+
+function getLineHotChat_(state, eventAtMs, now) {
+  const hot = state && state.hotChat;
+  return hot && hot.at <= eventAtMs && hot.at > (state.resetAtMs || 0) && now - hot.at <= CHAT_FOLLOW_UP_WINDOW_MS
+    ? hot : null;
+}
+
+function getLineChatWakeSignals_(event, key, state, text, quote, weeklyNoteRequested) {
+  if (!state) return {};
+  const now = Date.now();
+  const before = Number(event.timestamp) || now;
+  const hot = getLineHotChat_(state, before, now);
+  const followUpChain = hot ? hot.chain : 0;
+  const quotesBot = isLineQuoteOfDeliveredBot_(event, state, quote, before);
+  const compact = text.replace(/[^\p{L}\p{N}]+/gu, '');
+  const noise = isLineChatClosingNoise_(text);
+  const mentions = event.message.mention && event.message.mention.mentionees;
+  const otherAction = /^[\/!！＃#]\s*[\p{L}\p{N}_-]/u.test(text) ||
+    (Array.isArray(mentions) && mentions.some(function(mention) { return mention && mention.isSelf === false; }));
+  const followUp = !!hot && followUpChain < CHAT_MAX_FOLLOW_UP_CHAIN && !noise && !otherAction;
+  const signals = { quotesBot: quotesBot, followUp: followUp, followUpChain: followUpChain,
+    hot: hot, noise: noise, otherAction: otherAction };
+  if (noise || otherAction) return signals;
 
   const named = /小浣|mega浣|浣熊/i.test(text);
   const weeklyNote = weeklyNoteRequested === true || isWeeklyNoteRequest_(text);
@@ -92,57 +114,76 @@ function getLineChatWakeSignals_(event, key, state, text, quote, weeklyNoteReque
   // 省略姓名的短虧句也先看前文，由守門員確認在跟小浣說話。
   const teasing = /^(?:或|也|欸)?(?:太不吵|怎麼(?:還|又)?(?:在)?裝死)[了啦啊欸喔哦呀嘛吧耶]*$/.test(compact);
   const easterEggTerm = teasing || /垃圾|棉花糖|乾脆麵|小熊貓|貍貓|狸貓/.test(text);
-  const now = Date.now();
-  const probeDue = ENABLE_CHAT_AMBIENT_BANTER && !named && !work && !followUp && !quotesBot && !easterEggTerm &&
-    !(state.ambientProbeAfterMs > now) && Array.from(compact).length >= 6 && !text.startsWith('#') && !shouldUseWebReading(text);
-  const mayInterject = (easterEggTerm || probeDue) && isChatEasterEggAvailable_(key, now);
-  const easterEggAvailable = easterEggTerm && mayInterject;
-  const ambientBanterAvailable = probeDue && mayInterject;
-  return named || teasing || followUp || quotesBot || work || easterEggAvailable || ambientBanterAvailable
-    ? { named: named, teasing: teasing, followUp: followUp, quotesBot: quotesBot, work: work, weeklyNote: weeklyNote,
-        easterEggAvailable: easterEggAvailable, ambientBanterAvailable: ambientBanterAvailable }
-    : null;
+  const probeEligible = ENABLE_CHAT_AMBIENT_BANTER && !named && !work && !hot && !quotesBot && !easterEggTerm &&
+    Array.from(compact).length >= 6 && !shouldUseWebReading(text);
+  const mayInterject = !hot && !work && !quotesBot && (easterEggTerm || probeEligible) && isChatEasterEggAvailable_(key, now);
+  return Object.assign(signals, { named: named, teasing: teasing, work: work, weeklyNote: weeklyNote,
+    easterEggAvailable: easterEggTerm && mayInterject, ambientBanterAvailable: probeEligible && mayInterject && !(state.ambientProbeAfterMs > now),
+    interjectionThrottled: ENABLE_CHAT_EASTER_EGG && !hot && !work && !quotesBot && (easterEggTerm || probeEligible) &&
+      (!mayInterject || probeEligible && state.ambientProbeAfterMs > now) });
 }
 
-function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, quotesBot) {
-  if (!snapshot || !key || deadline - Date.now() < 12000) return '';
+function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, lane) {
+  const minimumMs = lane === 'explicit' ? 1 : 12000;
+  if (!snapshot || !key || deadline - Date.now() < minimumMs) return { outcome: 'skipped_budget_or_error' };
   try {
     const reserved = withDataMutationLock_(function() {
       const state = readLineChatState_(key);
       const now = Date.now();
-      if (!state || (state.resetId || '') !== (snapshot.resetId || '') || now + 12000 > deadline ||
-          eventAtMs <= (state.resetAtMs || 0) || state.autoAfterMs > now && !quotesBot ||
-          state.lease && state.lease.until > now) return {};
+      if (!state || (state.resetId || '') !== (snapshot.resetId || '') || now + minimumMs > deadline ||
+          lane !== 'explicit' && eventAtMs <= (state.resetAtMs || 0)) return { outcome: 'skipped_budget_or_error' };
+      if (state.lease && state.lease.until > now) return { outcome: 'skipped_lease_busy' };
+      if (lane === 'follow_up') {
+        const hot = getLineHotChat_(state, eventAtMs, now);
+        if (!hot || !snapshot.hotChat || hot.at !== snapshot.hotChat.at) return { outcome: 'skipped_no_signal' };
+        if (hot.chain >= CHAT_MAX_FOLLOW_UP_CHAIN) return { outcome: 'skipped_chain_limit' };
+        if (eventAtMs < hot.at + CHAT_FOLLOW_UP_INTERVAL_MS) return { outcome: 'skipped_cooldown' };
+      } else if (lane === 'auto' && state.autoAfterMs > now) return { outcome: 'skipped_cooldown' };
       const id = Utilities.getUuid();
-      state.lease = { id: id, until: deadline + LINE_REPLY_TIMEOUT_SECONDS * 1000, quotesBot: quotesBot === true };
+      state.lease = { id: id, until: deadline + LINE_REPLY_TIMEOUT_SECONDS * 1000, lane: lane };
       PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
       return { id: id };
     }, 250);
-    return reserved.id || '';
-  } catch (ignore) { return ''; }
+    return reserved.status === 'busy' ? { outcome: 'skipped_lease_busy' } : reserved;
+  } catch (ignore) { return { outcome: 'skipped_budget_or_error' }; }
 }
 
 function isDirectLinePlayfulRequest_(text) {
   // 無標點的點名搭配明確短指示也可接話。完整句型排除「小浣吐槽得很好笑」等描述。
-  const addressed = /^(?:呼叫\s*)?(?:小浣|MEGA浣)[，,、：:\s]*([^\r\n]+)$/i.exec(String(text || '').trim());
+  const addressed = /^(?:(?:呼叫|欸)\s*)?(?:小浣|MEGA浣)[，,、：:\s]*([\s\S]+)$/i.exec(String(text || '').trim());
   if (!addressed) return false;
-  const request = addressed[1].trim();
+  const request = addressed[1].split(/[\r\n：:。]/, 1)[0].trim();
   let action = request.replace(/^(?:(?:你|請|麻煩|拜託|幫我|幫忙|快點?|先|也|能不能|可不可以)[，,、：:\s]*)+/, '');
   if (/[嗎？?][。！？!?\s]*$/.test(request)) action = action.replace(/^可以\s*/, '');
   action = action.replace(/[啊呀吧啦嘛喔欸嗎。！？!?~～\s]+$/, '').replace(/\s+/g, '');
-  return /^(?:來)?吐[槽嘈糟](?:一[下句])?(?:(?:這|那)(?:句|段|件事)|剛才那句|剛剛那句|我)?(?:一下)?$/.test(action) ||
+  return /^(?:來)?吐[槽嘈糟](?:一[下句])?(?:(?:這|那)(?:句|段|件事|個梗)|剛才那句|剛剛那句|我)?(?:一下)?$/.test(action) ||
     /^(?:講|說|來)(?:一?[個則])?冷?笑話(?:給我聽)?$/.test(action) ||
-    /^(?:出來(?:面對)?|(?:不要|別)裝死|評評理|怎麼看|說呢)$/.test(action);
+    /^(?:出來(?:面對)?|(?:不要|別)裝死|評評理|怎麼看(?:(?:這|那)(?:句|段|件事|篇))?|怎麼想|覺得呢|有什麼看法|說呢|回我(?:一下)?)$/.test(action);
 }
 
-function claimLineAmbientProbe_(context) {
+function closeLineHotChat_(context, hot, leaseId) {
+  if (!hot || hot.chain >= CHAT_MAX_FOLLOW_UP_CHAIN) return;
+  try {
+    withDataMutationLock_(function() {
+      const key = context.lineChatKey;
+      const state = readLineChatState_(key);
+      if (!state || !state.hotChat || state.hotChat.at !== hot.at || state.hotChat.chain !== hot.chain ||
+          (state.resetId || '') !== (context.lineChatState.resetId || '') ||
+          state.lease && state.lease.until > Date.now() && state.lease.id !== leaseId) return;
+      delete state.hotChat;
+      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
+    }, 250);
+  } catch (ignore) { /* 退場狀態可等熱聊窗到期。 */ }
+}
+
+function claimLineAmbientProbe_(context, leaseId) {
   try {
     return withDataMutationLock_(function() {
       const key = context.lineChatKey;
       const state = readLineChatState_(key);
       const now = Date.now();
       // 取得同房資格後重讀節流狀態，避免依兩個 webhook 的舊快照重複探測。
-      if (!state || !state.lease || state.lease.until <= now || state.ambientProbeAfterMs > now ||
+      if (!state || !state.lease || state.lease.id !== leaseId || state.lease.until <= now || state.ambientProbeAfterMs > now ||
           (state.resetId || '') !== (context.lineChatState.resetId || '') || !isChatEasterEggAvailable_(key, now)) return {};
       state.ambientProbeAfterMs = now + CHAT_AMBIENT_PROBE_INTERVAL_MS;
       PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
@@ -151,46 +192,60 @@ function claimLineAmbientProbe_(context) {
   } catch (ignore) { return false; }
 }
 
-function classifyLineChatWake_(text, signals, ambient, executionContext) {
-  // 入口已取得同房處理資格。明確交辦直接回答，仍走原送達、限頻與驗證流程。
-  if (isDirectLinePlayfulRequest_(text)) {
-    return { shouldReply: true, triggerType: 'direct_call', noteAction: 'none', needsSearch: false };
-  }
+function classifyLineChatWake_(text, signals, ambient, executionContext, leaseId) {
   const deadline = executionContext.deadlineAtMs;
   const classificationDeadline = Math.min(deadline - 10000, Date.now() + 8000);
   const seconds = Math.floor((classificationDeadline - Date.now()) / 1000);
-  if (seconds < 2 || signals.ambientBanterAvailable && !claimLineAmbientProbe_(executionContext.conversationContext)) return null;
+  if (seconds < 2) return { outcome: 'skipped_budget_or_error' };
+  if (signals.ambientBanterAvailable && !claimLineAmbientProbe_(executionContext.conversationContext, leaseId)) {
+    return { outcome: 'skipped_cooldown' };
+  }
   const speaker = createConversationSpeakerMap_();
   const currentSpeaker = speaker(executionContext.conversationContext.currentUserId);
-  const recent = ambient.slice(-4).map(function(item) {
+  const previousReply = signals.followUp && ambient.find(function(item) {
+    return item.role === 'assistant' && item.confirmed && item.timestampMs === signals.hot.at;
+  });
+  const recentItems = ambient.slice(-4);
+  if (previousReply && !recentItems.includes(previousReply)) recentItems.unshift(previousReply);
+  const recent = recentItems.map(function(item) {
     return { speaker: item.role === 'assistant' ? '小浣' : speaker(item.userId), text: item.text.slice(0, getLineMessageSafeSliceIndex_(item.text, 240)) };
   });
   const result = runAiJsonTask('chat_gatekeeper', JSON.stringify({
-    currentSpeaker: currentSpeaker, signals: signals, recent: recent,
+    currentSpeaker: currentSpeaker, signals: { named: signals.named, teasing: signals.teasing, followUp: signals.followUp,
+      followUpChain: signals.followUpChain, work: signals.work, weeklyNote: signals.weeklyNote,
+      easterEggAvailable: signals.easterEggAvailable, ambientBanterAvailable: signals.ambientBanterAvailable }, recent: recent,
     currentMessage: text.slice(0, getLineMessageSafeSliceIndex_(text, 1600))
   }), { executionDeadlineAtMs: classificationDeadline, timeoutCapSeconds: seconds, minimumRequestSeconds: 2, maxModelCalls: 1 });
-  if (!result.ok || Date.now() + 10000 > deadline) return null;
-  const decision = result.json;
-  if (!decision || decision.shouldReply !== true || decision.triggerType === 'ignore') return null;
+  if (!result.ok || Date.now() > classificationDeadline) return { outcome: 'skipped_budget_or_error' };
+  let decision = result.json;
+  const ignored = { outcome: 'gatekeeper_ignore', scored: decision };
+  if (!decision || decision.shouldReply !== true || decision.triggerType === 'ignore') return ignored;
   const thirdPerson = /(?:小浣|mega浣)(?:背後)?(?:的|最近)?(?:模型|改用|改成|換成|更新了)|(?:我|我們).{0,10}(?:在)?更新(?:了)?(?:小浣|mega浣)/i.test(text);
-  if (thirdPerson && !signals.quotesBot && !signals.work && !/小浣[，,：:！!、]|(?:小浣|mega浣)[，,\s]*你/i.test(text)) return null;
+  if (thirdPerson && !signals.work && !/(?:小浣|mega浣)[，,\s]*你/i.test(text)) return ignored;
+  // 熱聊中的省略姓名虧句即使被判點名，仍走續聊分數與連續回覆上限。
+  if (decision.triggerType === 'direct_call' && signals.hot && signals.teasing) {
+    decision = Object.assign({}, decision, { triggerType: 'follow_up' });
+  }
   if (decision.triggerType === 'direct_call' && (signals.named || signals.teasing) ||
-      decision.triggerType === 'follow_up' && (signals.followUp || signals.quotesBot) ||
+      decision.triggerType === 'follow_up' && signals.followUp && decision.replyScore >= CHAT_WAKE_FOLLOW_UP_SCORE_THRESHOLD ||
       decision.triggerType === 'work_collab' && signals.work ||
       decision.triggerType === 'easter_egg' && (signals.easterEggAvailable || signals.ambientBanterAvailable) &&
-        !signals.work && !signals.quotesBot) return decision;
-  return null;
+        decision.replyScore >= CHAT_WAKE_BASE_SCORE_THRESHOLD && !signals.work && !signals.quotesBot) {
+    return { outcome: 'gatekeeper_reply', decision: decision };
+  }
+  return ignored;
 }
 
-function authorizeLineAutoReply_(key, leaseId, deadline, easterEgg) {
+function authorizeLineAutoReply_(key, leaseId, deadline, triggerType) {
   try {
     return withDataMutationLock_(function() {
       const now = Date.now();
       const state = readLineChatState_(key);
       if (!state || !state.lease || state.lease.id !== leaseId || now >= deadline ||
-          state.autoAfterMs > now && !state.lease.quotesBot) return {};
+          state.autoAfterMs > now && state.lease.lane === 'auto') return {};
+      if (triggerType === 'follow_up' && (!state.hotChat || state.hotChat.chain >= CHAT_MAX_FOLLOW_UP_CHAIN)) return {};
       const props = PropertiesService.getScriptProperties();
-      if (easterEgg) {
+      if (triggerType === 'easter_egg') {
         if (!ENABLE_CHAT_EASTER_EGG) return {};
         const cooldowns = readChatEasterEggState_();
         if (cooldowns[key] > now) return {};
@@ -219,10 +274,10 @@ function finishLineAutoReply_(key, leaseId) {
   } catch (ignore) { /* 遺留的接話資格會到期。 */ }
 }
 
-function rememberLineReply_(key, snapshot, event, receipt, startsFollowUp, leaseId, easterEgg) {
+function rememberLineReply_(key, snapshot, event, receipt, startsFollowUp, leaseId, triggerType) {
   if (!key || !snapshot || !receipt.sentAtMs) return;
   const ids = (receipt.messageIds || []).filter(isExactLineMessageId_);
-  if (!ids.length && !startsFollowUp && !leaseId) return;
+  if (!ids.length && !startsFollowUp) return;
   try {
     withDataMutationLock_(function() {
       const state = readLineChatState_(key);
@@ -231,18 +286,33 @@ function rememberLineReply_(key, snapshot, event, receipt, startsFollowUp, lease
           leaseId && (!state.lease || state.lease.id !== leaseId)) return;
       const userId = event.source && event.source.userId;
       const props = PropertiesService.getScriptProperties();
-      if (leaseId) state.autoAfterMs = Math.max(state.autoAfterMs || 0, receipt.sentAtMs + CHAT_AUTO_REPLY_INTERVAL_MS);
+      if (leaseId && state.lease.lane !== 'explicit') {
+        state.autoAfterMs = Math.max(state.autoAfterMs || 0, receipt.sentAtMs + CHAT_AUTO_REPLY_INTERVAL_MS);
+      }
+      if (startsFollowUp && (!state.hotChat || receipt.sentAtMs >= state.hotChat.at)) {
+        state.hotChat = { at: receipt.sentAtMs,
+          chain: triggerType === 'follow_up' && state.hotChat ? state.hotChat.chain + 1 : 0 };
+      }
       const replies = Array.isArray(state.replies) ? state.replies : [];
       replies.push({ at: receipt.sentAtMs,
         userId: startsFollowUp && typeof userId === 'string' && userId.length <= 128 ? userId : '', ids: ids });
       state.replies = replies.filter(function(reply) { return reply.at > Date.now() - AMBIENT_CHAT_WINDOW_MS; })
         .sort(function(a, b) { return b.at - a.at; }).slice(0, MAX_RECENT_LINE_REPLIES);
       props.setProperty(key, JSON.stringify(state));
-      if (easterEgg) {
+      if (triggerType === 'easter_egg') {
         const cooldowns = readChatEasterEggState_();
         cooldowns[key] = receipt.sentAtMs + CHAT_EASTER_EGG_COOLDOWN_MS;
         props.setProperty(CHAT_EASTER_EGG_STATE_PROPERTY, JSON.stringify(cooldowns));
       }
     }, 250);
   } catch (ignore) { /* 已確認送出時，輔助狀態失敗不重送。 */ }
+}
+
+function logLineChatWakeStatus_(outcome, scored, chain) {
+  const type = scored && scored.triggerType;
+  const score = scored && scored.replyScore;
+  console.log('CHAT_WAKE_STATUS ' + JSON.stringify({ outcome: outcome,
+    triggerType: ['direct_call', 'follow_up', 'work_collab', 'easter_egg', 'ignore'].includes(type) ? type : null,
+    score: Number.isInteger(score) && score >= 0 && score <= 10 ? score : null,
+    followUpChain: Number.isInteger(chain) && chain >= 0 && chain <= CHAT_MAX_FOLLOW_UP_CHAIN ? chain : 0 }));
 }

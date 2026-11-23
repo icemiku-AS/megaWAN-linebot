@@ -22,6 +22,7 @@ function getAiTaskOutputSchema_(task) {
     case 'chat_gatekeeper':
       schema = { type: 'object', properties: {
         shouldReply: { type: 'boolean' },
+        replyScore: { type: 'integer', minimum: 0, maximum: 10 },
         triggerType: { type: 'string', enum: ['direct_call', 'follow_up', 'work_collab', 'easter_egg', 'ignore'] },
         noteAction: { type: 'string', enum: ['none', 'save_weekly_note'] },
         needsSearch: { type: 'boolean' }

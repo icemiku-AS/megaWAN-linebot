@@ -11,7 +11,7 @@ const source = files.map(name => {
   new vm.Script(code, { filename: name });
   return code;
 }).join('\n');
-assert.equal(files.length, 24);
+assert.equal(files.length, 26);
 new vm.Script(source, { filename: 'GAS shared namespace' });
 assert(!/deepseek-v4-flash|deepseek_v4_flash/.test(source));
 const functions = [...source.matchAll(/^function (\w+)\(/gm)].map(match => match[1]);
@@ -38,8 +38,8 @@ function parsePtDate(text, timeZone) {
 let now = 1000000, uuid = 0;
 const cache = new Map();
 function cachedDataCount() {
-  return [...cache].filter(([key, value]) => !key.startsWith('linebot_history_') ||
-    JSON.parse(value).history?.length !== 0).length;
+  return [...cache].filter(([key, value]) => !key.startsWith('MEMBER_MEMORY_') &&
+    (!key.startsWith('linebot_history_') || JSON.parse(value).history?.length !== 0)).length;
 }
 const rows = [], logs = [], calls = [], replies = [], keyReads = [];
 const freeKey = 'test-only-free-key', searchKey = 'test-only-search-key';
@@ -68,6 +68,9 @@ const context = vm.createContext({
   HtmlService: { createHtmlOutput: value => value }
 });
 vm.runInContext(source, context);
+// 一般回歸只計算當次對話的 HTTP。每日狀態整合測試另恢復正式的回覆後生成。
+const generateBotDailyState = context.maybeGenerateBotDailyState_;
+context.maybeGenerateBotDailyState_ = () => {};
 // 保留實際 ConversationLog writer 和 Cache memory，只替換 Google 服務的資料來源。
 const logHeaders = ['Timestamp', 'ConversationId', 'SourceType', 'UserId', 'GroupId', 'RoomId', 'Role', 'Mode', 'MessageId', 'Text', 'QuotedMessageId', 'QuoteStatus'];
 const initializeConversationLog = context.ensureLogSheet_;
@@ -206,7 +209,7 @@ function checkDeepSeek(name, run) {
     }
     profiles.image_caption_fast = { ...profiles.image_caption_fast, thinking: { type: 'disabled' }, reasoningEffort: undefined, maxOutputTokens: 320 };
     for (const [name, route] of Object.entries(routes)) {
-      if (name === 'chat_gatekeeper') continue;
+      if (name === 'chat_gatekeeper' || name === 'bot_daily_state') continue;
       const { reasoningEffort, ...legacyRoute } = route;
       const caption = name === 'image_semantic_caption';
       routes[name] = { ...legacyRoute, provider: 'deepseek', model: 'deepseek_flash',
@@ -221,6 +224,7 @@ function event(type = 'image', sourceType = 'user', extra = {}) {
 }
 const budgets = {
   chat_gatekeeper: ['gemini_35_flash_lite', 'MINIMAL', 256, 8],
+  bot_daily_state: ['gemini_35_flash_lite', 'MINIMAL', 256, 4],
   general_chat: ['gemini_4_hydrogen', 'LOW', 4800, 45],
   news_analysis: ['gemini_4_hydrogen', 'LOW', 8000, 60],
   raw_html_extraction: ['gemini_38_flash', 'LOW', 28000, 90],
@@ -375,13 +379,15 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
+  assert(replies.at(-1).text.includes('v2.2.3 Heartflow, Member Memory & Daily Life Edition'));
   assert(replies.at(-1).text.includes('2026-11-23'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition') >= 0);
   assert(history.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.includes('v2.0.0 Gemini Architecture Edition'));
   assert(history.includes('v1.17.0 Weekly News Archive Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') >= 0);
+  assert(history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition') < history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.0.0 Gemini Architecture Edition'));
   assert(history.indexOf('v2.0.0 Gemini Architecture Edition') < history.indexOf('v1.17.0 Weekly News Archive Edition'));
@@ -2061,7 +2067,7 @@ checkDeepSeek('image Search still deducts earlier webhook work and rejects deadl
   const started = now; now += 12000; lockDelay = 2000; encodedDelay = 1000;
   fetchImpl = (url, options) => {
     if (url.includes('api-data.line.me')) { now += 2000; return response(200, '', { 'Content-Type': 'image/png' }, png); }
-    assert.equal(options.timeoutSeconds, 23); assert.equal(now + options.timeoutSeconds * 1000, started + 40000);
+    assert.equal(options.timeoutSeconds, 21); assert.equal(now + options.timeoutSeconds * 1000, started + 40000);
     now += 24000;
     return anthropicCompletion('晚到回答不可保存', { searched: true });
   };
@@ -2880,7 +2886,7 @@ check('protocol symbols stay inside adapters and Gemini owns all active routes',
   }
   assert(Object.values(value('AI_TASK_ROUTES')).every(route => route.provider === 'gemini'));
   assert.equal(value('AI_PROVIDER_REGISTRY.deepseek.status'), 'dormant');
-  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 24);
+  assert(!source.includes('OPENAI_API_KEY'));
   const secretPattern = /(?:sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,})/;
   for (const filename of [...files, path.relative(root, __filename), 'README.md', 'CURRENT_VERSION.md']) {
     assert(!secretPattern.test(fs.readFileSync(path.join(root, filename), 'utf8')), filename + ' credential-shaped literal');
@@ -3488,8 +3494,9 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('hotfix/v211-natural-direct-call')); assert(doc.includes('0f356a1'));
-    assert(doc.includes('v2.1.1 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
+    assert(doc.includes('feature/v223-heartflow-member-memory')); assert(doc.includes('1c3205e'));
+    assert(doc.includes('v2.2.3 Heartflow, Member Memory & Daily Life Edition')); assert(doc.includes('2026-11-23'));
+    assert(doc.includes('09_BotDailyState.gs')); assert(doc.includes('38_MemberMemory.gs'));
     assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
@@ -4139,7 +4146,8 @@ function wakeEvent(text, { room = 'group1', type = 'group', user = 'user1', quot
   return input;
 }
 function wakeDecision(triggerType, extra = {}) {
-  return JSON.stringify({ shouldReply: triggerType !== 'ignore', triggerType, noteAction: 'none', needsSearch: false, ...extra });
+  return JSON.stringify({ shouldReply: triggerType !== 'ignore', triggerType, replyScore: triggerType === 'ignore' ? 0 : 8,
+    noteAction: 'none', needsSearch: false, ...extra });
 }
 function isGateFetch(url) { return url.endsWith('/gemini-3.5-flash-lite:generateContent'); }
 function dispatchWake(input) { context.handleLineEvent(input, now); }
@@ -4157,6 +4165,8 @@ check('v210 native mention, embedded hashtag, and private chat skip classificati
   withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet(sourceRows) }) }, () => {
     fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('ignore')) : geminiCompletion();
     dispatchWake(wakeEvent('你知道這件事嗎', { mention: { mentionees: [{ isSelf: false }] } }));
+    assert.equal(calls.length, 0);
+    dispatchWake(wakeEvent('你知道這件事嗎'));
     assert.equal(calls.length, 1); assert(isGateFetch(calls[0].url)); assert.equal(replies.length, 0);
     const embedded = '之前那件有新消息\n#小浣 幫我整理一下\n兩段都要看';
     dispatchWake(wakeEvent(embedded));
@@ -4228,7 +4238,7 @@ check('v211 descriptions and quoted examples do not become direct playful replie
   assert.equal(replies.length, 0);
 });
 
-check('v211 direct playful requests respect pending delivery, the room lease, and the reply interval', () => {
+check('v223 direct playful requests bypass the interval and respect pending delivery and the room lease', () => {
   pending = { text: '先前已完成的背景結果' };
   dispatchWake(wakeEvent('小浣吐嘈啊！！！', { dedup: true }));
   assert.equal(calls.length, 0);
@@ -4244,16 +4254,16 @@ check('v211 direct playful requests respect pending delivery, the room lease, an
   assert.equal(calls.length, 1, 'same-room in-flight request retains its lease');
   now += 1000;
   dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
-  assert.equal(calls.length, 1, 'the twenty-second interval still applies');
-  assert.equal(replies.length, 1);
+  assert.equal(calls.length, 2, 'direct request bypasses the twenty-second interval');
+  assert.equal(replies.length, 2);
   now += 20000;
   dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert(calls.every(call => !isGateFetch(call.url)));
-  assert.equal(replies.length, 2);
+  assert.equal(replies.length, 3);
 });
 
-check('v210 exact numeric LINE IDs, follow-up identity, and confirmed delivery gate', () => {
+check('v223 exact numeric LINE IDs and room follow-up require confirmed delivery', () => {
   const outboxId = '621234567890123456';
   const secondBubbleId = '621234567890123457';
   const logSheet = mockLogSheet();
@@ -4282,11 +4292,12 @@ check('v210 exact numeric LINE IDs, follow-up identity, and confirmed delivery g
     now += 1000;
     dispatchWake(wakeEvent('那第二件呢？', { user: 'other' }));
     assert.equal(gateBodies.length, 0);
-    dispatchWake(wakeEvent('那第二件呢？'));
+    now += 5000;
+    dispatchWake(wakeEvent('那第二件呢？', { user: 'another-member' }));
     assert.equal(gateBodies.length, 1); assert(gateBodies[0].signals.followUp);
     now += 91000;
     dispatchWake(wakeEvent('那第一件呢？', { user: 'other', quotedMessageId: secondBubbleId }));
-    assert.equal(gateBodies.length, 2); assert(gateBodies[1].signals.quotesBot);
+    assert.equal(gateBodies.length, 1, 'confirmed bot quote bypasses the model gate');
     const ai = calls.filter(call => isGeminiFetch(call.url)).at(-1);
     assert.equal(requestData(JSON.parse(ai.options.payload), 'TEXT_QUOTE_CONTEXT')[0].status, 'bot_reply');
     assert(!calls.some(call => call.url.includes('api-data.line.me')));
@@ -4532,23 +4543,24 @@ check('v210 Search and internal tools agree on the scope of each current clause'
   }
 });
 
-check('v210 an exact delivered bot quote skips the cooldown but cannot take a second room lease', () => {
+check('v223 exact delivered quote bypasses the gate and cooldown without a second lease or redelivery', () => {
   const replyId = '90071992547409971';
   const sent = [];
   const gates = [];
+  let answers = 0;
   withStubs({ replyToLine: transportReply }, () => {
     fetchImpl = (url, options) => {
       if (url.includes('/message/reply')) {
         sent.push(JSON.parse(options.payload));
         return response(200, { sentMessages: [{ id: sent.length === 1 ? replyId : '90071992547409972' }] });
       }
-      if (!isGateFetch(url)) return geminiCompletion('標題可以從時間順序切入');
+      if (!isGateFetch(url)) {
+        if (++answers === 2) dispatchWake(wakeEvent('那另一個細節呢？', { user: 'user3', quotedMessageId: replyId, dedup: true }));
+        return geminiCompletion('標題可以從時間順序切入');
+      }
       const body = JSON.parse(JSON.parse(options.payload).contents.at(-1).parts.at(-1).text);
       gates.push(body);
-      if (gates.length === 2) {
-        dispatchWake(wakeEvent('那另一個細節呢？', { user: 'user3', quotedMessageId: replyId, dedup: true }));
-      }
-      return geminiCompletion(wakeDecision(body.signals.quotesBot ? 'follow_up' : 'direct_call'));
+      return geminiCompletion(wakeDecision('direct_call'));
     };
 
     dispatchWake(wakeEvent('小浣，幫我想標題', { dedup: true }));
@@ -4558,15 +4570,22 @@ check('v210 an exact delivered bot quote skips the cooldown but cannot take a se
     dispatchWake(wakeEvent('還有什麼細節？', { quotedMessageId: '90071992547409970' }));
     assert.equal(gates.length, 1);
 
-    const followUp = wakeEvent('你說時間順序是什麼意思？', { user: 'user2', quotedMessageId: replyId, dedup: true });
+    const followUp = wakeEvent('沒有，只是想問你時間順序那部分', { user: 'user2', quotedMessageId: replyId, dedup: true });
     dispatchWake(followUp);
     dispatchWake(followUp);
-    assert.equal(gates.length, 2);
-    assert.equal(gates[1].signals.quotesBot, true);
+    assert.equal(gates.length, 1);
+    assert.equal(answers, 2);
     assert.equal(sent.length, 2);
     now += 1000;
     dispatchWake(wakeEvent('那這個呢？', { user: 'user2' }));
-    assert.equal(gates.length, 2, 'ordinary follow-ups remain rate limited');
+    assert.equal(gates.length, 1, 'ordinary follow-ups remain rate limited');
+    for (const text of ['OK', '好', '笑死', '+1', '🎉', '！？']) {
+      dispatchWake(wakeEvent(text, { user: 'user4', quotedMessageId: replyId }));
+    }
+    assert.equal(answers, 2, 'closing noise must not use the quote fast lane');
+    assert.equal(gates.length, 1);
+    const reasons = logs.filter(line => line.startsWith('CHAT_WAKE_STATUS ')).map(line => JSON.parse(line.slice(17)).outcome);
+    assert(reasons.includes('quote_fast_lane') && reasons.includes('skipped_lease_busy'));
   });
 });
 
@@ -4640,9 +4659,9 @@ check('v211 ignored ambient probes spend only the two-minute interval, including
 
   const execution = context.createLineWebhookExecutionContext_(now);
   execution.conversationContext = { lineChatKey: key, lineChatState: snapshot };
-  const lease = context.reserveLineAutoReply_(key, snapshot, execution.deadlineAtMs, now, false);
+  const { id: lease } = context.reserveLineAutoReply_(key, snapshot, execution.deadlineAtMs, now, 'auto');
   assert(lease, 'simulate a second webhook acquiring the lease with an earlier snapshot');
-  try { assert.equal(context.classifyLineChatWake_(text, staleSignals, [], execution), null); }
+  try { assert.equal(context.classifyLineChatWake_(text, staleSignals, [], execution, lease).outcome, 'skipped_cooldown'); }
   finally { context.finishLineAutoReply_(key, lease); }
   assert.equal(calls.length, 1);
 
@@ -4722,6 +4741,254 @@ check('v211 ambient probing yields to pending replies and leaves ordinary URLs i
     assert.equal(replies.length, 2);
     assert.equal(calls.length, 0);
     assert.equal(context.readLineChatState_(key).ambientProbeAfterMs, undefined);
+  });
+});
+
+function wakeStatuses() {
+  return logs.filter(line => line.startsWith('CHAT_WAKE_STATUS ')).map(line => JSON.parse(line.slice(17)));
+}
+
+check('v223 hot chat crosses speakers at six seconds and stops after two delivered continuations', () => {
+  const key = context.getLineChatStateKey_('group:group1');
+  fetchImpl = url => isGateFetch(url)
+    ? geminiCompletion(wakeDecision('follow_up', { replyScore: 5 })) : geminiCompletion('那就從改版前後的差別講起');
+  dispatchWake(wakeEvent('#小浣 我們來講這件事', { user: 'alice' }));
+  assert.equal(context.readLineChatState_(key).hotChat.chain, 0);
+  now += 5999;
+  dispatchWake(wakeEvent('從第二件講起吧', { user: 'bob' }));
+  assert.equal(wakeStatuses().at(-1).outcome, 'skipped_cooldown');
+  assert.equal(calls.length, 1);
+  now++;
+  dispatchWake(wakeEvent('從第二件講起吧', { user: 'bob' }));
+  assert.equal(readWakeSignals(calls[1]).followUp, true);
+  assert.equal(readWakeSignals(calls[1]).followUpChain, 0);
+  assert.equal(context.readLineChatState_(key).hotChat.chain, 1);
+  now += 6000;
+  dispatchWake(wakeEvent('對欸還有第三件', { user: 'chris' }));
+  assert.equal(readWakeSignals(calls[3]).followUpChain, 1);
+  assert.equal(context.readLineChatState_(key).hotChat.chain, 2);
+  assert.equal(wakeStatuses().at(-1).followUpChain, 2);
+  now += 6000;
+  dispatchWake(wakeEvent('那這件也聊一下', { user: 'bob' }));
+  assert.equal(calls.length, 5);
+  assert.equal(replies.length, 3);
+  assert.equal(wakeStatuses().at(-1).outcome, 'skipped_chain_limit');
+  dispatchWake(wakeEvent('小浣，你怎麼看這件事', { user: 'chris' }));
+  assert.equal(calls.length, 6);
+  assert.equal(context.readLineChatState_(key).hotChat.chain, 0, 'a new clear invitation restarts the chain');
+});
+
+check('v223 low scores, changed topics, other bot commands, and the 90-second boundary end hot chat', () => {
+  for (const mode of ['low-score', 'topic-change', 'other-command', 'other-mention', 'expired']) {
+    reset();
+    const key = context.getLineChatStateKey_('group:group1');
+    fetchImpl = url => isGateFetch(url) ? geminiCompletion(mode === 'low-score'
+      ? wakeDecision('follow_up', { replyScore: 4 }) : wakeDecision('ignore')) : geminiCompletion();
+    dispatchWake(wakeEvent('#小浣 我們在聊週報'));
+    now += mode === 'expired' ? 90001 : 6000;
+    const text = mode === 'other-command' ? '/查服' : mode === 'topic-change' ? '我改聊另一件事了' : '那下一題';
+    const options = mode === 'other-mention' ? { mention: { mentionees: [{ isSelf: false }] } } : {};
+    dispatchWake(wakeEvent(text, options));
+    assert.equal(replies.length, 1, mode);
+    const classified = ['low-score', 'topic-change'].includes(mode);
+    assert.equal(calls.length, classified ? 2 : 1, mode);
+    if (classified) assert.equal(wakeStatuses().at(-1).outcome, 'gatekeeper_ignore', mode);
+    if (mode !== 'expired') assert.equal(context.readLineChatState_(key).hotChat, undefined, mode);
+    dispatchWake(wakeEvent('下一題', { user: 'bob' }));
+    assert.equal(calls.length, classified ? 2 : 1, mode);
+  }
+});
+
+check('v223 proactive threshold is seven; a delivered interjection opens a hot-chat window with no Search', () => {
+  for (const [score, expectedReply] of [[6, false], [7, true]]) {
+    reset();
+    fetchImpl = url => isGateFetch(url)
+      ? geminiCompletion(wakeDecision('easter_egg', { replyScore: score, needsSearch: true, noteAction: 'save_weekly_note' }))
+      : geminiCompletion('這鬧鐘是把放假也排進待辦了');
+    dispatchWake(wakeEvent('剛到公司才想起今天放假', { user: 'alice' }));
+    assert.equal(replies.length, Number(expectedReply));
+    assert.equal(wakeStatuses().at(-1).score, score);
+    assert.equal(properties.has('CHAT_EASTER_EGG_STATE'), expectedReply);
+    assert(keyReads.every(key => key === 'GEMINI_API_KEY'));
+    assert.equal([...properties.keys()].some(key => key.startsWith('WEEKLY_NOTES_')), false);
+    if (!expectedReply) continue;
+    now += 6000;
+    fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('follow_up', { replyScore: 5 })) : geminiCompletion();
+    dispatchWake(wakeEvent('我笑到連門都忘了開', { user: 'bob' }));
+    assert(readWakeSignals(calls[2]).followUp);
+    assert.equal(replies.length, 2);
+  }
+});
+
+check('v223 unnamed teasing scored as direct contact follows the hot-chat score floor and chain limit', () => {
+  for (const score of [4, 5]) {
+    reset();
+    const key = context.getLineChatStateKey_('group:group1');
+    fetchImpl = url => isGateFetch(url)
+      ? geminiCompletion(wakeDecision('direct_call', { replyScore: score })) : geminiCompletion('這就來接你們剛才那句');
+    dispatchWake(wakeEvent('#小浣 給這個話題一個開頭', { user: 'alice' }));
+    now += 6000;
+    dispatchWake(wakeEvent('太不吵', { user: 'bob' }));
+    assert(readWakeSignals(calls[1]).teasing && readWakeSignals(calls[1]).followUp);
+    assert.equal(wakeStatuses().at(-1).score, score);
+    if (score === 4) {
+      assert.equal(replies.length, 1);
+      assert.equal(wakeStatuses().at(-1).outcome, 'gatekeeper_ignore');
+      assert.equal(context.readLineChatState_(key).hotChat, undefined);
+      continue;
+    }
+    assert.equal(wakeStatuses().at(-1).triggerType, 'follow_up');
+    assert.equal(context.readLineChatState_(key).hotChat.chain, 1);
+    now += 6000;
+    dispatchWake(wakeEvent('怎麼又裝死', { user: 'chris' }));
+    assert.equal(wakeStatuses().at(-1).triggerType, 'follow_up');
+    assert.equal(context.readLineChatState_(key).hotChat.chain, 2);
+    now += 6000;
+    dispatchWake(wakeEvent('太不吵', { user: 'bob' }));
+    assert.equal(replies.length, 3);
+    assert.equal(calls.length, 5);
+    assert.equal(wakeStatuses().at(-1).outcome, 'skipped_chain_limit');
+  }
+});
+
+check('v223 wake telemetry uses a single safe record for each evaluation, including malformed scores and lock contention', () => {
+  const text = '小浣，SECRET_CHAT_TEXT 請給我一點看法';
+  const user = 'U' + 'ab'.repeat(16);
+  dispatchWake(wakeEvent('OK', { user }));
+  for (const replyScore of [-1, 11, 5.5, '5', undefined]) {
+    fetchImpl = () => geminiCompletion(wakeDecision('direct_call', { replyScore }));
+    dispatchWake(wakeEvent(text, { user }));
+  }
+  withStubs({ deliverPendingReply_: (_id, _token, _builder, receipt) => { receipt.busy = true; return null; } },
+    () => dispatchWake(wakeEvent(text, { user })));
+  fetchImpl = url => isGateFetch(url)
+    ? geminiCompletion(wakeDecision('direct_call', { replyScore: 3 })) : geminiCompletion();
+  dispatchWake(wakeEvent(text, { user }));
+  const status = wakeStatuses();
+  assert.equal(status.length, 8);
+  assert.deepEqual(status.map(item => item.outcome), ['skipped_no_signal', ...Array(5).fill('skipped_budget_or_error'),
+    'skipped_pending_busy', 'gatekeeper_reply']);
+  assert.equal(replies.length, 1, 'a recognized direct call has no general score floor');
+  assert.equal(status.at(-1).score, 3);
+  assert(status.every(row => Object.keys(row).join(' ') === 'outcome triggerType score followUpChain'));
+  assert(!logs.join('\n').includes(text));
+  assert(!logs.join('\n').includes(user));
+});
+
+const dailyFixture = '今天把抽屜裡的瓶蓋按顏色排好，少了一顆綠色的，找了半天才發現它一直在自己的口袋裡，最後還拿它壓住便條。';
+function isDailyFetch(callUrl, options) {
+  return isGateFetch(callUrl) && geminiSystem(JSON.parse(options.payload)).includes('替浣熊角色小浣寫今天');
+}
+
+check('v223 Taipei daily state generates after all batch replies, retains three days, and stays on the user side', () => {
+  now = Date.parse('2026-11-23T00:01:00+08:00');
+  const old = label => '前幾天的角色小日常' + label + '，在窗邊整理瓶蓋，發現最小的那個一直藏在毛線球底下，找了好一會兒才看到。';
+  properties.set('BOT_DAILY_STATE', JSON.stringify({ days: {
+    '2026-11-20': old('甲'), '2026-11-21': old('乙'), '2026-11-22': old('丙')
+  } }));
+  const chats = [];
+  let generation = 0;
+  withStubs({ maybeGenerateBotDailyState_: generateBotDailyState }, () => {
+    fetchImpl = (url, options) => {
+      const payload = JSON.parse(options.payload);
+      if (isDailyFetch(url, options)) {
+        generation++;
+        assert.equal(replies.length, 2, 'auxiliary HTTP follows all main LINE deliveries in the webhook');
+        assert.equal(options.timeoutSeconds, 4);
+        assert.equal(payload.generationConfig.thinkingConfig.thinkingLevel, 'MINIMAL');
+        assert(!payload.tools);
+        assert(geminiText(payload).includes(old('乙')) && geminiText(payload).includes(old('丙')));
+        assert(!geminiText(payload).includes(old('甲')));
+        return geminiCompletion(dailyFixture);
+      }
+      chats.push(payload);
+      return geminiCompletion('先回你這句，待會再看看桌上的紙條');
+    };
+    const events = [wakeEvent('#小浣 今天做了什麼', { dedup: true }), wakeEvent('#小浣 先聊一下別的事', { dedup: true })];
+    assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events }) } }), 'OK');
+    assert.equal(generation, 1);
+    assert.equal(requestData(chats[0], 'LINE_TURN_STATUS').dailyState, undefined);
+    const state = properties.get('BOT_DAILY_STATE');
+    assert(Buffer.byteLength(state) <= 1500);
+    assert.deepEqual(Object.keys(JSON.parse(state).days), ['2026-11-21', '2026-11-22', '2026-11-23']);
+    now += 1000;
+    dispatchWake(wakeEvent('#小浣 你現在在幹嘛'));
+    assert.equal(generation, 1);
+    assert.equal(requestData(chats[2], 'LINE_TURN_STATUS').dailyState, dailyFixture);
+    assert.deepEqual(chats[2].systemInstruction, chats[0].systemInstruction);
+    assert(!geminiSystem(chats[2]).includes(dailyFixture));
+    assert(keyReads.every(key => key === 'GEMINI_API_KEY'));
+  });
+});
+
+check('v223 daily state skips short budget and degrades silently on timeout, bad content, or HTTP failure', () => {
+  for (const mode of ['low-budget', 'late', 'http', 'markdown', 'url', 'control', 'strikethrough']) {
+    reset();
+    let generation = 0;
+    withStubs({ maybeGenerateBotDailyState_: generateBotDailyState }, () => {
+      fetchImpl = (url, options) => {
+        if (!isDailyFetch(url, options)) {
+          if (mode === 'low-budget') now += 23000;
+          return geminiCompletion('這是已完成的正題回答');
+        }
+        generation++;
+        assert.equal(replies.length, 1);
+        if (mode === 'late') now += 4001;
+        if (mode === 'http') return response(503, 'PRIVATE_AUXILIARY_ERROR');
+        const invalidOutput = { markdown: '**' + dailyFixture + '**', url: dailyFixture + ' example.org',
+          control: '今天\t' + dailyFixture, strikethrough: '～～' + dailyFixture + '~~' };
+        return geminiCompletion(invalidOutput[mode] || dailyFixture);
+      };
+      dispatchWake(wakeEvent('#小浣 先回這題'));
+      assert.equal(generation, mode === 'low-budget' ? 0 : 1, mode);
+      assert.equal(context.getBotDailyState_(), '', mode);
+      assert.equal(replies[0].text, '這是已完成的正題回答', mode);
+      assert.equal(replies.length, 1, mode);
+      assert(!logs.join('\n').includes('PRIVATE_AUXILIARY_ERROR'));
+    });
+  }
+});
+
+check('v223 daily state accepts trailing line breaks, single full-width tildes, and 25-character text', () => {
+  const short = '今天在窗邊整理幾顆瓶蓋回頭才發現小紙條躲在尾巴下。';
+  const split = '今天在窗邊整理幾顆瓶蓋 \r\n 回頭才發現小紙條躲在尾巴下～\n';
+  const expected = '今天在窗邊整理幾顆瓶蓋 回頭才發現小紙條躲在尾巴下～';
+  assert.equal(Array.from(short).length, 25);
+  assert.equal(context.normalizeBotDailyText_(short + '\n'), short);
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(14)), '');
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(15)), '收'.repeat(15));
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(120)), '收'.repeat(120));
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(121)), '');
+  withStubs({ maybeGenerateBotDailyState_: generateBotDailyState }, () => {
+    fetchImpl = (url, options) => geminiCompletion(isDailyFetch(url, options) ? split : '先來看這個話題');
+    dispatchWake(wakeEvent('#小浣 聊一下'));
+    assert.equal(context.getBotDailyState_(), expected);
+  });
+});
+
+check('v223 daily state requires successful LINE delivery and claims once across different rooms', () => {
+  let dailyCalls = 0, lineDeliveries = 0;
+  const orders = [];
+  withStubs({ replyToLine: transportReply, maybeGenerateBotDailyState_: generateBotDailyState }, () => {
+    fetchImpl = (url, options) => {
+      if (url.includes('/message/reply')) {
+        if (++lineDeliveries === 1) return response(400, '');
+        orders.push('LINE');
+        return response(200, {});
+      }
+      if (!isDailyFetch(url, options)) return geminiCompletion('先回你剛剛那題');
+      dailyCalls++;
+      orders.push('DAILY');
+      if (dailyCalls === 1) dispatchWake(wakeEvent('#小浣 聊另一件事', { room: 'another-room' }));
+      return geminiCompletion(dailyFixture);
+    };
+    dispatchWake(wakeEvent('#小浣 這句先模擬 LINE 沒送到'));
+    assert.equal(dailyCalls, 0);
+    assert(!properties.has('BOT_DAILY_STATE'));
+    dispatchWake(wakeEvent('#小浣 現在可以正常回'));
+    assert.equal(dailyCalls, 1);
+    assert.deepEqual(orders, ['LINE', 'DAILY', 'LINE']);
+    assert.equal(context.getBotDailyState_(), dailyFixture);
   });
 });
 
