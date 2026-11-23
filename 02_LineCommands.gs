@@ -17,10 +17,17 @@ function hasTriggerPrefix(text) {
   });
 }
 
-// 「幫我查」已是使用者明確要求查找；只有「最近／今天」等單純時效詞才交給模型 auto。
+// 先區分明示聯網與聊天室內查詢；單純時效詞、引用和分類結果均不授權 Search。
 function isExplicitWebSearchRequest_(text) {
-  const value = String(text || '').replace(/\s+/g, ' ').trim();
-  return /(?:上網|網路|網絡|網上).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上)|(?:搜尋|搜索)(?:一下|看看)?|(?:幫我)?查一下|(?:請|麻煩)?\s*幫我\s*(?:(?:上網|去網路)\s*)?(?:查(?!看)|找|搜尋|搜索)/.test(value);
+  const value = String(text || '').split(/\r?\n/).map(stripUrlsForWeeklyEditorial_).join('\n');
+  const internal = /群裡|群組內|聊天室|聊過|討論過|收過|收件匣|新聞庫|封存|對話紀錄|聊天紀錄|ConversationLog|NewsInbox|WeeklySummary/i;
+  const hasInternal = internal.test(value);
+  return value.split(/[。！？!?，,；;\n]/).some(function(plain) {
+    if (/(?:不用|不必|不要|別)(?:再|幫我|先)?\s*(?:上網|聯網|搜尋|搜索|查證)/.test(plain)) return false;
+    if (/(?:上網|聯網|網路|網絡|網上|外部).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上|外部)/.test(plain)) return true;
+    if (internal.test(plain) || hasInternal && !/最新|即時|查證/.test(plain)) return false;
+    return /(?:搜尋|搜索)(?:一下|看看)?|(?:幫我)?查一下|(?:請|麻煩)?\s*幫我\s*(?:查(?!看)|找|搜尋|搜索)|(?:幫忙|請|麻煩|能否|可否|可以)\s*查證|^\s*(?:#小浣\s*)?查證(?:一下|這|那|下列)/.test(plain);
+  });
 }
 
 function getUserLogMode(text) {
@@ -100,7 +107,7 @@ function getConversationId(event) {
   return 'unknown';
 }
 
-function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
+function replyToLine(replyToken, text, throwOnHttpError, finalMessageText, receipt) {
   const token = getRequiredScriptProperty_('LINE_CHANNEL_ACCESS_TOKEN');
   const finalText = String(finalMessageText || '').trim();
   const mainMessageLimit = LINE_REPLY_MAX_MESSAGE_COUNT - (finalText ? 1 : 0);
@@ -126,7 +133,7 @@ function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
     payload: JSON.stringify(payload),
     muteHttpExceptions: true,
     // 同步工作最多 40 秒；Reply 不沿用 GAS 360 秒預設，保留 replyToken 時間餘裕。
-    timeoutSeconds: 10
+    timeoutSeconds: LINE_REPLY_TIMEOUT_SECONDS
   };
 
   try {
@@ -140,11 +147,29 @@ function replyToLine(replyToken, text, throwOnHttpError, finalMessageText) {
       return false;
     }
 
+    if (receipt) {
+      receipt.sentAtMs = Date.now();
+      receipt.messageIds = readLineSentMessageIds_(response);
+    }
     return true;
   } catch (error) {
     // 保留既有拋錯行為，但不讓含 request/token 的外部例外流入上層 stack log。
     throw new Error('LINE Reply API request failed.');
   }
+}
+
+function readLineSentMessageIds_(response) {
+  try {
+    const body = response.getContentText();
+    if (typeof body !== 'string' || body.length > 16000) return [];
+    // LINE 也可能送 JSON 數字。解析前保留其原始位數，略過字串內看似 id 欄位的內容。
+    const exact = body.replace(/("id"\s*:\s*)(\d{1,64})(?=\s*[,}])|"(?:\\.|[^"\\])*"/g,
+      function(token, field, digits) { return field ? field + '"' + digits + '"' : token; });
+    const sentMessages = JSON.parse(exact).sentMessages;
+    return Array.isArray(sentMessages) ? sentMessages.slice(0, LINE_REPLY_MAX_MESSAGE_COUNT).map(function(message) {
+      return message && isExactLineMessageId_(message.id) ? message.id : '';
+    }) : [];
+  } catch (ignore) { return []; }
 }
 
 // UTF-16 配對字元不可跨訊息或截斷邊界，切點必要時退一個單位。
@@ -333,7 +358,7 @@ function getHelpTextByCommand_(text) {
 
 function getHelpText() {
   return [
-    '・回覆引用群友的文字再提問；群組加 #小浣。找到原文時會分清誰說的，找不到請補貼內容。',
+    '・群組可用 LINE 點名小浣，或在訊息裡加 #小浣。也可引用群友文字後提問，找不到原文時請補貼內容。',
     '・私訊可直接傳圖片或回覆圖片提問；群組請回覆圖片並用 #小浣 <問題>。舊 #小浣 看圖 仍可使用。',
     '・引用圖片可問「幫我查最新進度」；一般聊天也可問「我們收過這則新聞嗎？」或「上週封存了什麼？」。',
     '・研究工具只讀目前聊天室資料；新增、封存、清理仍使用明確指令。',
@@ -341,6 +366,7 @@ function getHelpText() {
     '・一般聊天預設不聯網；說「幫我查」或「搜尋」才會開 Google 搜尋，完成後另附來源。',
     '・貼網址：群組靜默收件，私訊單篇可直接回覆簡介。',
     '・#本週新聞：整合最近 7 天群組話題、焦點故事線與其他分類新聞。',
+    '・叫小浣把說清楚的事件註記到本週新聞。成功儲存的手動註記會出現在 #本週新聞。',
     '・#本週新聞 高潛力：只看高潛力素材，依分類精簡顯示。',
     '・#狀態回報：查看最近 7 天收件、佇列及固定週期新聞封存進度。',
     '・#新聞補充 文字 + 網址：人工補充新聞素材。',
@@ -374,7 +400,7 @@ function getHelpCleanupText_() {
     '',
     '・#清空紀錄：ConversationLog，並清除短期記憶。',
     '・#清空封存：本聊天室的全部 WeeklySummary 封存。',
-    '・#清空新聞：NewsInbox 與 NewsUrlQueue。',
+    '・#清空新聞：NewsInbox、NewsUrlQueue 與本週手動註記。',
     '・#清空待回覆：PendingReplies。',
     '',
     '用法：先輸入清理指令看影響範圍，確認後再輸入「原指令 確認」。'
@@ -388,7 +414,7 @@ function getHelpAdminText_() {
     '・#版本：查看目前版本。',
     '・#版本紀錄：查看近期版本紀錄。',
     '・#狀態回報：查看新聞收件、背景處理與封存進度。',
-    '・#reset：清除本聊天室的短期對話記憶。'
+    '・#reset：清除本聊天室短期記憶，近期前文與續問也從現在重新累積。'
   ].join('\n');
 }
 

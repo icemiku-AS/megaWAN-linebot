@@ -344,9 +344,12 @@ function createPendingReplyFromTask(taskRowData, replyText, replyMode) {
  * 下次可能重送一次，但不會先刪後遺失。ponytail: 全域鎖涵蓋 Sheet／callback 與 10 秒 transport cap；
  * 若併發量需要改善，再設計可恢復的同聊天室 claim，不能只把 HTTP 移出鎖造成正常路徑重送。
  */
-function deliverPendingReply_(conversationId, replyToken, buildDeliveryText) {
+function deliverPendingReply_(conversationId, replyToken, buildDeliveryText, receipt) {
   const lock = LockService.getScriptLock();
-  if (!lock.tryLock(1000)) return null;
+  if (!lock.tryLock(1000)) {
+    if (receipt) receipt.busy = true;
+    return null;
+  }
 
   try {
     const sheet = ensurePendingRepliesSheet_();
@@ -357,7 +360,7 @@ function deliverPendingReply_(conversationId, replyToken, buildDeliveryText) {
       ? buildDeliveryText(pendingReply)
       : getBotTextPendingDelivery_(pendingReply.text, false);
 
-    replyToLine(replyToken, deliveryText, true);
+    replyToLine(replyToken, deliveryText, true, '', receipt);
     // 只有 Reply API 確認 2xx 才 consume；刪除失敗會保留 row，符合 at-least-not-lost。
     deletePendingReplyById_(sheet, pendingReply.pendingId);
     SpreadsheetApp.flush();
@@ -438,20 +441,20 @@ function logMessageToSheet(data) {
 
     const sheet = ensureLogSheet_();
 
-    const timestamp = event.timestamp
-      ? new Date(event.timestamp)
-      : new Date();
+    const sent = data.role === 'assistant' && data.receipt && data.receipt.sentAtMs > 0;
+    const timestamp = new Date(sent ? data.receipt.sentAtMs : (event.timestamp || Date.now()));
 
     const isText = message.type === 'text' && data.mode !== 'image_input' && data.mode !== 'image_semantic';
     const quote = data.role === 'user' && isText ? data.textQuote : null;
-    const quoteStatus = quote && TEXT_QUOTE_STATUSES.indexOf(quote.status) >= 0 ? quote.status : '';
+    const quoteStatus = sent ? 'line_sent' : quote && TEXT_QUOTE_STATUSES.indexOf(quote.status) >= 0 ? quote.status : '';
+    const messageId = sent ? (data.receipt.messageIds || [])[0] : isText ? message.id : '';
     // 前置單引號是 Sheets 的 literal escape，不是 ID 本體；getValues() 仍讀到精確字串。
-    // 不先寫 Number 再改格式；assistant 的 ID 仍僅代表觸發文字，不是 LINE 出站 ID。
+    // 舊 assistant 列只有觸發訊息 ID；只有 line_sent 表示 LINE 確認的出站紀錄。
     appendRowByHeaders_(sheet, {
       Timestamp: timestamp, ConversationId: data.conversationId || '', SourceType: source.type || '',
       UserId: source.userId || '', GroupId: source.groupId || '', RoomId: source.roomId || '',
       Role: data.role || '', Mode: data.mode || '',
-      MessageId: isText && isExactLineMessageId_(message.id) ? "'" + message.id : '',
+      MessageId: isExactLineMessageId_(messageId) ? "'" + messageId : '',
       Text: truncateForSheet(data.text || ''),
       QuotedMessageId: quoteStatus === 'text_found' && isExactLineMessageId_(quote.messageId) ? "'" + quote.messageId : '',
       QuoteStatus: quoteStatus
@@ -462,13 +465,14 @@ function logMessageToSheet(data) {
   }
 }
 
-function logAssistantReplyToSheet(event, conversationId, text, mode) {
+function logAssistantReplyToSheet(event, conversationId, text, mode, receipt) {
   logMessageToSheet({
     event: event,
     conversationId: conversationId,
     role: 'assistant',
     text: text,
-    mode: mode || 'reply'
+    mode: mode || 'reply',
+    receipt: receipt
   });
 }
 
@@ -486,7 +490,7 @@ function isExactLineMessageId_(value) {
 function createTextQuoteLookup_(conversationId, executionContext, beforeTimestampMs) {
   let records = null;
   let failure = '';
-  return function(messageId, maxChars) {
+  const lookup = function(messageId, maxChars) {
     if (!isExactLineMessageId_(messageId)) return { status: 'failed', reason: 'invalid_id' };
     const deadline = Number(executionContext && executionContext.deadlineAtMs) || Infinity;
     if (Date.now() + 8000 >= deadline) return { status: 'failed', reason: 'deadline' };
@@ -528,8 +532,18 @@ function createTextQuoteLookup_(conversationId, executionContext, beforeTimestam
       const matches = records.filter(function(row) {
         return row.Role === 'user' && row.MessageId === messageId && row.Mode !== 'image_input' && row.Mode !== 'image_semantic';
       });
-      if (!matches.length) return { status: records.some(function(row) { return row.Role === 'user' && row.MessageId === messageId; })
-        ? 'unsupported' : 'not_found', limitedWindow: true };
+      if (!matches.length) {
+        const sent = records.find(function(row) {
+          return row.Role === 'assistant' && row.QuoteStatus === 'line_sent' && row.MessageId === messageId;
+        });
+        const sentAtMs = sent && new Date(sent.Timestamp).getTime();
+        if (sentAtMs > 0 && sentAtMs <= (Number(beforeTimestampMs) || Date.now())) {
+          // Sheet 保留完整回答，但 ID 只代表第一個 bubble，不能當逐字引用原文。
+          return { status: 'unsupported', reason: 'assistant_message', messageId: messageId, sentAtMs: sentAtMs };
+        }
+        return { status: records.some(function(row) { return row.Role === 'user' && row.MessageId === messageId; })
+          ? 'unsupported' : 'not_found', limitedWindow: true };
+      }
       const row = matches[0];
       const time = new Date(row.Timestamp).getTime();
       if (row.Timestamp === '' || row.Timestamp === null || typeof row.Timestamp === 'boolean' || !isFinite(time) ||
@@ -548,6 +562,86 @@ function createTextQuoteLookup_(conversationId, executionContext, beforeTimestam
       return { status: 'failed', reason: failure };
     }
   };
+  // 前文可沿用本次已讀的同房尾端快照，仍各自套用時間與角色條件。
+  lookup.scopedRows = function(scope) { return scope === conversationId ? records : null; };
+  return lookup;
+}
+
+/** 有界、只讀的近期前文。依 LINE 事件時間取樣，不能把 Sheet 列序當事件順序。 */
+function getRecentAmbientConversationContext_(conversationId, options) {
+  const opts = options || {};
+  const before = Number(opts.beforeTimestampMs) || Date.now();
+  const resetAt = Number(opts.resetAtMs) || 0;
+  const deadline = Number(opts.deadlineAtMs) || Infinity;
+  if (!isValidLineConversationId_(conversationId) || before <= resetAt || Date.now() + 1000 >= deadline) return [];
+
+  const started = Date.now();
+  try {
+    const sharedRows = opts.quoteLookup && typeof opts.quoteLookup.scopedRows === 'function' ? opts.quoteLookup.scopedRows(conversationId) : null;
+    const rows = sharedRows || readAmbientConversationRows_(conversationId);
+    if (Date.now() - started > 2000 || Date.now() + 1000 >= deadline) return [];
+    const candidates = [];
+    rows.slice().reverse().forEach(function(row) {
+      const role = row.Role;
+      const mode = String(row.Mode || '');
+      const rawTime = row.Timestamp;
+      const timestampMs = new Date(rawTime).getTime();
+      const id = row.MessageId;
+      const rawText = row.Text;
+      if (!rawTime || !Number.isFinite(timestampMs) || timestampMs < before - AMBIENT_CHAT_WINDOW_MS ||
+          timestampMs >= before || timestampMs <= resetAt || (id && id === opts.excludeMessageId) || typeof rawText !== 'string') return;
+      const text = redactAiMediaText_(rawText).trim();
+      if (!isAmbientConversationText_(role, mode, text)) return;
+      const userId = row.UserId;
+      const confirmed = role === 'assistant' && row.QuoteStatus === 'line_sent';
+      candidates.push({ role: role, text: text.slice(0, getLineMessageSafeSliceIndex_(text, 800)), timestampMs: timestampMs,
+        userId: role === 'user' && typeof userId === 'string' && userId.length <= 128 ? userId : '',
+        messageId: isExactLineMessageId_(id) ? id : '', confirmed: confirmed });
+    });
+    // 同毫秒以穩定列序處理，其餘一律使用事件時間。
+    candidates.sort(function(a, b) { return b.timestampMs - a.timestampMs; });
+    const selected = [];
+    const seen = new Set();
+    let chars = 2;
+    for (const item of candidates) {
+      const identity = item.messageId && [item.role, item.userId, item.messageId].join(':');
+      if (identity && seen.has(identity)) continue;
+      const extra = JSON.stringify(item).length + 1;
+      if (chars + extra > AMBIENT_CHAT_MAX_CHARS) continue;
+      selected.push(item);
+      chars += extra;
+      if (identity) seen.add(identity);
+      if (selected.length >= AMBIENT_CHAT_MAX_MESSAGES) break;
+    }
+    return selected.reverse();
+  } catch (ignore) { return []; }
+}
+
+function readAmbientConversationRows_(conversationId) {
+  const sheet = getSpreadsheet_().getSheetByName(SHEET_NAME);
+  if (!sheet) return [];
+  const lastRow = sheet.getLastRow();
+  const headers = getHeaderMap_(sheet);
+  if (lastRow <= 1 || ['ConversationId', 'Timestamp', 'Role', 'Mode', 'Text'].some(function(name) { return !headers[name]; })) return [];
+  const count = Math.min(lastRow - 1, AMBIENT_CHAT_MAX_SCAN_ROWS);
+  return sheet.getRange(lastRow - count + 1, 1, count, sheet.getLastColumn()).getValues().filter(function(row) {
+    return getRowValueByHeader_(row, headers, 'ConversationId') === conversationId;
+  }).map(function(row) {
+    const item = {};
+    ['Role', 'Mode', 'Timestamp', 'MessageId', 'Text', 'UserId', 'QuoteStatus'].forEach(function(name) {
+      item[name] = getRowValueByHeader_(row, headers, name);
+    });
+    return item;
+  });
+}
+
+function isAmbientConversationText_(role, mode, text) {
+  if (!text) return false;
+  if (role === 'assistant') return !/^(?:help|version(?:_history)?|reset|cleanup_.*|weekly_news|archive_weekly_news|news_status_report|pending_reply_delivery|.*_error)$/.test(mode);
+  if (role !== 'user' || mode === 'image_input' || mode === 'image_semantic') return false;
+  const command = text.replace(/^#小浣\s*/, '');
+  return (mode === 'assistant_command' || !/_command$/.test(mode)) &&
+    !/^(?:#?(?:help|reset|版本(?:紀錄)?)\b|#?(?:清空紀錄|清空新聞|清空封存|清空待回覆|封存本週新聞|本週新聞|新聞補充|狀態回報)|#?版本(?:紀錄)?\s*$)/i.test(command);
 }
 
 // ======================================================
@@ -661,7 +755,7 @@ function getRecentConversationItems(conversationId, limit, includeAssistant) {
 // 本函式改用表頭與真正七天 cutoff，並從 Sheet 尾端分批有限向前掃描。
 function isWeeklyEditorialConversationModeAllowed_(mode) {
   const normalizedMode = String(mode || '').trim().toLowerCase();
-  return normalizedMode === 'input' || normalizedMode === 'news_inbox_url_message';
+  return normalizedMode === 'input' || normalizedMode === 'news_inbox_url_message' || normalizedMode === 'assistant_command';
 }
 
 function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxScanRows) {
@@ -679,7 +773,8 @@ function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxSca
   if (lastRow <= 1) return [];
 
   const safeDays = Math.max(1, Number(days) || DEFAULT_WEEKLY_NEWS_DAYS);
-  const cutoffTime = new Date().getTime() - safeDays * 24 * 60 * 60 * 1000;
+  const nowTime = Date.now();
+  const cutoffTime = nowTime - safeDays * 24 * 60 * 60 * 1000;
   const requestedScanRows = Math.min(
     MAX_WEEKLY_EDITORIAL_CONVERSATION_SCAN_ROWS,
     Math.max(1, Number(maxScanRows) || MAX_WEEKLY_EDITORIAL_CONVERSATION_SCAN_ROWS)
@@ -709,7 +804,7 @@ function getRecentWeeklyEditorialConversationItems_(conversationId, days, maxSca
         continue;
       }
 
-      if (timestampTime < cutoffTime) continue;
+      if (timestampTime < cutoffTime || timestampTime > nowTime) continue;
 
       const rowConversationId = String(getRowValueByHeader_(row, headerMap, 'ConversationId') || '');
       const role = String(getRowValueByHeader_(row, headerMap, 'Role') || '').trim().toLowerCase();

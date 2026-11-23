@@ -111,10 +111,19 @@ const AI_EXECUTION_PROFILES = {
     // 保留短回答與 MINIMAL thinking 的輸出餘裕。
     maxOutputTokens: 1024, timeoutSeconds: 10, requiredFinishReason: 'stop',
     retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
+  },
+  gatekeeper_json: {
+    thinking: { type: 'enabled' }, reasoningEffort: 'minimal', allowSampling: false, outputMode: 'json',
+    maxOutputTokens: 256, timeoutSeconds: 8, requiredFinishReason: 'stop',
+    retryPolicy: { strategy: 'caller_owned', maxAttemptsInService: 1 }
   }
 };
 
 const AI_TASK_ROUTES = {
+  chat_gatekeeper: {
+    provider: 'gemini', model: 'gemini_35_flash_lite', profile: 'gatekeeper_json',
+    expectedThinking: 'enabled', expectedReasoningEffort: 'minimal'
+  },
   // 兩種 Key 共用模型候選；只有明確搜尋才會掛 Search。
   general_chat: {
     provider: 'gemini', model: 'gemini_4_hydrogen', profile: 'thinking_text', expectedThinking: 'enabled', fallbackModels: ['gemini_38_flash', 'gemini_35_flash_lite'], expectedReasoningEffort: 'low',

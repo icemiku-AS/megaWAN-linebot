@@ -51,6 +51,12 @@ function tryBuildWeeklyEditorialDigest_(conversationId, items, queryOptions, aiE
       identifiedItems
     );
     diagnostic.keptConversationCount = conversationPayload.length;
+    if (!identifiedItems.length && !conversationPayload.length) {
+      diagnostic.stage = 'no_input';
+      const options = queryOptions || {};
+      if (!options.weeklyNotes?.length && !options.weeklyNotesNotice && !conversationNotice) return getBotTextWeeklyNewsNoData_(options);
+      return formatWeeklyEditorialFallbackDigest_([], Object.assign({}, options, { conversationNotice: conversationNotice }));
+    }
     diagnostic.stage = 'cache';
     const modelItemIds = selection.selectedItems.map(function(entry) {
       return entry.itemId;
@@ -312,12 +318,13 @@ function prepareWeeklyEditorialConversationPayload_(rawItems, identifiedNewsItem
     const role = String(item.role || '').trim().toLowerCase();
     const mode = String(item.mode || '').trim();
     const originalText = String(item.text || '').trim();
-    const textWithoutUrls = stripUrlsForWeeklyEditorial_(originalText);
+    const spokenText = mode === 'assistant_command' ? originalText.replace(/^#小浣\s*/, '').trim() : originalText;
+    const textWithoutUrls = stripUrlsForWeeklyEditorial_(spokenText);
 
     // 正式 reader 已是 user-only；保留這層防守，避免測試資料或未來呼叫者
     // 意外把 assistant 訊息送入週編輯台。
     if (role && role !== 'user') continue;
-    if (isWeeklyEditorialConversationNoise_(originalText, textWithoutUrls, mode)) continue;
+    if (isWeeklyEditorialConversationNoise_(spokenText, textWithoutUrls, mode)) continue;
     if (isWeeklyEditorialNewsTitleOnly_(textWithoutUrls, newsTitleMap)) continue;
 
     const normalizedText = normalizeWeeklyEditorialConversationDedupKey_(textWithoutUrls);
@@ -375,6 +382,8 @@ function isWeeklyEditorialConversationNoise_(originalText, textWithoutUrls, mode
 
   if (!raw || raw.startsWith('#')) return true;
   if (!isWeeklyEditorialConversationModeAllowed_(mode)) return true;
+  if (mode === 'assistant_command' && (/^(?:help|reset|版本(?:紀錄)?|看圖)(?:\s|$)/i.test(raw) ||
+      getCleanupCommandInfo_(raw) || isWeeklyNoteRequest_(raw) && !extractWeeklyNoteText_(raw).length)) return true;
 
   // 含網址但仍有實質評論時保留評論；只有移除網址後無有效內容才排除。
   if (!cleaned || !/[A-Za-z0-9\u3400-\u9FFF\u3040-\u30FF\uAC00-\uD7AF]/.test(cleaned)) {
@@ -543,6 +552,7 @@ function buildWeeklyEditorialDigestPrompt_(newsPayload, conversationPayload) {
     '3. 若對話與新聞重複，不要重述新聞，只保留對話額外形成的觀點。',
     '4. relatedNewsIds 可以是空陣列，只能使用提供的 itemId。',
     '5. title 最多 60 字、summary 最多 160 字、talkingPoint 最多 100 字。',
+    '可選 openingComment。只根據下列素材，用小浣口吻寫一兩句週報開頭，最多約 120 字。用純文字，禁止 Markdown、星號、網址或捏造事件。沒有合適句子就省略。',
     '',
     '輸出契約：',
     JSON.stringify(contractExample),
@@ -559,6 +569,7 @@ function buildWeeklyEditorialCacheKey_(conversationId, newsPayload, conversation
   const conversationHash = computeWeeklyEditorialInputHash_(String(conversationId || '')).slice(0, 16);
   const inputHash = computeWeeklyEditorialInputHash_(JSON.stringify({
     version: WEEKLY_EDITORIAL_CACHE_VERSION,
+    format: 'opening-comment-1',
     news: newsPayload || [],
     conversations: conversationPayload || []
   }));
@@ -566,12 +577,18 @@ function buildWeeklyEditorialCacheKey_(conversationId, newsPayload, conversation
 }
 
 function computeWeeklyEditorialInputHash_(value) {
-  const digest = Utilities.computeDigest(
-    Utilities.DigestAlgorithm.SHA_256,
-    String(value || ''),
-    Utilities.Charset.UTF_8
-  );
-  return Utilities.base64EncodeWebSafe(digest).replace(/=+$/g, '');
+  return computeSha256Text_(value);
+}
+
+function normalizeWeeklyEditorialOpeningComment_(value) {
+  if (typeof value !== 'string') return '';
+  const text = value.trim();
+  // 點評獨立驗證。壞欄位直接略過，已通過的新聞分組與話題仍保留。
+  const plain = text.normalize('NFKC');
+  if (!text || /[\x00-\x1f\x7f\u2028-\u202e\u2066-\u2069*#_\x60<>\[\]|~]/.test(plain) ||
+      /^(?:[-=+]{3,}|[-+]\s|\d+[.)]\s)/.test(plain) ||
+      /https?\s*:|www\.|[a-z][a-z0-9+.-]*:\/\/|(?:[a-z0-9-]+\.)+(?:com|org|net|gov|edu|io|tw|ly|co|dev|ai|gg|me)\b/i.test(plain)) return '';
+  return truncateWeeklyEditorialText_(text, MAX_WEEKLY_EDITORIAL_OPENING_LENGTH);
 }
 
 function getCachedWeeklyEditorialResult_(cacheKey) {
@@ -694,11 +711,14 @@ function parseAndNormalizeWeeklyEditorialResult_(responseText, knownItemIds, top
     topicCounts.adopted = conversationTopics.length;
     topicCounts.rejected = topicCounts.returned - topicCounts.adopted;
   }
-  return {
+  const result = {
     newsClusters: normalizedNews.newsClusters,
     ungroupedNewsIds: normalizedNews.ungroupedNewsIds,
     conversationTopics: conversationTopics
   };
+  const opening = normalizeWeeklyEditorialOpeningComment_(parsed.openingComment);
+  if (opening) result.openingComment = opening;
+  return result;
 }
 
 function normalizeWeeklyEditorialNewsClusters_(rawClusters, rawUngroupedIds, knownItemIds) {
@@ -931,7 +951,8 @@ function validateWeeklyEditorialPartition_(identifiedItems, normalizedResult, mo
   return {
     newsClusters: clusters,
     otherItemIds: otherItemIds,
-    conversationTopics: (normalizedResult.conversationTopics || []).slice()
+    conversationTopics: (normalizedResult.conversationTopics || []).slice(),
+    openingComment: normalizedResult.openingComment || ''
   };
 }
 
@@ -1016,9 +1037,10 @@ function buildWeeklyEditorialOutputBlocks_(identifiedItems, partition, queryOpti
     !String(options.categoryFilter || '').trim();
 
   return {
-    intro: (isPlainCompact
+    intro: (partition.openingComment || (isPlainCompact
       ? '我把最近 ' + (Number(options.days) || DEFAULT_WEEKLY_NEWS_DAYS) + ' 天可聊的素材整理好了：'
-      : buildWeeklyNewsDigestHeader_(options)) + (options.conversationNotice ? '\n\n' + options.conversationNotice : ''),
+      : buildWeeklyNewsDigestHeader_(options))) + (options.conversationNotice ? '\n\n' + options.conversationNotice : ''),
+    notesBlock: formatWeeklyManualNotesBlock_(options.weeklyNotes, options.weeklyNotesNotice),
     topics: (partition.conversationTopics || []).slice(),
     clusters: clusters,
     otherItems: otherItems,
@@ -1085,6 +1107,7 @@ function renderWeeklyEditorialOutputState_(state, omittedItemIds) {
   }
 
   addPiece(state.intro, false, '');
+  addPiece(state.notesBlock, true, '');
 
   if (state.topics.length) {
     addPiece('本週群組話題', false, '');
@@ -1163,6 +1186,7 @@ function groupWeeklyEditorialOtherItemsByCategory_(entries) {
 function fitWeeklyEditorialOutputBlocks_(outputState) {
   const state = {
     intro: outputState.intro,
+    notesBlock: outputState.notesBlock,
     topics: outputState.topics.slice(),
     clusters: outputState.clusters.map(function(cluster) {
       return { title: cluster.title, items: cluster.items.slice() };

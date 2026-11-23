@@ -116,7 +116,7 @@ Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`。`GEMIN
 4. **再驗證新版手動入口**。以 LINE `#版本`、一般聊天、搜尋、圖片、新聞入庫、週報與手動封存驗證 v2.0.0。按 [CURRENT_VERSION.md](CURRENT_VERSION.md) 完成 production smoke，確認真實 `MessageId` 和 `QuotedMessageId` 寫入後仍是原字串。
 5. **最後啟用自動封存**。將已通過測試的聊天室設為 `autoEnabled=true`，核對既有 `processScheduledNewsArchives`。首次安裝或需重建時執行 `installNewsArchiveTrigger()`。
 
-本機回歸使用 `node tests/v1140_smoke.cjs` 與 `node tests/v1170_archive.cjs`，由記憶體模擬 GAS／LINE／Sheets／Gemini。修改規則見 [AGENTS.md](AGENTS.md)，完整部署步驟與未驗收項目見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
+本機回歸使用 `node tests/smoke.cjs` 與 `node tests/news_workflows.cjs`，由記憶體模擬 GAS／LINE／Sheets／Gemini。修改規則見 [AGENTS.md](AGENTS.md)，完整部署步驟與未驗收項目見 [CURRENT_VERSION.md](CURRENT_VERSION.md)。
 
 ## 版本沿革摘要
 

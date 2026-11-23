@@ -29,6 +29,7 @@ const LINE_WEBHOOK_SYNC_AUXILIARY_AI_MIN_REQUEST_SECONDS = 20;
 // Google Apps Script UrlFetchApp 的預設 timeout 可長達 360 秒；同步 Reader 另套 12 秒上限。
 // 背景 NewsUrlQueue 不帶 execution context，維持既有 Reader 預設行為。
 const LINE_WEBHOOK_SYNC_READER_TIMEOUT_CAP_SECONDS = 12;
+const LINE_REPLY_TIMEOUT_SECONDS = 10;
 
 // FxTwitter API：讀取 X / Twitter 公開單篇 status 貼文。
 // 使用方式：FXTWITTER_API_STATUS_ENDPOINT_PREFIX + statusId
@@ -63,7 +64,7 @@ const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
 // LINE Bot 指令設定
 // ======================================================
 
-// 群組中只有這些開頭才會觸發一般 Bot 回覆。
+// 固定指令的舊前綴入口。自然接話由 LINE 路由及守門員判斷。
 // 例外：
 // 1. 如果群組一般訊息內含網址，即使沒有觸發詞，也會靜默進入 NewsUrlQueue 背景收件流程，不回覆群組。
 // 2. 個人聊天室直接貼網址仍保留同步回覆路徑，方便維護者測試 Reader / AI 行為。
@@ -98,6 +99,15 @@ const MEMORY_TTL_SECONDS = 21600;
 // 一輪 = user + assistant
 const MAX_HISTORY_PAIRS = 6;
 
+const AMBIENT_CHAT_WINDOW_MS = 2 * 60 * 60 * 1000;
+const AMBIENT_CHAT_MAX_SCAN_ROWS = 500;
+const AMBIENT_CHAT_MAX_MESSAGES = 15;
+const AMBIENT_CHAT_MAX_CHARS = 3000;
+const CHAT_FOLLOW_UP_WINDOW_MS = 90 * 1000;
+const CHAT_AUTO_REPLY_INTERVAL_MS = 20 * 1000;
+const ENABLE_CHAT_EASTER_EGG = true;
+const CHAT_EASTER_EGG_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+
 
 // ======================================================
 // 本週編輯台設定
@@ -110,6 +120,7 @@ const MAX_WEEKLY_EDITORIAL_NEWS_ITEMS = 30;
 const MAX_WEEKLY_EDITORIAL_NEWS_PER_CATEGORY_RESERVE = 2;
 const MAX_WEEKLY_EDITORIAL_CLUSTER_COUNT = 8;
 const MAX_WEEKLY_EDITORIAL_CONVERSATION_TOPIC_COUNT = 3;
+const MAX_WEEKLY_EDITORIAL_OPENING_LENGTH = 120;
 
 const MAX_WEEKLY_EDITORIAL_TITLE_LENGTH = 100;
 const MAX_WEEKLY_EDITORIAL_BRIEF_LENGTH = 80;

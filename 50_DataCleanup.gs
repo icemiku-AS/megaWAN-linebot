@@ -46,9 +46,9 @@ function getCleanupCommandInfo_(text) {
     },
     '#清空新聞': {
       key: 'news_data',
-      label: 'NewsInbox / NewsUrlQueue 新聞素材',
+      label: '新聞素材、網址佇列與本週手動註記',
       sheets: ['NewsInbox', 'NewsUrlQueue'],
-      description: '清除目前聊天室的新聞素材與新聞網址佇列；處理中的舊任務取消，不再寫入素材或失敗通知。'
+      description: '清除目前聊天室的新聞素材、網址佇列及本週手動註記。處理中的舊任務會取消。'
     },
     '#清空待回覆': {
       key: 'pending_replies',
@@ -139,6 +139,7 @@ function performDataCleanupLocked_(cleanupKey, conversationId) {
   } else if (cleanupKey === 'news_data') {
     addDetail(NEWS_INBOX_SHEET_NAME, deleteConversationRowsLocked_(ensureNewsInboxSheet_(), conversationId));
     addDetail(NEWS_URL_QUEUE_SHEET_NAME, deleteConversationRowsLocked_(ensureNewsUrlQueueSheet_(), conversationId));
+    addDetail('本週手動註記', clearWeeklyNotesLocked_(conversationId));
 
   } else if (cleanupKey === 'pending_replies') {
     addDetail(PENDING_REPLIES_SHEET_NAME, deleteConversationRowsLocked_(ensurePendingRepliesSheet_(), conversationId));

@@ -1187,11 +1187,21 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt, aiExecutionC
   const queryOptions = parseWeeklyNewsQueryOptions_(userPrompt);
   const items = getRecentNewsInboxItems_(conversationId, queryOptions.days);
   const filteredItems = filterWeeklyNewsItems_(items, queryOptions);
+  const usesEditorial = shouldUseWeeklyEditorialDigest_(queryOptions);
+  if (usesEditorial || queryOptions.viewMode === 'detailed') {
+    try { queryOptions.weeklyNotes = getRecentWeeklyNotes_(conversationId); }
+    catch (ignore) { queryOptions.weeklyNotesNotice = '本週手動註記讀取未完成，請稍後再試。'; }
+  }
 
-  if (!filteredItems.length) return getBotTextWeeklyNewsNoData_(queryOptions);
+  if (!filteredItems.length) {
+    if (usesEditorial || queryOptions.viewMode === 'detailed') {
+      return tryBuildWeeklyEditorialDigest_(conversationId, [], queryOptions, aiExecutionContext);
+    }
+    return getBotTextWeeklyNewsNoData_(queryOptions);
+  }
 
   let digestText = '';
-  if (shouldUseWeeklyEditorialDigest_(queryOptions)) {
+  if (usesEditorial) {
     // 模型呼叫前先建立一定可用的分類 fallback；任何 API、JSON 或 validator
     // 錯誤都直接使用這份結果，不在 webhook 內 retry，也不把技術錯誤回群組。
     const fallbackText = formatWeeklyNewsCompactDigest_(filteredItems, queryOptions);
@@ -1438,6 +1448,8 @@ function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
   const groupedResult = groupNewsItemsByCategory_(items);
 
   const lines = [buildWeeklyNewsDigestHeader_(queryOptions)];
+  const notes = formatWeeklyManualNotesBlock_(queryOptions && queryOptions.weeklyNotes, queryOptions && queryOptions.weeklyNotesNotice);
+  if (notes) lines.push('\n' + notes + '\n');
   groupedResult.categories.forEach(function(category) {
     lines.push('', '【' + category + '】');
     groupedResult.grouped[category].forEach(function(item, index) {

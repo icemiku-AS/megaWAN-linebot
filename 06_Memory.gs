@@ -49,6 +49,7 @@ function saveConversationHistory(conversationId, history) {
 }
 
 function clearConversationHistoryLocked_(conversationId) {
+  resetLineChatStateLocked_(conversationId);
   writeConversationMemoryLocked_(conversationId, Utilities.getUuid(), []);
 }
 
@@ -101,7 +102,11 @@ function trimHistory(history) {
            message.content.trim() !== '';
   }).map(function(message) {
     const safe = { role: message.role, content: message.content };
-    if (message.role !== 'user') return safe;
+    if (Number.isSafeInteger(message.timestampMs) && message.timestampMs > 0) safe.timestampMs = message.timestampMs;
+    if (message.role !== 'user') {
+      if (isExactLineMessageId_(message.messageId)) safe.messageId = message.messageId;
+      return safe;
+    }
     // 白名單 metadata；引用 evidence、媒體 ID、provider state 不可混進 history。
     if (typeof message.userId === 'string' && message.userId.length <= 128) safe.userId = message.userId;
     if (message.provenance === 'user_text' && isExactLineMessageId_(message.messageId)) {

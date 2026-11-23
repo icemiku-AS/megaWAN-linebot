@@ -19,6 +19,14 @@
 function getAiTaskOutputSchema_(task) {
   let schema;
   switch (task) {
+    case 'chat_gatekeeper':
+      schema = { type: 'object', properties: {
+        shouldReply: { type: 'boolean' },
+        triggerType: { type: 'string', enum: ['direct_call', 'follow_up', 'work_collab', 'easter_egg', 'ignore'] },
+        noteAction: { type: 'string', enum: ['none', 'save_weekly_note'] },
+        needsSearch: { type: 'boolean' }
+      } };
+      break;
     case 'news_analysis':
     case 'manual_news_supplement':
       schema = buildNewsAnalysisSchema_();
@@ -41,6 +49,7 @@ function getAiTaskOutputSchema_(task) {
       break;
     case 'weekly_editorial_digest':
       schema = { type: 'object', properties: {
+        openingComment: { type: 'string', description: '選填的純文字點評，最多約 120 字。' },
         newsClusters: { type: 'array', items: { type: 'object', properties: {
           title: { type: 'string' }, itemIds: { type: 'array', items: { type: 'string' } }
         } } },
@@ -54,7 +63,9 @@ function getAiTaskOutputSchema_(task) {
     // 28k 長文抽取保留 legacy JSON；沒有增加 tool 或偷偷降級結構化 task。
     default: return null;
   }
-  return closeAiObjectSchema_(schema);
+  closeAiObjectSchema_(schema);
+  if (task === 'weekly_editorial_digest') schema.required = schema.required.filter(function(key) { return key !== 'openingComment'; });
+  return schema;
 }
 
 function closeAiObjectSchema_(schema) {
