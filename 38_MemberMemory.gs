@@ -99,11 +99,11 @@ function getLineMemberMemoryRequest_(text, message, explicitlyAddressed) {
   }
   words = words.replace(/#小浣/g, ' ').trim();
   if (explicitlyAddressed) words = words.replace(/^@(?:小浣|MEGA浣)[，,、：:\s]*/i, '');
-  const address = /^(?:(?:呼叫|欸)\s*)?(?:小浣|MEGA浣)[，,、：:\s]*(?=(?:請你?|麻煩你?)?\s*(?:叫我|記住我|你記得我|忘了我))/i.exec(words);
+  const address = /^(?:(?:呼叫|欸)\s*)?(?:小浣|MEGA浣)[，,、：:\s]*/i.exec(words);
   if (address) words = words.slice(address[0].length);
   else if (!explicitlyAddressed && !/^#(?:我的記憶|忘記我)(?:$|\s|[。！？!?，,；;])/.test(words)) return null;
-  words = words.replace(/^[，,、：:\s]*(?:請你?|麻煩你?)?\s*/, '');
-  if (!/^(?:#我的記憶|#忘記我|你(?:還)?記得我|忘了我|叫我|記住\s*我)/.test(words)) return null;
+  words = words.replace(/^[，,、：:\s]*(?:(?:請你?|麻煩你?|幫我|幫忙)[，,、：:\s]*)*/, '');
+  if (!/^(?:#我的記憶|#忘記我|你(?:還)?記得我|忘了我|(?:以後\s*)?叫我|記住\s*我)/.test(words)) return null;
 
   let end = words.length;
   let question = '';
@@ -122,7 +122,7 @@ function getLineMemberMemoryRequest_(text, message, explicitlyAddressed) {
   const instruction = words.slice(0, end).trim().replace(/(?:可以嗎|行不行|[～~]+)$/, '').trimEnd();
   if (/^(?:#我的記憶|你(?:還)?記得我什[麼么](?:嗎|呢)?)$/.test(instruction)) return { action: 'view', question: question };
   if (/^(?:#忘記我|忘了我(?:吧|啦)?)$/.test(instruction)) return { action: 'forget', question: question };
-  const name = /^(?:叫我|記住\s*我的(?:稱呼|名字)是)\s*(.*)$/.exec(instruction);
+  const name = /^(?:(?:以後\s*)?叫我|記住\s*我的(?:稱呼|暱稱|名字)是)\s*(.*)$/.exec(instruction);
   if (name) return { action: 'nickname', value: cleanMemberMemoryText_(name[1], 24), question: question };
   const note = /^記住\s*(我.+)$/.exec(instruction);
   return note ? { action: 'note', value: cleanMemberMemoryText_(note[1], 80), question: question } : null;

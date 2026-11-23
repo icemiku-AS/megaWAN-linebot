@@ -379,13 +379,15 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
+  assert(replies.at(-1).text.includes('v2.2.3 Heartflow, Member Memory & Daily Life Edition'));
   assert(replies.at(-1).text.includes('2026-11-23'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition') >= 0);
   assert(history.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.includes('v2.0.0 Gemini Architecture Edition'));
   assert(history.includes('v1.17.0 Weekly News Archive Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') >= 0);
+  assert(history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition') < history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.0.0 Gemini Architecture Edition'));
   assert(history.indexOf('v2.0.0 Gemini Architecture Edition') < history.indexOf('v1.17.0 Weekly News Archive Edition'));
@@ -3492,8 +3494,9 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('hotfix/v211-natural-direct-call')); assert(doc.includes('0f356a1'));
-    assert(doc.includes('v2.1.1 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
+    assert(doc.includes('feature/v223-heartflow-member-memory')); assert(doc.includes('1c3205e'));
+    assert(doc.includes('v2.2.3 Heartflow, Member Memory & Daily Life Edition')); assert(doc.includes('2026-11-23'));
+    assert(doc.includes('09_BotDailyState.gs')); assert(doc.includes('38_MemberMemory.gs'));
     assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
@@ -4817,6 +4820,37 @@ check('v223 proactive threshold is seven; a delivered interjection opens a hot-c
   }
 });
 
+check('v223 unnamed teasing scored as direct contact follows the hot-chat score floor and chain limit', () => {
+  for (const score of [4, 5]) {
+    reset();
+    const key = context.getLineChatStateKey_('group:group1');
+    fetchImpl = url => isGateFetch(url)
+      ? geminiCompletion(wakeDecision('direct_call', { replyScore: score })) : geminiCompletion('這就來接你們剛才那句');
+    dispatchWake(wakeEvent('#小浣 給這個話題一個開頭', { user: 'alice' }));
+    now += 6000;
+    dispatchWake(wakeEvent('太不吵', { user: 'bob' }));
+    assert(readWakeSignals(calls[1]).teasing && readWakeSignals(calls[1]).followUp);
+    assert.equal(wakeStatuses().at(-1).score, score);
+    if (score === 4) {
+      assert.equal(replies.length, 1);
+      assert.equal(wakeStatuses().at(-1).outcome, 'gatekeeper_ignore');
+      assert.equal(context.readLineChatState_(key).hotChat, undefined);
+      continue;
+    }
+    assert.equal(wakeStatuses().at(-1).triggerType, 'follow_up');
+    assert.equal(context.readLineChatState_(key).hotChat.chain, 1);
+    now += 6000;
+    dispatchWake(wakeEvent('怎麼又裝死', { user: 'chris' }));
+    assert.equal(wakeStatuses().at(-1).triggerType, 'follow_up');
+    assert.equal(context.readLineChatState_(key).hotChat.chain, 2);
+    now += 6000;
+    dispatchWake(wakeEvent('太不吵', { user: 'bob' }));
+    assert.equal(replies.length, 3);
+    assert.equal(calls.length, 5);
+    assert.equal(wakeStatuses().at(-1).outcome, 'skipped_chain_limit');
+  }
+});
+
 check('v223 wake telemetry uses a single safe record for each evaluation, including malformed scores and lock contention', () => {
   const text = '小浣，SECRET_CHAT_TEXT 請給我一點看法';
   const user = 'U' + 'ab'.repeat(16);
@@ -4888,7 +4922,7 @@ check('v223 Taipei daily state generates after all batch replies, retains three 
 });
 
 check('v223 daily state skips short budget and degrades silently on timeout, bad content, or HTTP failure', () => {
-  for (const mode of ['low-budget', 'late', 'http', 'markdown', 'url', 'multiline']) {
+  for (const mode of ['low-budget', 'late', 'http', 'markdown', 'url', 'control', 'strikethrough']) {
     reset();
     let generation = 0;
     withStubs({ maybeGenerateBotDailyState_: generateBotDailyState }, () => {
@@ -4901,8 +4935,9 @@ check('v223 daily state skips short budget and degrades silently on timeout, bad
         assert.equal(replies.length, 1);
         if (mode === 'late') now += 4001;
         if (mode === 'http') return response(503, 'PRIVATE_AUXILIARY_ERROR');
-        return geminiCompletion(mode === 'markdown' ? '**' + dailyFixture + '**' :
-          mode === 'url' ? dailyFixture + ' example.org' : mode === 'multiline' ? '今天\n' + dailyFixture : dailyFixture);
+        const invalidOutput = { markdown: '**' + dailyFixture + '**', url: dailyFixture + ' example.org',
+          control: '今天\t' + dailyFixture, strikethrough: '～～' + dailyFixture + '~~' };
+        return geminiCompletion(invalidOutput[mode] || dailyFixture);
       };
       dispatchWake(wakeEvent('#小浣 先回這題'));
       assert.equal(generation, mode === 'low-budget' ? 0 : 1, mode);
@@ -4912,6 +4947,23 @@ check('v223 daily state skips short budget and degrades silently on timeout, bad
       assert(!logs.join('\n').includes('PRIVATE_AUXILIARY_ERROR'));
     });
   }
+});
+
+check('v223 daily state accepts trailing line breaks, single full-width tildes, and 25-character text', () => {
+  const short = '今天在窗邊整理幾顆瓶蓋回頭才發現小紙條躲在尾巴下。';
+  const split = '今天在窗邊整理幾顆瓶蓋 \r\n 回頭才發現小紙條躲在尾巴下～\n';
+  const expected = '今天在窗邊整理幾顆瓶蓋 回頭才發現小紙條躲在尾巴下～';
+  assert.equal(Array.from(short).length, 25);
+  assert.equal(context.normalizeBotDailyText_(short + '\n'), short);
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(14)), '');
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(15)), '收'.repeat(15));
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(120)), '收'.repeat(120));
+  assert.equal(context.normalizeBotDailyText_('收'.repeat(121)), '');
+  withStubs({ maybeGenerateBotDailyState_: generateBotDailyState }, () => {
+    fetchImpl = (url, options) => geminiCompletion(isDailyFetch(url, options) ? split : '先來看這個話題');
+    dispatchWake(wakeEvent('#小浣 聊一下'));
+    assert.equal(context.getBotDailyState_(), expected);
+  });
 });
 
 check('v223 daily state requires successful LINE delivery and claims once across different rooms', () => {

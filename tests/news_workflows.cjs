@@ -1056,7 +1056,7 @@ check('deployment guides keep auto off through setup, update Web App, verify man
     assert(start >= 0 && setup > 0 && deploy > setup && manual > deploy && enable > manual && install > enable, name);
     assert(section.slice(0, deploy).includes('autoEnabled=false'));
     assert(section.slice(deploy, enable).includes('#版本'));
-    assert(section.slice(deploy, enable).includes('v2.1.1'));
+    assert(section.slice(deploy, enable).includes('v2.2.3'));
   }
 });
 
@@ -2550,43 +2550,63 @@ check('v223 mixed member settings answer only the separate question and stay sep
   assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 1);
 });
 
-check('v223 current speaker, ambient, quote and chat search share nicknames without raw LINE user IDs', () => {
+check('v223 current speaker, ambient, older quote and chat search share scoped memory without raw LINE user IDs', () => {
   const e = env({ configured: false });
   const alice = 'U' + 'aa'.repeat(16), bob = 'U' + 'bb'.repeat(16), outside = 'U' + 'cc'.repeat(16);
+  const recentUser = 'U' + 'dd'.repeat(16);
   e.sheets.set('MemberMemory', new Sheet(['ConversationId', 'UserId', 'Nickname', 'Notes', 'UpdatedAt'], [
     ['group:a', alice, '毛球', '我偏好先看科技', new Date(e.now())],
     ['group:a', bob, '薯條', '我偏好看時間線', new Date(e.now())],
+    ['group:a', recentUser, '星芒', '我偏好先看原稿', new Date(e.now())],
     ['group:a', outside, '沒出現的成員', '不得自動注入', new Date(e.now())],
     ['user:' + alice, alice, '私訊稱呼', '私訊不可外流', new Date(e.now())]
   ]));
   const sheet = e.c.ensureLogSheet_();
   const quoteId = '9380001';
-  for (const [messageId, userId, text] of [[quoteId, bob, '這是那則科技公告'], ['9380002', bob, '補一段科技公告的前文']]) {
+  for (const [messageId, userId, text, age] of [[quoteId, bob, '這是三小時前的科技公告', 3 * 3600000],
+    ['9380002', recentUser, '補一段科技公告的前文', 2000]]) {
     e.c.appendRowByHeaders_(sheet, { ConversationId: 'group:a', UserId: userId, Role: 'user', Mode: 'input',
-      Timestamp: new Date(e.now() - 2000), Text: text, MessageId: messageId });
+      Timestamp: new Date(e.now() - age), Text: text, MessageId: messageId });
   }
   e.restoreAi();
   phase4Reply(e, (_url, options) => {
     const payload = JSON.parse(options.payload);
     const parts = payload.contents.flatMap(turn => turn.parts).map(part => part.text).filter(Boolean);
     const data = key => JSON.parse(parts.find(text => text.startsWith(key + '\n')).slice(key.length + 1));
-    const [current, collaborator] = data('MEMBER_MEMORY_CONTEXT');
+    const [current, collaborator, recent] = data('MEMBER_MEMORY_CONTEXT');
     assert.equal(current.speaker, data('LINE_TURN_STATUS').currentSpeaker);
+    assert.equal(data('LINE_TURN_STATUS').currentSpeakerNickname, '毛球');
     assert.equal(current.nickname, '毛球');
     assert.deepEqual(current.notes, ['我偏好先看科技']);
     assert.equal(collaborator.nickname, '薯條');
+    assert.deepEqual(collaborator.notes, ['我偏好看時間線'], 'quote is older than the ambient window');
     const quoted = data('TEXT_QUOTE_CONTEXT')[0], ambient = data('AMBIENT_GROUP_CONTEXT')[0];
     assert.equal(quoted.speaker, collaborator.speaker);
     assert.equal(quoted.nickname, '薯條');
-    assert.equal(ambient.speaker, collaborator.speaker);
-    assert.equal(ambient.nickname, '薯條');
+    assert.equal(ambient.speaker, recent.speaker);
+    assert.equal(ambient.nickname, '星芒');
+    assert(ambient.speaker !== quoted.speaker);
     const evidence = data('REQUIRED_INTERNAL_EVIDENCE')[0].result.data.records;
     assert(evidence.some(row => row.speaker === collaborator.speaker && row.nickname === '薯條'));
-    for (const value of [alice, bob, outside, '沒出現的成員', '私訊不可外流']) assert(!options.payload.includes(value));
+    for (const value of [alice, bob, outside, recentUser, '沒出現的成員', '私訊不可外流']) assert(!options.payload.includes(value));
     assert(!JSON.stringify(payload.systemInstruction).includes('我偏好先看科技'));
     return '這裡之前聊過科技公告';
   });
   assert(v223MemberText(e, '#小浣 我們聊過科技嗎？', { user: alice, quotedMessageId: quoteId }).includes('聊過科技'));
+});
+
+check('v223 polite memory requests and future nicknames write the intended fields without AI', () => {
+  const e = env({ configured: false });
+  assert(v223MemberText(e, '小浣 幫我記住我的暱稱是 小魚').includes('小魚'));
+  const sheet = e.sheets.get('MemberMemory');
+  assert.equal(sheet.records()[0].Nickname, '小魚');
+  assert.equal(sheet.records()[0].Notes, '');
+  assert(v223MemberText(e, '小浣 幫我記住我不吃香菜').includes('筆記放好'));
+  assert(v223MemberText(e, 'MEGA浣，幫忙記住我先看原稿').includes('筆記放好'));
+  assert(v223MemberText(e, '小浣以後叫我小美').includes('小美'));
+  assert.equal(sheet.records()[0].Nickname, '小美');
+  assert.deepEqual(sheet.records()[0].Notes.split('\n'), ['我不吃香菜', '我先看原稿']);
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 0);
 });
 
 check('v223 a delivered quote can set memory while cooling down, saves literal text, and yields to pending', () => {

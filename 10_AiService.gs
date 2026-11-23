@@ -127,6 +127,8 @@ function runAiMemoryTask(task, conversationId, userTextForHistory, aiUserContent
     const status = { currentSpeaker: conversationContext.speaker(safeOptions.currentUserId),
       localTime: before ? Utilities.formatDate(new Date(before), 'Asia/Taipei', 'HH:mm') : '',
       recentReplyOpenings: conversationContext.recentOpenings };
+    const currentSpeakerNickname = conversationContext.nickname(safeOptions.currentUserId);
+    if (currentSpeakerNickname) status.currentSpeakerNickname = currentSpeakerNickname;
     if (task === 'general_chat') {
       const dailyState = getBotDailyState_();
       if (dailyState) status.dailyState = dailyState;
@@ -252,7 +254,8 @@ function buildAiConversationContext_(history, options) {
       const line = item.text.split(/[\n。！？!?]/, 1)[0];
       return line.slice(0, getLineMessageSafeSliceIndex_(line, 45));
     }).filter(Boolean);
-  const relevantIds = new Set([options.currentUserId].concat(
+  const quotedUserId = options.textQuote && options.textQuote.status === 'text_found' ? options.textQuote.userId : '';
+  const relevantIds = new Set([options.currentUserId, quotedUserId].concat(
     (options.ambientContext || []).slice().reverse().filter(function(item) { return item.role === 'user'; }).map(function(item) { return item.userId; }),
     history.slice().reverse().filter(function(item) { return item.role === 'user'; }).map(function(item) { return item.userId; })
   ));

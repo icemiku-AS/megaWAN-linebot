@@ -217,12 +217,16 @@ function classifyLineChatWake_(text, signals, ambient, executionContext, leaseId
     currentMessage: text.slice(0, getLineMessageSafeSliceIndex_(text, 1600))
   }), { executionDeadlineAtMs: classificationDeadline, timeoutCapSeconds: seconds, minimumRequestSeconds: 2, maxModelCalls: 1 });
   if (!result.ok || Date.now() > classificationDeadline) return { outcome: 'skipped_budget_or_error' };
-  const decision = result.json;
+  let decision = result.json;
   const ignored = { outcome: 'gatekeeper_ignore', scored: decision };
   if (!decision || decision.shouldReply !== true || decision.triggerType === 'ignore') return ignored;
   const thirdPerson = /(?:小浣|mega浣)(?:背後)?(?:的|最近)?(?:模型|改用|改成|換成|更新了)|(?:我|我們).{0,10}(?:在)?更新(?:了)?(?:小浣|mega浣)/i.test(text);
   if (thirdPerson && !signals.work && !/(?:小浣|mega浣)[，,\s]*你/i.test(text)) return ignored;
-  if (decision.triggerType === 'direct_call' && (signals.named || signals.teasing && !signals.hot) ||
+  // 熱聊中的省略姓名虧句即使被判點名，仍走續聊分數與連續回覆上限。
+  if (decision.triggerType === 'direct_call' && signals.hot && signals.teasing) {
+    decision = Object.assign({}, decision, { triggerType: 'follow_up' });
+  }
+  if (decision.triggerType === 'direct_call' && (signals.named || signals.teasing) ||
       decision.triggerType === 'follow_up' && signals.followUp && decision.replyScore >= CHAT_WAKE_FOLLOW_UP_SCORE_THRESHOLD ||
       decision.triggerType === 'work_collab' && signals.work ||
       decision.triggerType === 'easter_egg' && (signals.easterEggAvailable || signals.ambientBanterAvailable) &&

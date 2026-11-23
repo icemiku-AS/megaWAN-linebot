@@ -9,12 +9,13 @@ function getBotDailyDate_(time) {
 }
 
 function normalizeBotDailyText_(value) {
-  if (typeof value !== 'string' || /[\p{Cc}\p{Cf}\p{Cs}]/u.test(value)) return '';
-  const text = value.trim();
+  if (typeof value !== 'string') return '';
+  const text = value.replace(/ *(?:\r?\n *)+/g, ' ').trim();
+  if (/[\p{Cc}\p{Cf}\p{Cs}]/u.test(text)) return '';
   const length = Array.from(text).length;
   const normalized = text.normalize('NFKC');
-  return length >= 40 && length <= 80 && /\p{Script=Han}/u.test(text) &&
-    !/[*#\x60_|\[\]<>~]|https?:|www\.|[\w-]+\.[a-z]{2,}\b|^\s*(?:[-+]\s|\d+\.\s)/i.test(normalized) ? text : '';
+  return length >= 15 && length <= 120 && /\p{Script=Han}/u.test(text) &&
+    !/[*#\x60_|\[\]<>]|~~|https?:|www\.|[\w-]+\.[a-z]{2,}\b|^\s*(?:[-+]\s|\d+\.\s)/i.test(normalized) ? text : '';
 }
 
 function readBotDailyState_(props, now) {
