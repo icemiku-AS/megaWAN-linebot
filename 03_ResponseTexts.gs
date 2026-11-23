@@ -12,11 +12,20 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v2.1.0 Context, Persona & Natural Wake-up Edition';
+const BOT_CURRENT_VERSION = 'v2.1.1 Context, Persona & Natural Wake-up Edition';
 const BOT_CURRENT_VERSION_DATE = '2026-11-23';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v2.1.1 Context, Persona & Natural Wake-up Edition',
+    date: '2026-11-23',
+    summary: '群友直接叫小浣吐槽或講笑話時，可以省略 #，也能接上剛才的話題。',
+    changes: [
+      '「小浣吐嘈啊！」與「呼叫小浣講個冷笑話」這類明確交辦直接進小浣回答。',
+      '自然接話維持同聊天室的回覆間隔，描述小浣的發言仍由守門員判斷。'
+    ]
+  },
   {
     version: 'v2.1.0 Context, Persona & Natural Wake-up Edition',
     date: '2026-11-23',

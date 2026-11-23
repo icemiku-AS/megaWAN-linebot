@@ -113,7 +113,23 @@ function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, quotesBot) {
   } catch (ignore) { return ''; }
 }
 
+function isDirectLinePlayfulRequest_(text) {
+  // 無標點的點名搭配明確短指示也可接話。完整句型排除「小浣吐槽得很好笑」等描述。
+  const addressed = /^(?:呼叫\s*)?(?:小浣|MEGA浣)[，,、：:\s]*([^\r\n]+)$/i.exec(String(text || '').trim());
+  if (!addressed) return false;
+  const request = addressed[1].trim();
+  let action = request.replace(/^(?:(?:你|請|麻煩|拜託|幫我|幫忙|快點?|先|也|能不能|可不可以)[，,、：:\s]*)+/, '');
+  if (/[嗎？?][。！？!?\s]*$/.test(request)) action = action.replace(/^可以\s*/, '');
+  action = action.replace(/[啊呀吧啦嘛喔欸嗎。！？!?~～\s]+$/, '').replace(/\s+/g, '');
+  return /^(?:來)?吐[槽嘈糟](?:一[下句])?(?:(?:這|那)(?:句|段|件事)|剛才那句|剛剛那句|我)?(?:一下)?$/.test(action) ||
+    /^(?:講|說|來)(?:一?[個則])?冷?笑話(?:給我聽)?$/.test(action);
+}
+
 function classifyLineChatWake_(text, signals, ambient, executionContext) {
+  // 入口已取得同房處理資格。明確交辦直接回答，仍走原送達、限頻與驗證流程。
+  if (isDirectLinePlayfulRequest_(text)) {
+    return { shouldReply: true, triggerType: 'direct_call', noteAction: 'none', needsSearch: false };
+  }
   const deadline = executionContext.deadlineAtMs;
   const classificationDeadline = Math.min(deadline - 10000, Date.now() + 8000);
   const seconds = Math.floor((classificationDeadline - Date.now()) / 1000);

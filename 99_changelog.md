@@ -1,4 +1,10 @@
 2026-11-23
+v2.1.1 Context, Persona & Natural Wake-up Edition
+- 「小浣吐嘈啊！」與「呼叫小浣講一個冷笑話」這類明確點名短指示直接進聊天回答。辨識吐槽、吐嘈與吐糟，維持同房限頻、待回覆優先與彩蛋冷卻。
+- 調整守門員對直接交辦和第三人稱描述的判斷說明。新增 3 項群組接話回歸，本機 284 項 smoke 與 149 項新聞流程共 433 項通過。
+- 從 v2.1.0 更新需同步 03_ResponseTexts.gs、08_ChatWake.gs 與 12_Prompts.gs，Sheet migration 與新手動 Script Property 為 0。
+
+2026-11-23
 v2.1.0 Context, Persona & Natural Wake-up Edition
 - 群組與私訊帶入同聊天室最近兩小時、最多 15 則前文。精確文字引用優先，短期記憶沿用六輪，重設時切斷舊前文與續問視窗。
 - 原生 @小浣 與訊息內任意位置的 #小浣 可直接呼叫。自然接話由 3.5 Flash-Lite 守門，加入事件去重、同房限頻、已送達引用續問與六小時彩蛋冷卻。

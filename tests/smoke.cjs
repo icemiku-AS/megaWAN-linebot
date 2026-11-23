@@ -375,12 +375,14 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v2.1.0 Context, Persona & Natural Wake-up Edition'));
+  assert(replies.at(-1).text.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(replies.at(-1).text.includes('2026-11-23'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.includes('v2.0.0 Gemini Architecture Edition'));
   assert(history.includes('v1.17.0 Weekly News Archive Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') >= 0);
+  assert(history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.0.0 Gemini Architecture Edition'));
   assert(history.indexOf('v2.0.0 Gemini Architecture Edition') < history.indexOf('v1.17.0 Weekly News Archive Edition'));
 });
@@ -3482,8 +3484,8 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('feature/v210-context-persona-gatekeeper')); assert(doc.includes('c6bb060'));
-    assert(doc.includes('v2.1.0 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
+    assert(doc.includes('hotfix/v211-natural-direct-call')); assert(doc.includes('0f356a1'));
+    assert(doc.includes('v2.1.1 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
     assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
@@ -4179,6 +4181,66 @@ check('v210 third-person name mention remains silent and noise does not invoke G
   dispatchWake(wakeEvent('小浣背後的模型改成 Gemini 了'));
   assert.equal(calls.length, 2); assert.equal(replies.length, 0);
   assert(calls.every(call => isGateFetch(call.url)));
+});
+
+check('v211 direct playful requests use one chat call with ambient context during easter egg cooldown', () => {
+  const prior = '反正如果太吵就再調整就好';
+  for (const text of ['小浣吐嘈啊！！！', '小浣，幫我吐槽一下這句', '呼叫小浣講一個冷笑話',
+    'MEGA浣，來個冷笑話吧！', '小浣你可以吐糟那句一下嗎？']) {
+    reset();
+    const key = context.getLineChatStateKey_('group:group1');
+    const cooldown = JSON.stringify({ [key]: now + 6 * 3600000 });
+    properties.set('CHAT_EASTER_EGG_STATE', cooldown);
+    const sheet = readOnlySheet([quoteRecord('62001', 'user2', prior)]);
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => sheet }) }, () => {
+      fetchImpl = url => isGateFetch(url) ? quotaReply() : geminiCompletion('你們先說怕太吵，現在又催我開麥，這驗收也太忙。');
+      dispatchWake(wakeEvent(text, { dedup: true }));
+      assert.equal(calls.length, 1, text);
+      assert(!isGateFetch(calls[0].url), text);
+      assert.equal(replies.length, 1, text);
+      const payload = JSON.parse(calls[0].options.payload);
+      assert.equal(payload.contents.at(-1).parts.at(-1).text, text);
+      assert(requestData(payload, 'AMBIENT_GROUP_CONTEXT').some(turn => turn.text === prior));
+      assert(geminiSystem(payload).includes('群友明確請你吐槽'));
+      assert.deepEqual(keyReads, ['GEMINI_API_KEY']);
+      assert.equal(properties.get('CHAT_EASTER_EGG_STATE'), cooldown);
+    });
+  }
+});
+
+check('v211 descriptions and quoted examples do not become direct playful replies', () => {
+  const descriptions = ['小浣吐槽得很好笑', '小浣講了一個冷笑話', '小浣可以吐槽', '朋友說小浣吐嘈啊！！！',
+    '「小浣吐嘈啊！！！」是剛剛的例句'];
+  fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
+  for (const text of descriptions) dispatchWake(wakeEvent(text, { dedup: true }));
+  assert.equal(calls.length, descriptions.length);
+  assert(calls.every(call => isGateFetch(call.url)));
+  assert.equal(replies.length, 0);
+});
+
+check('v211 direct playful requests respect pending delivery, the room lease, and the reply interval', () => {
+  pending = { text: '先前已完成的背景結果' };
+  dispatchWake(wakeEvent('小浣吐嘈啊！！！', { dedup: true }));
+  assert.equal(calls.length, 0);
+  assert.equal(replies.length, 1);
+  assert(replies[0].text.includes('先前已完成的背景結果'));
+
+  reset();
+  fetchImpl = () => {
+    if (calls.length === 1) dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
+    return geminiCompletion('你們一個要我安靜，一個要我開麥，兩邊的驗收標準先統一一下啦');
+  };
+  dispatchWake(wakeEvent('小浣吐嘈啊！！！', { dedup: true }));
+  assert.equal(calls.length, 1, 'same-room in-flight request retains its lease');
+  now += 1000;
+  dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
+  assert.equal(calls.length, 1, 'the twenty-second interval still applies');
+  assert.equal(replies.length, 1);
+  now += 20000;
+  dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
+  assert.equal(calls.length, 2);
+  assert(calls.every(call => !isGateFetch(call.url)));
+  assert.equal(replies.length, 2);
 });
 
 check('v210 exact numeric LINE IDs, follow-up identity, and confirmed delivery gate', () => {
