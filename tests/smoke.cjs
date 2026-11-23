@@ -660,7 +660,7 @@ check('LINE transport bounds timeout and never exposes external failures', () =>
   try {
     fetchImpl = url => url.includes('/message/reply') ? (() => { throw new Error(sensitive); })()
       : url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : geminiCompletion();
-    assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events: [event()] }) } }), 'OK');
+    assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events: [{ ...event(), webhookEventId: 'reply-transport' }] }) } }), 'OK');
     assert(!JSON.stringify([...cache.values(), rows, logs]).includes('sentinel'));
   } finally { context.replyToLine = mockReply; }
 });
@@ -754,7 +754,8 @@ check('download, lock and encoding all consume the same deadline', () => {
 });
 check('webhook batch cannot refresh budget for the second event', () => {
   fetchImpl = url => { if (url.includes('api-data.line.me')) return response(200, '', { 'Content-Type': 'image/png' }, png); now += 33000; return geminiCompletion('看見可辨識的錯誤訊息。'); };
-  assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events: [event(), event()] }) } }), 'OK');
+  const events = ['batch-image-one', 'batch-image-two'].map(webhookEventId => ({ ...event(), webhookEventId }));
+  assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events }) } }), 'OK');
   assert.equal(calls.length, 2); assert.equal(replies.length, 2); assert(replies[1].text.includes('時間'));
 });
 check('background has full timeout; Reader cap and status zero contract retained', () => {
@@ -4335,7 +4336,7 @@ check('v210 a pure note with an attached source or a described search feature do
   const url = 'https://example.org/weekly-note-source';
   for (const note of ['市府宣布活動改期，變更內容見原帖 ' + url, '書店更新了站內搜尋功能。']) {
     reset();
-    dispatchWake(wakeEvent('#小浣 幫我註記：' + note));
+    dispatchWake(wakeEvent('#小浣 幫我註記進本週新聞：' + note));
     assert.equal(calls.length, 0);
     assert.deepEqual(keyReads, []);
     assert.equal(replies.length, 1);
@@ -4347,7 +4348,7 @@ check('v210 a pure note with an attached source or a described search feature do
 check('v210 a note combined with Search or URL research keeps both the receipt and the researched answer', () => {
   const url = 'https://example.org/weekly-note-source';
   const answer = '活動時間移到週日下午。';
-  for (const [request, usesSearch] of [['順便閱讀 ' + url, false], ['幫我上網查一下', true]]) {
+  for (const [request, usesSearch] of [['順便閱讀 ' + url, false], ['順便摘要這篇 ' + url, false], ['幫我上網查一下', true]]) {
     reset();
     const readerCalls = [];
     withStubs({ fetchAndExtractWebPageByReaderLayer_: address => {
@@ -4355,7 +4356,7 @@ check('v210 a note combined with Search or URL research keeps both the receipt a
       return { ok: true, title: '原文', mainText: answer };
     } }, () => {
       fetchImpl = () => usesSearch ? groundedGemini(answer, [{ uri: url, title: '原文' }]) : geminiCompletion(answer);
-      dispatchWake(wakeEvent('#小浣 幫我註記：市府宣布週末活動改期\n' + request));
+      dispatchWake(wakeEvent('#小浣 幫我註記進本週新聞：市府宣布週末活動改期\n' + request));
       assert.equal(calls.length, 1);
       assert.equal(replies.length, 1);
       assert(replies[0].text.startsWith('加進本週手動註記了'));
@@ -4385,6 +4386,112 @@ check('v210 ordinary URL intake stays silent while clearly addressed and interna
     dispatchWake(wakeEvent('小浣，幫我查一下群裡是否收過這篇 https://example.org/story'));
     assert.equal(intake.length, 1); assert.equal(replies.length, 1);
     assert.equal(calls.length, 2); assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  });
+});
+
+check('v210 actionable article summaries share the gate, native mention and pending routing', () => {
+  const url = 'https://example.org/article-summary';
+  const nativeMention = { mentionees: [{ isSelf: true }] };
+  const tasks = ['幫我整理這篇', '幫我摘要這篇', '總結一下', '這篇的重點是什麼？', '給我這篇重點', '分析這篇'];
+  for (const task of tasks) {
+    for (const path of ['gate', 'mention', 'pending']) {
+      reset();
+      const readers = [];
+      const text = (path === 'mention' ? '@小浣 ' : '小浣，') + task + ' ' + url;
+      const noIntake = () => assert.fail('article research cannot enter news intake');
+      withStubs({ handleSilentNewsUrlMessage_: noIntake, handleDirectNewsUrlMessage_: noIntake,
+        fetchAndExtractWebPageByReaderLayer_: address => {
+          readers.push(address);
+          return { ok: true, title: '原文', mainText: '活動在週日。' };
+        } }, () => {
+        fetchImpl = address => isGateFetch(address) ? geminiCompletion(wakeDecision('work_collab')) : geminiCompletion('文章重點');
+        if (path === 'pending') pending = { text: '上次的背景結果' };
+        dispatchWake(wakeEvent(text, { mention: path === 'mention' ? nativeMention : undefined }));
+        assert.equal(replies.length, 1, path + ' ' + task);
+        if (path === 'pending') {
+          assert.equal(calls.length, 0);
+          assert.deepEqual(readers, []);
+          assert(replies[0].text.includes('網址問題尚未研究'));
+        } else {
+          assert.equal(calls.length, path === 'gate' ? 2 : 1);
+          assert.deepEqual(readers, [url]);
+          assert.equal(replies[0].text, '文章重點');
+        }
+      });
+    }
+  }
+
+  reset();
+  const ordinary = '這篇的摘要和分析很精彩 ' + url;
+  assert(!context.isLineUrlResearchRequest_(ordinary, false));
+  let collected = '';
+  withStubs({ handleSilentNewsUrlMessage_: (_event, _scope, text) => { collected = text; } }, () => {
+    dispatchWake(wakeEvent(ordinary));
+  });
+  assert.equal(collected, ordinary);
+  assert.equal(calls.length, 0);
+});
+
+check('v210 Search and internal tools agree on the scope of each current clause', () => {
+  const cases = [
+    ['幫我查我們的新聞有沒有這則', false, ['search_news_inbox']],
+    ['幫我查 LINE 的聊天室功能', true, []],
+    ['幫我查 LINE 的聊天紀錄保留多久', true, []],
+    ['幫我查 LINE 的聊天室功能，順便查我們的新聞有沒有這則', true, ['search_news_inbox']],
+    ['幫我查群組裡聊過什麼', false, ['search_conversation_log']]
+  ];
+  for (const [text, search, expected] of cases) {
+    reset();
+    assert.equal(context.isExplicitWebSearchRequest_(text), search);
+    assert.deepEqual(Array.from(context.getAiRequiredResearch_(text), item => item.name), expected);
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: name => readOnlySheet(name === 'NewsInbox'
+      ? [newsEvidence('group:group1', '這則新聞')] : [chatEvidence('group:group1', '先前的對話')]) }) }, () => {
+      fetchImpl = () => search ? groundedGemini('外部研究已完成') : geminiCompletion('內部資料查到了');
+      dispatchWake(wakeEvent('#小浣 ' + text));
+      assert.equal(replies.length, 1);
+      assert.deepEqual(keyReads, [search ? 'GEMINI_SEARCH_API_KEY' : 'GEMINI_API_KEY']);
+      const payload = JSON.parse(calls[0].options.payload);
+      assert.equal(payload.tools.some(tool => 'google_search' in tool), search);
+      for (const name of expected) assert.match(researchStatus(latestMetadata(), name), /^SEARCHED_/);
+    });
+  }
+});
+
+check('v210 an exact delivered bot quote skips the cooldown but cannot take a second room lease', () => {
+  const replyId = '90071992547409971';
+  const sent = [];
+  const gates = [];
+  withStubs({ replyToLine: transportReply }, () => {
+    fetchImpl = (url, options) => {
+      if (url.includes('/message/reply')) {
+        sent.push(JSON.parse(options.payload));
+        return response(200, { sentMessages: [{ id: sent.length === 1 ? replyId : '90071992547409972' }] });
+      }
+      if (!isGateFetch(url)) return geminiCompletion('標題可以從時間順序切入');
+      const body = JSON.parse(JSON.parse(options.payload).contents.at(-1).parts.at(-1).text);
+      gates.push(body);
+      if (gates.length === 2) {
+        dispatchWake(wakeEvent('那另一個細節呢？', { user: 'user3', quotedMessageId: replyId, dedup: true }));
+      }
+      return geminiCompletion(wakeDecision(body.signals.quotesBot ? 'follow_up' : 'direct_call'));
+    };
+
+    dispatchWake(wakeEvent('小浣，幫我想標題', { dedup: true }));
+    assert.equal(sent.length, 1);
+    now += 1000;
+    dispatchWake(wakeEvent('還有什麼細節？'));
+    dispatchWake(wakeEvent('還有什麼細節？', { quotedMessageId: '90071992547409970' }));
+    assert.equal(gates.length, 1);
+
+    const followUp = wakeEvent('你說時間順序是什麼意思？', { user: 'user2', quotedMessageId: replyId, dedup: true });
+    dispatchWake(followUp);
+    dispatchWake(followUp);
+    assert.equal(gates.length, 2);
+    assert.equal(gates[1].signals.quotesBot, true);
+    assert.equal(sent.length, 2);
+    now += 1000;
+    dispatchWake(wakeEvent('那這個呢？', { user: 'user2' }));
+    assert.equal(gates.length, 2, 'ordinary follow-ups remain rate limited');
   });
 });
 

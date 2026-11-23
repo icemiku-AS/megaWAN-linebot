@@ -17,17 +17,53 @@ function hasTriggerPrefix(text) {
   });
 }
 
-// 先區分明示聯網與聊天室內查詢；單純時效詞、引用和分類結果均不授權 Search。
+function stripLineBotAddress_(text) {
+  return String(text || '').trim()
+    .replace(/^(?:[#@]小浣|(?:[#@]?MEGA浣|小浣)(?=[，,：:\s]|幫我|麻煩|請|$))[，,：:\s]*/i, '');
+}
+
+function getLineRequestClauses_(text) {
+  const plain = String(text || '').split(/\r?\n/).map(stripUrlsForWeeklyEditorial_).join('\n')
+    .replace(/(?:順便|另外|同時|並且|以及|(?:並|再|也)(?=請|幫我|上網|聯網|讀|查|比對|確認|摘要|整理))[，,\t ]*/g, '\n');
+  return (plain.match(/[^，,。！？!?；;\r\n]+[。！？!?]*/g) || []).map(stripLineBotAddress_).filter(Boolean);
+}
+
+function stripLineResearchLead_(text) {
+  return text.replace(/^(?:(?:也|再|先|請問|請你?|麻煩你?|幫我|幫忙|可以|能否|可否|能不能|想請)\s*)*/, '');
+}
+
+// 查詢的對象與範圍由同一分句決定，另一句查群內資料不會蓋掉連帶的外部問題。
 function isExplicitWebSearchRequest_(text) {
-  const value = String(text || '').split(/\r?\n/).map(stripUrlsForWeeklyEditorial_).join('\n');
-  const internal = /群裡|群組內|聊天室|聊過|討論過|收過|收件匣|新聞庫|封存|對話紀錄|聊天紀錄|ConversationLog|NewsInbox|WeeklySummary/i;
-  const hasInternal = internal.test(value);
-  return value.split(/[。！？!?，,；;\n]/).some(function(plain) {
-    if (/(?:不用|不必|不要|別)(?:再|幫我|先)?\s*(?:上網|聯網|搜尋|搜索|查證)/.test(plain)) return false;
-    if (/(?:上網|聯網|網路|網絡|網上|外部).{0,8}(?:查|找|搜)|(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上|外部)/.test(plain)) return true;
-    if (internal.test(plain) || hasInternal && !/最新|即時|查證/.test(plain)) return false;
-    return /(?:搜尋|搜索)(?:一下|看看)?|(?:幫我)?查一下|(?:請|麻煩)?\s*幫我\s*(?:查(?!看)|找|搜尋|搜索)|(?:幫忙|請|麻煩|能否|可否|可以)\s*查證|^\s*(?:#小浣\s*)?查證(?:一下|這|那|下列)/.test(plain);
+  return getLineRequestClauses_(text).some(function(clause) {
+    if (getAiInternalResearchKinds_(clause).length ||
+        /(?:不用|不必|不要|別)(?:再|幫我|先)?\s*(?:上網|聯網|搜尋|搜索|查證)/.test(clause)) return false;
+    const action = stripLineResearchLead_(clause);
+    if (/^(?:去|到|用)?(?:上網|聯網|網路|網絡|網上|外部).{0,8}(?:查|找|搜)|^(?:查|找|搜尋|搜索).{0,8}(?:網路|網絡|網上|外部)/.test(action)) return true;
+    return /^(?:搜尋|搜索)(?!功能|欄|框|引擎|結果|介面)|^查(?:一下|證(?:一下|這|那|下列))/.test(action) ||
+      /^(?:請你?|麻煩你?|能否|可否|可以)?\s*(?:幫我|幫忙|請|麻煩)\s*(?:查(?!看)|找|搜尋|搜索)|^(?:請|麻煩|能否|可否|可以)\s*查證/.test(clause);
   });
+}
+
+function isLineUrlResearchRequest_(text, explicitlyAddressed, hasUrl) {
+  if (!(hasUrl === undefined ? shouldUseWebReading(text) : hasUrl)) return false;
+  return isExplicitWebSearchRequest_(text) || getLineRequestClauses_(text).some(function(clause) {
+    return isLineUrlResearchClause_(clause, explicitlyAddressed);
+  });
+}
+
+function isLineUrlResearchClause_(clause, explicitlyAddressed) {
+  const action = stripLineResearchLead_(clause).replace(/[。！？!?]+$/, '').trim();
+  const readVerb = /^(?:讀取|閱讀|讀一下|讀|看一下|看看|看|解讀|比對|整理|摘要|總結|分析|抓重點|列出重點)\s*/;
+  const match = readVerb.exec(action);
+  if (match) {
+    const target = action.slice(match[0].length);
+    if (/^(?:一下|(?:這|那)(?:篇|則|個)|原文|原帖|網址|連結|文章|的?(?:內容|重點))/.test(target) ||
+        !target && (explicitlyAddressed || action !== clause || action.length > 1)) return true;
+  }
+  return /^(?:(?:這|那)?(?:篇|則|個|連結|網址|文章)|原文|原帖).{0,24}(?:重點(?:是|在哪|有哪些)|內容是什麼|說了什麼|在講什麼|收過|重複|聊過)/.test(action) ||
+    /^(?:查|確認|問|有沒有|是否|跟|和|與).{0,24}(?:收過|重複|聊過)/.test(action) ||
+    /^(?:重點(?:是什麼|在哪|有哪些)|給我(?:(?:這|那)(?:篇|則)的?)?重點)/.test(action) ||
+    explicitlyAddressed && action === '重點';
 }
 
 function getUserLogMode(text) {

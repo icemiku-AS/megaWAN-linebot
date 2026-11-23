@@ -65,20 +65,23 @@ function runAiMemoryTask(task, conversationId, userTextForHistory, aiUserContent
       Number(safeOptions.executionDeadlineAtMs) || Infinity,
       startedAt + Math.min(Number(safeOptions.timeoutCapSeconds) || 30, 30) * 1000
     );
-    const snapshot = snapshotConversationMemory_(conversationId, safeOptions.executionDeadlineAtMs);
-    if (snapshot.status === 'busy') throw createAiExecutionBudgetError_('Conversation memory lock is busy or the deadline has passed.');
     const before = Number(safeOptions.beforeTimestampMs) || 0;
-    const chatState = safeOptions.lineChatState === undefined && before
-      ? readLineChatState_(getLineChatStateKey_(conversationId)) : safeOptions.lineChatState;
+    const snapshot = snapshotConversationMemory_(conversationId, safeOptions.executionDeadlineAtMs, before);
+    if (snapshot.status === 'busy') throw createAiExecutionBudgetError_('Conversation memory lock is busy or the deadline has passed.');
+    const chatState = snapshot.chatState;
     const resetAtMs = chatState && Number(chatState.resetAtMs) || 0;
-    const trimmedHistory = before && before <= resetAtMs ? [] : snapshot.history.filter(function(item) {
+    const trimmedHistory = snapshot.history.filter(function(item) {
       return !before || !item.timestampMs || item.timestampMs <= before;
     });
-    if (safeOptions.ambientContext === undefined && before && chatState) {
+    if (snapshot.status === 'stale') {
+      safeOptions.ambientContext = [];
+    } else if (safeOptions.ambientContext === undefined && before && chatState) {
       safeOptions.ambientContext = getRecentAmbientConversationContext_(conversationId, {
         beforeTimestampMs: before, excludeMessageId: safeOptions.excludeMessageId,
         resetAtMs: resetAtMs, deadlineAtMs: safeOptions.executionDeadlineAtMs, quoteLookup: safeOptions.quoteLookup
       });
+    } else if (resetAtMs && safeOptions.ambientContext) {
+      safeOptions.ambientContext = safeOptions.ambientContext.filter(function(item) { return item.timestampMs > resetAtMs; });
     }
     const systemPrompt = Object.prototype.hasOwnProperty.call(safeOptions, 'systemPrompt')
       ? String(safeOptions.systemPrompt || '')
@@ -87,12 +90,12 @@ function runAiMemoryTask(task, conversationId, userTextForHistory, aiUserContent
       ? aiUserContent.filter(function(part) { return part.type === 'text'; }).map(function(part) { return part.text; }).join('\n')
       : String(aiUserContent || '');
     // 意圖判斷使用 caller 的當前問題；不得解析加入作者、歷史或引用後的文字。
-    safeOptions.currentRequestText = questionText;
+    safeOptions.currentRequestText = safeOptions.weeklyNoteQuestion || questionText;
     safeOptions.contextHistory = trimmedHistory;
     const conversationContext = buildAiConversationContext_(trimmedHistory, safeOptions);
     safeOptions.speakerForUser = conversationContext.speaker;
     safeOptions.messageReference = conversationContext.reference;
-    const longTermMemoryText = !safeOptions.disableClientResearch && shouldPrefetchWeeklyMemory_(task, questionText)
+    const longTermMemoryText = !safeOptions.disableClientResearch && shouldPrefetchWeeklyMemory_(task, safeOptions.currentRequestText)
       ? getRecentWeeklySummaryText(conversationId, 8, undefined, true) : '';
     const messages = [];
 
@@ -112,15 +115,19 @@ function runAiMemoryTask(task, conversationId, userTextForHistory, aiUserContent
     const status = { currentSpeaker: conversationContext.speaker(safeOptions.currentUserId),
       localTime: before ? Utilities.formatDate(new Date(before), 'Asia/Taipei', 'HH:mm') : '',
       recentReplyOpenings: conversationContext.recentOpenings };
-    if (safeOptions.weeklyNoteResult) status.weeklyNote = safeOptions.weeklyNoteResult;
+    if (safeOptions.weeklyNoteResult) {
+      const note = safeOptions.weeklyNoteResult;
+      status.weeklyNote = { status: note.status, saved: note.saved, existing: note.existing, omitted: note.omitted };
+      status.additionalQuestion = safeOptions.weeklyNoteQuestion;
+    }
     if (safeOptions.easterEggReply === true) status.replyStyle = '彩蛋只回一句，直接接梗。';
     messages.push({ role: 'user', content: 'LINE_TURN_STATUS\n' + JSON.stringify(status) });
     messages.push({ role: 'user', content: '現在接最後的問題。用繁體中文純文字，直接切題，避開剛用過的開頭，只說確實做過的事。' +
-      (safeOptions.weeklyNoteResult ? '\n註記回執由程式顯示。請直接回答同一則訊息提出的搜尋或網址研究問題。' : '') });
+      (safeOptions.weeklyNoteResult ? '\n註記回執由程式顯示。原訊息的註記事件只作背景，只回答 additionalQuestion 所列的附帶問題。' : '') });
     messages.push({ role: 'user', content: aiUserContent || '' });
 
     const result = runAiMessagesTask(task, messages, safeOptions);
-    if (!result.ok) return result;
+    if (!result.ok || !snapshot.generation) return result;
 
     // 圖片 caller 必須另提供文字 placeholder；structured content 絕不進 history。
     const historyText = Array.isArray(aiUserContent)

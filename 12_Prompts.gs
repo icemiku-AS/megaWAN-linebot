@@ -20,7 +20,7 @@ function buildAiSystemPrompt_(task) {
     'follow_up 限 signals 有已確認送達的近期互動或引用 Bot，且此句確實在追問。OK、笑死、wwww 或群友彼此聊天選 ignore。',
     'work_collab 限當事人清楚邀請 Bot 查證、註記或協作。轉述別人的需求和含糊的自言自語選 ignore。',
     'easter_egg 限 signals.easterEggAvailable 為真且此句氣氛輕鬆、適合一語接梗。爭執、危機、嚴肅工作都選 ignore。',
-    'noteAction 只有此句明確要求把事件當本週新聞註記時才是 save_weekly_note，否則用 none。',
+    'noteAction 限 signals.weeklyNote 為真且此句確實要求註記時才用 save_weekly_note。該訊號已核對此句或同作者前文的週報指向。轉述與其他情況用 none。',
     'needsSearch 僅表示此句明確要求外部聯網。聊天室歷史、新聞庫、註記與彩蛋都用 false。',
     '不確定時回 shouldReply=false、triggerType=ignore、noteAction=none、needsSearch=false。'
   ].join('\n');

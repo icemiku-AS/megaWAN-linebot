@@ -42,7 +42,9 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
       return getBotTextImageError_(downloaded);
     }
 
-    const internalOnly = /貼過|傳過|聊過|新聞庫|收過|封存|群裡|聊天室/.test(safeQuestion);
+    const internalOnly = getLineRequestClauses_(safeQuestion).some(function(clause) {
+      return getAiInternalResearchKinds_(clause).length > 0;
+    });
     const needsSearch = isExplicitWebSearchRequest_(safeQuestion) || !internalOnly && /最新|查證|來源|即時/.test(safeQuestion);
     const clientToolNames = selectImageResearchToolNames_(safeQuestion);
     const research = needsSearch || clientToolNames.length > 0;

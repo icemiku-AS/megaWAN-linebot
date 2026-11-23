@@ -641,7 +641,7 @@ function isAmbientConversationText_(role, mode, text) {
   if (role !== 'user' || mode === 'image_input' || mode === 'image_semantic') return false;
   const command = text.replace(/^#小浣\s*/, '');
   return (mode === 'assistant_command' || !/_command$/.test(mode)) &&
-    !/^(?:#?(?:help|reset|版本(?:紀錄)?)\b|#?(?:清空紀錄|清空新聞|清空封存|清空待回覆|封存本週新聞|本週新聞|新聞補充|狀態回報)|#?版本(?:紀錄)?\s*$)/i.test(command);
+    !/^(?:#?(?:help|reset|版本(?:紀錄)?)\b|#?(?:清空紀錄|清空新聞|清空封存|清空待回覆|封存本週新聞|新聞補充|狀態回報)|#本週新聞|本週新聞(?:$|\s+(?:精簡|詳細|診斷|高潛力|分類))|#?版本(?:紀錄)?\s*$)/i.test(command);
 }
 
 // ======================================================

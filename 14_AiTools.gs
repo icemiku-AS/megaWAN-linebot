@@ -76,36 +76,58 @@ function createAiToolError_(errorType) {
   return error;
 }
 
+function isLineImageRecallRequest_(text) {
+  return /(?:之前|以前|過去|上次|曾經).{0,20}(?:圖|圖片|截圖|照片)|(?:貼過|傳過|分享過).{0,20}(?:圖|圖片|截圖|照片)|(?:圖|圖片|截圖|照片).{0,20}(?:貼過|傳過|分享過)/.test(text);
+}
+
+// 「聊天室」本身也可能是外部產品功能。只有查詢本房內容的線索才選內部來源。
+function getAiInternalResearchKinds_(clause) {
+  const kinds = [];
+  const action = stripLineResearchLead_(clause);
+  if (/收過|新聞庫|收件匣|NewsInbox|我們(?:這[週周]|的)?(?:的)?新聞|(?:群裡|群組(?:裡|內)|聊天室(?:裡|內|中)).{0,12}(?:新聞|素材)|(?:之前|以前|過去|舊).{0,12}(?:有沒有|是否有|收集|收錄).{0,12}新聞|(?:有沒有|是否|已經).{0,8}(?:收集|收錄)/i.test(clause)) {
+    kinds.push('search_news_inbox');
+  }
+  if (isLineImageRecallRequest_(clause) ||
+      /聊過|討論過|ConversationLog|(?:群裡|群組(?:裡|內)|聊天室(?:裡|內|中))\s*(?:(?:有沒有(?:人)?)?(?:聊|談|說|提|貼|傳|討論)|的(?:訊息|對話|紀錄))/i.test(clause) ||
+      /^(?:查(?:詢|看|一下)?|找(?:找|一下)?|看(?:看|一下)?|整理)?\s*(?:(?:我們|本群|群內|這個聊天室|之前|以前)的?)?(?:對話|聊天)紀錄(?!功能|設定|備份|匯出)/.test(action)) {
+    kinds.push('search_conversation_log');
+  }
+  if (/週記憶|WeeklySummary|封存記憶|(?:本週|上週|前週|這週|新聞|我們的).{0,10}封存|^(?:有沒有|查看|查|比對|找|看)?封存(?:過|了|有沒有|資料|紀錄|摘要|新聞|$)/i.test(action)) {
+    kinds.push('get_weekly_memory');
+  }
+  return kinds;
+}
+
 /** 明確資料需求由 code 執行；只讀本次問題，不讓 history、圖片或 evidence 擴大必要來源。 */
 function getAiRequiredResearch_(question) {
   const text = redactAiMediaText_(String(question || '')).slice(0, 2000);
   const required = [];
-  const imageRecall = /(?:之前|以前|過去|上次|曾經).{0,20}(?:圖|圖片|截圖|照片)|(?:貼過|傳過|分享過).{0,20}(?:圖|圖片|截圖|照片)|(?:圖|圖片|截圖|照片).{0,20}(?:貼過|傳過|分享過)/.test(text);
+  const clauses = getLineRequestClauses_(text).map(function(clause) {
+    return { text: clause, kinds: getAiInternalResearchKinds_(clause) };
+  });
   const selections = [
-    ['search_news_inbox', /收過|收集|收錄|新聞庫|收件匣|(?:之前|以前|過去|我們|聊天室|舊).{0,20}新聞/, /(?:收過|收集|收錄)\s*([^，。？！\n,!?]*)/],
-    ['search_conversation_log', imageRecall ? /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog|貼過|傳過|分享過/i
-      : /聊過|討論過|對話紀錄|聊天紀錄|ConversationLog/i, /(?:聊過|討論過|貼過|傳過|分享過)\s*([^，。？！\n,!?]*)/],
-    ['get_weekly_memory', /週記憶|封存|上週|前週/, null]
+    ['search_news_inbox', /(?:收過|收集|收錄)\s*([^，。？！\n,!?]*)/],
+    ['search_conversation_log', /(?:聊過|討論過|貼過|傳過|分享過)\s*([^，。？！\n,!?]*)/],
+    ['get_weekly_memory', null]
   ];
   selections.forEach(function(selection) {
-    if (!selection[1].test(text)) return;
+    const source = clauses.find(function(part) { return part.kinds.includes(selection[0]); });
+    if (!source) return;
+    const clause = source.text;
     const args = selection[0] === 'get_weekly_memory' ? { limit: 5 } : { days: 30, limit: 5 };
-    const match = selection[2] && text.match(selection[2]);
+    const match = selection[1] && clause.match(selection[1]);
     // ponytail: 只取明確的字面主題；指圖／相關資料改讀 bounded candidates，不做向量語意索引。
     const query = match ? match[1].split(/或|以及|另外|順便|也看看|並且/)[0]
       .replace(/^[「『"`\s]+|[」』"`\s]+$/g, '').replace(/(?:的)?新聞$/, '').trim() : '';
     if (query && !/這|那|相關|什麼|哪些|有沒有|嗎|呢/.test(query) && query.length <= 200) args.query = query;
-    if (selection[0] === 'search_conversation_log' && imageRecall) {
+    if (selection[0] === 'search_conversation_log' && isLineImageRecallRequest_(clause)) {
       args.provenance = 'image_derived';
-      const latin = text.match(/[A-Za-z][A-Za-z0-9-]{2,}/);
+      const latin = clause.match(/[A-Za-z][A-Za-z0-9-]{2,}/);
       args.query = latin ? latin[0] : (query.replace(/^(?:一張|那張|這張)\s*/, '').replace(/(?:那張|這張)?(?:梗圖|圖片|截圖|照片|圖)$/, '').trim() || undefined);
       if (!args.query) delete args.query;
     }
     required.push({ name: selection[0], arguments: args });
   });
-  if (imageRecall && !required.some(function(item) { return item.name === 'search_conversation_log'; })) {
-    required.push({ name: 'search_conversation_log', arguments: { days: 30, limit: 5, provenance: 'image_derived' } });
-  }
   const urls = extractUrls(text);
   if (urls.length || /https?:\/\/|網址|連結/i.test(text)) {
     required.push({ name: 'read_url', arguments: { url: urls.length === 1 ? urls[0] : '' } });

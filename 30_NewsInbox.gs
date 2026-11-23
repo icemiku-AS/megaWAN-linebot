@@ -1188,9 +1188,13 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt, aiExecutionC
   const items = getRecentNewsInboxItems_(conversationId, queryOptions.days);
   const filteredItems = filterWeeklyNewsItems_(items, queryOptions);
   const usesEditorial = shouldUseWeeklyEditorialDigest_(queryOptions);
+  if (!filteredItems.length && (queryOptions.categoryFilter || queryOptions.onlyHighPotential)) {
+    return getBotTextWeeklyNewsNoData_(queryOptions);
+  }
   if (usesEditorial || queryOptions.viewMode === 'detailed') {
-    try { queryOptions.weeklyNotes = getRecentWeeklyNotes_(conversationId); }
-    catch (ignore) { queryOptions.weeklyNotesNotice = '本週手動註記讀取未完成，請稍後再試。'; }
+    queryOptions.weeklyNotesScope = conversationId;
+    const turn = aiExecutionContext && aiExecutionContext.conversationContext;
+    if (turn) queryOptions.onWeeklyNotesRendered = function(recheck) { turn.recheckWeeklyReport = recheck; };
   }
 
   if (!filteredItems.length) {
@@ -1200,22 +1204,36 @@ function handleWeeklyNewsDigest_(event, conversationId, userPrompt, aiExecutionC
     return getBotTextWeeklyNewsNoData_(queryOptions);
   }
 
-  let digestText = '';
   if (usesEditorial) {
-    // 模型呼叫前先建立一定可用的分類 fallback；任何 API、JSON 或 validator
-    // 錯誤都直接使用這份結果，不在 webhook 內 retry，也不把技術錯誤回群組。
-    const fallbackText = formatWeeklyNewsCompactDigest_(filteredItems, queryOptions);
-    digestText = tryBuildWeeklyEditorialDigest_(conversationId, filteredItems, queryOptions, aiExecutionContext) || fallbackText;
-  } else {
-    digestText = formatWeeklyNewsDigest_(filteredItems, queryOptions);
+    return tryBuildWeeklyEditorialDigest_(conversationId, filteredItems, queryOptions, aiExecutionContext) ||
+      renderWeeklyNewsWithNotes_(queryOptions, function(options) { return formatWeeklyNewsCompactDigest_(filteredItems, options); });
   }
   const memoryBridgeText = shouldBuildWeeklyNewsMemoryBridge_(queryOptions)
     ? buildWeeklyNewsMemoryBridge_(conversationId, filteredItems, aiExecutionContext)
     : '';
 
-  return [digestText, memoryBridgeText].filter(function(block) {
-    return String(block || '').trim() !== '';
-  }).join('\n\n');
+  return renderWeeklyNewsWithNotes_(queryOptions, function(options) {
+    const digestText = formatWeeklyNewsDigest_(filteredItems, options);
+    return [digestText, memoryBridgeText].filter(function(block) { return String(block || '').trim() !== ''; }).join('\n\n');
+  });
+}
+
+function renderWeeklyNewsWithNotes_(queryOptions, render) {
+  const options = queryOptions || {};
+  if (!options.weeklyNotesScope) return render(options);
+  let snapshot;
+  try { snapshot = getRecentWeeklyNotesSnapshot_(options.weeklyNotesScope); }
+  catch (ignore) {
+    return render(Object.assign({}, options, { weeklyNotesNotice: '本週手動註記讀取未完成，請稍後再試。' }));
+  }
+  const text = render(Object.assign({}, options, { weeklyNotes: snapshot.items, weeklyNotesEvicted: snapshot.evictedCount }));
+  if (options.onWeeklyNotesRendered && (snapshot.items.length || snapshot.evictedCount)) {
+    options.onWeeklyNotesRendered(function() {
+      // LINE 傳送前若清理已推進界線，沿用已驗證的分組重排，無須重打模型。
+      return isWeeklyNotesBoundaryCurrent_(options.weeklyNotesScope, snapshot.clearedAtMs) ? text : render(options);
+    });
+  }
+  return text;
 }
 
 function isRemovedWeeklyNews24HourQuery_(userPrompt) {
@@ -1448,7 +1466,8 @@ function formatWeeklyNewsDetailedDigest_(items, queryOptions) {
   const groupedResult = groupNewsItemsByCategory_(items);
 
   const lines = [buildWeeklyNewsDigestHeader_(queryOptions)];
-  const notes = formatWeeklyManualNotesBlock_(queryOptions && queryOptions.weeklyNotes, queryOptions && queryOptions.weeklyNotesNotice);
+  const notes = formatWeeklyManualNotesBlock_(queryOptions && queryOptions.weeklyNotes, queryOptions && queryOptions.weeklyNotesNotice,
+    queryOptions && queryOptions.weeklyNotesEvicted);
   if (notes) lines.push('\n' + notes + '\n');
   groupedResult.categories.forEach(function(category) {
     lines.push('', '【' + category + '】');

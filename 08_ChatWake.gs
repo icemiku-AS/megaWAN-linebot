@@ -27,8 +27,7 @@ function resetLineChatStateLocked_(conversationId) {
 }
 
 function claimLineWebhookEvent_(key, eventId) {
-  if (!eventId) return 'accepted'; // 舊的 GAS 診斷入口與測試事件沒有 webhookEventId。
-  if (!key || typeof eventId !== 'string' || !/^[A-Za-z0-9_-]{1,48}$/.test(eventId)) return 'busy';
+  if (!key || typeof eventId !== 'string' || !/^[A-Za-z0-9_-]{1,48}$/.test(eventId)) return 'invalid';
   const receiptKey = key.replace('LINE_CHAT_STATE_', 'LINE_WEBHOOK_EVENTS_');
   try {
     const props = PropertiesService.getScriptProperties();
@@ -38,28 +37,22 @@ function claimLineWebhookEvent_(key, eventId) {
     const read = function() { return JSON.parse(props.getProperty(receiptKey) || '[]').filter(isLive); };
     const isDuplicate = function(entries) { return entries.some(function(entry) { return entry[0] === eventId; }); };
     if (isDuplicate(read())) return 'duplicate';
-    return withDataMutationLock_(function() {
+    const claim = function() {
       const entries = read();
       if (isDuplicate(entries)) return { status: 'duplicate' };
       entries.push([eventId, Date.now()]);
       props.setProperty(receiptKey, JSON.stringify(entries.slice(-120)));
       return { status: 'accepted' };
-    }, 300).status;
+    };
+    // tryLock 已含等待，僅在確定未取得鎖、沒有寫入時再試一次。
+    const result = withDataMutationLock_(claim, 300);
+    return result.status === 'busy' ? withDataMutationLock_(claim, 300).status : result.status;
   } catch (ignore) { return 'busy'; }
 }
 
 function isLineBotMention_(message) {
   const mentions = message.mention && message.mention.mentionees;
   return Array.isArray(mentions) && mentions.some(function(target) { return target && target.isSelf === true; });
-}
-
-function isLineUrlResearchRequest_(text, explicitlyAddressed) {
-  if (!shouldUseWebReading(text)) return false;
-  if (isExplicitWebSearchRequest_(text)) return true;
-  const plain = stripUrlsForWeeklyEditorial_(text);
-  return explicitlyAddressed
-    ? /重複|收過|之前|比對|查證|聊過|討論過|封存|重點|內容|讀取|閱讀|讀一下|(?:讀|看)(?:看|一下)?(?:這篇|這則|連結|網址)/.test(plain)
-    : /(?:幫我|請|麻煩|想請|(?:小浣|MEGA浣)[，,：:\s]+).{0,12}(?:讀[取這一下]?|看(?:看|一下)?(?:這篇|這則|連結|網址)|查證|比對)|(?:這篇|這則|這個|連結|網址).{0,18}(?:收過|重複|聊過|讀一下)|(?:查|確認|問|有沒有|是否).{0,18}(?:收過|重複|聊過)/i.test(plain);
 }
 
 function readChatEasterEggState_() {
@@ -75,7 +68,7 @@ function isChatEasterEggAvailable_(key, now) {
   catch (ignore) { return false; }
 }
 
-function getLineChatWakeSignals_(event, key, state, text, quote) {
+function getLineChatWakeSignals_(event, key, state, text, quote, weeklyNoteRequested) {
   if (!state) return null;
   const before = Number(event.timestamp) || Date.now();
   const userId = event.source && event.source.userId;
@@ -84,32 +77,35 @@ function getLineChatWakeSignals_(event, key, state, text, quote) {
     return reply.userId === userId && reply.at <= before && before - reply.at <= CHAT_FOLLOW_UP_WINDOW_MS;
   });
   const quotedId = event.message.quotedMessageId;
+  const resetAtMs = state.resetAtMs || 0;
   const quotesBot = isExactLineMessageId_(quotedId) && (quote.reason === 'assistant_message' &&
-    quote.sentAtMs > (state.resetAtMs || 0) || replies.some(function(reply) {
-      return reply.at <= before && reply.ids.includes(quotedId);
+    quote.sentAtMs <= before && quote.sentAtMs > resetAtMs || replies.some(function(reply) {
+      return reply.at <= before && reply.at > resetAtMs && reply.ids.includes(quotedId);
     }));
   const compact = text.replace(/[\s！？!?。，、…~～]+/g, '');
   if (!followUp && !quotesBot && (!compact || /^(?:[wｗ]+|笑死|OP|OK|[+＋]1|哈+|嗯+|喔+|哦+|[\p{P}\p{S}]+)$/iu.test(compact))) return null;
 
   const named = /小浣|mega浣|浣熊/i.test(text);
-  const work = isWeeklyNoteRequest_(text) || isExplicitWebSearchRequest_(text) || isLineUrlResearchRequest_(text, false) ||
+  const weeklyNote = weeklyNoteRequested === true || isWeeklyNoteRequest_(text);
+  const work = weeklyNote || isExplicitWebSearchRequest_(text) || isLineUrlResearchRequest_(text, false) ||
     /幫我(?:查|找|讀|看|整理|比對|補|記|列|確認|想)|幫忙(?:查|讀|整理|註記)|查證|收過嗎|聊過嗎|記進本週新聞|麻煩.{0,12}(?:找|查|整理|確認)/.test(text);
   const egg = /垃圾|棉花糖|乾脆麵|小熊貓|貍貓|狸貓/.test(text) && isChatEasterEggAvailable_(key, Date.now());
   return named || followUp || quotesBot || work || egg
-    ? { named: named, followUp: followUp, quotesBot: quotesBot, work: work, easterEggAvailable: egg }
+    ? { named: named, followUp: followUp, quotesBot: quotesBot, work: work, easterEggAvailable: egg, weeklyNote: weeklyNote }
     : null;
 }
 
-function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs) {
+function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, quotesBot) {
   if (!snapshot || !key || deadline - Date.now() < 12000) return '';
   try {
     const reserved = withDataMutationLock_(function() {
       const state = readLineChatState_(key);
       const now = Date.now();
       if (!state || (state.resetId || '') !== (snapshot.resetId || '') || now + 12000 > deadline ||
-          eventAtMs <= (state.resetAtMs || 0) || state.autoAfterMs > now || state.lease && state.lease.until > now) return {};
+          eventAtMs <= (state.resetAtMs || 0) || state.autoAfterMs > now && !quotesBot ||
+          state.lease && state.lease.until > now) return {};
       const id = Utilities.getUuid();
-      state.lease = { id: id, until: deadline + LINE_REPLY_TIMEOUT_SECONDS * 1000 };
+      state.lease = { id: id, until: deadline + LINE_REPLY_TIMEOUT_SECONDS * 1000, quotesBot: quotesBot === true };
       PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
       return { id: id };
     }, 250);
@@ -148,7 +144,8 @@ function authorizeLineAutoReply_(key, leaseId, deadline, easterEgg) {
     return withDataMutationLock_(function() {
       const now = Date.now();
       const state = readLineChatState_(key);
-      if (!state || !state.lease || state.lease.id !== leaseId || now >= deadline || state.autoAfterMs > now) return {};
+      if (!state || !state.lease || state.lease.id !== leaseId || now >= deadline ||
+          state.autoAfterMs > now && !state.lease.quotesBot) return {};
       const props = PropertiesService.getScriptProperties();
       if (easterEgg) {
         if (!ENABLE_CHAT_EASTER_EGG) return {};
@@ -161,7 +158,7 @@ function authorizeLineAutoReply_(key, leaseId, deadline, easterEgg) {
         if (serialized.length > 8700) return {};
         props.setProperty(CHAT_EASTER_EGG_STATE_PROPERTY, serialized);
       }
-      state.autoAfterMs = now + CHAT_AUTO_REPLY_INTERVAL_MS;
+      state.autoAfterMs = Math.max(state.autoAfterMs || 0, now + CHAT_AUTO_REPLY_INTERVAL_MS);
       props.setProperty(key, JSON.stringify(state));
       return { allowed: true };
     }, 250).allowed === true;
@@ -187,6 +184,7 @@ function rememberLineReply_(key, snapshot, event, receipt, startsFollowUp, lease
     withDataMutationLock_(function() {
       const state = readLineChatState_(key);
       if (!state || (state.resetId || '') !== (snapshot.resetId || '') ||
+          Number(event.timestamp) > 0 && Number(event.timestamp) <= (state.resetAtMs || 0) ||
           leaseId && (!state.lease || state.lease.id !== leaseId)) return;
       const userId = event.source && event.source.userId;
       const props = PropertiesService.getScriptProperties();

@@ -37,7 +37,23 @@ function writeConversationMemoryLocked_(conversationId, generation, history) {
 }
 
 function getConversationHistory(conversationId) {
-  return readConversationMemory_(conversationId).history;
+  const state = readConversationMemoryChatState_(conversationId);
+  return state ? filterConversationHistoryAfterReset_(readConversationMemory_(conversationId).history, state.resetAtMs) : [];
+}
+
+function readConversationMemoryChatState_(conversationId) {
+  const key = getLineChatStateKey_(conversationId);
+  return key ? readLineChatState_(key) : {};
+}
+
+function filterConversationHistoryAfterReset_(history, resetAtMs) {
+  if (!resetAtMs) return history;
+  return history.filter(function(item, index) {
+    if (item.timestampMs && item.timestampMs <= resetAtMs) return false;
+    const previous = history[index - 1];
+    return item.role !== 'assistant' || !previous || previous.role !== 'user' ||
+      !previous.timestampMs || previous.timestampMs > resetAtMs;
+  });
 }
 
 function saveConversationHistory(conversationId, history) {
@@ -61,33 +77,43 @@ function clearConversationHistory(conversationId) {
   if (result.status === 'busy') throw createAiExecutionBudgetError_('Conversation memory lock is busy.');
 }
 
-function snapshotConversationMemory_(conversationId, deadlineAtMs) {
+function snapshotConversationMemory_(conversationId, deadlineAtMs, eventAtMs) {
   const remaining = Number(deadlineAtMs) > 0 ? deadlineAtMs - Date.now() : 1000;
   if (remaining <= 0) return { status: 'busy' };
   return withDataMutationLock_(function() {
+    const chatState = readConversationMemoryChatState_(conversationId);
+    if (!chatState || eventAtMs > 0 && eventAtMs <= (chatState.resetAtMs || 0)) {
+      return { status: 'stale', history: [], chatState: chatState };
+    }
     const memory = readConversationMemory_(conversationId);
     if (!memory.generation) {
       memory.generation = Utilities.getUuid();
       writeConversationMemoryLocked_(conversationId, memory.generation, memory.history);
     }
-    return { generation: memory.generation, history: memory.history };
+    return { generation: memory.generation, history: filterConversationHistoryAfterReset_(memory.history, chatState.resetAtMs),
+      chatState: chatState };
   }, Math.min(1000, remaining));
 }
 
-function commitConversationTurn_(conversationId, generation, turn, deadlineAtMs) {
+function commitConversationTurn_(conversationId, generation, turn, deadlineAtMs, eventAtMs) {
   const remaining = Number(deadlineAtMs) > 0 ? deadlineAtMs - Date.now() : 1000;
   if (remaining <= 0) return;
   withDataMutationLock_(function() {
+    const state = readConversationMemoryChatState_(conversationId);
+    const turnAtMs = Number(eventAtMs || turn[0].timestampMs) || 0;
+    if (!state || state.resetAtMs && turnAtMs <= state.resetAtMs) return;
     const latest = readConversationMemory_(conversationId);
     // 清理或 cache 已失效時保守捨棄；同世代以完成順序接上最新快取。
     if (latest.generation === generation) {
-      writeConversationMemoryLocked_(conversationId, generation, latest.history.concat(turn));
+      const history = filterConversationHistoryAfterReset_(latest.history, state.resetAtMs);
+      writeConversationMemoryLocked_(conversationId, generation, history.concat(turn));
     }
   }, Math.min(1000, remaining));
 }
 
 function buildConversationTurnCommit_(conversationId, generation, userText, assistantText, context, deadlineAtMs) {
   const quote = context.textQuote;
+  const eventAtMs = Number(context.beforeTimestampMs) || Date.now();
   const user = {
     role: 'user', content: userText, userId: context.currentUserId,
     messageId: context.currentMessageId, provenance: context.currentMessageId ? 'user_text' : '',
@@ -101,7 +127,7 @@ function buildConversationTurnCommit_(conversationId, generation, userText, assi
       assistant.messageId = (receipt.messageIds || [])[0];
       assistant.timestampMs = receipt.sentAtMs;
     }
-    try { commitConversationTurn_(conversationId, generation, [user, assistant], deadlineAtMs); }
+    try { commitConversationTurn_(conversationId, generation, [user, assistant], deadlineAtMs, eventAtMs); }
     catch (ignore) { console.warn('CONVERSATION_MEMORY_COMMIT_FAILED'); }
   };
 }

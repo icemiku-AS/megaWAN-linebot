@@ -1731,6 +1731,7 @@ check('LINE reset and confirmed cleanup deliver late replies without restoring p
         assert.equal(e.c.getConversationHistory('group:a').length, 1);
         assert(sendTextCommand(e, mode).includes('整理完成'));
       }
+      e.setNow(e.now() + 1);
       assert(e.c.runAiMemoryTask('general_chat', 'group:a', '新世代問題', '新世代問題').ok);
       return '遲到的答案仍回覆 LINE';
     });
@@ -1885,12 +1886,15 @@ check('archive attempted 429 consumes one scheduled attempt while retaining its 
 });
 
 let v210EventId = 620000;
-function v210Text(e, text, room = 'a', extra = {}) {
+function v210TextEvent(e, text, room = 'a', extra = {}) {
   const id = String(++v210EventId);
-  const input = { ...event, type: 'message', replyToken: id, webhookEventId: 'test-archive-event-' + id, timestamp: e.now(),
+  return { ...event, type: 'message', replyToken: id, webhookEventId: 'test-archive-event-' + id, timestamp: e.now(),
     source: { ...event.source, groupId: room }, message: { type: 'text', id, text, ...extra } };
+}
+function v210Text(e, text, room = 'a', extra = {}) {
+  const input = v210TextEvent(e, text, room, extra);
   e.c.handleLineEvent(input, e.now());
-  const delivery = e.fetches.find(call => call.url.includes('/message/reply') && JSON.parse(call.options.payload).replyToken === id);
+  const delivery = e.fetches.find(call => call.url.includes('/message/reply') && JSON.parse(call.options.payload).replyToken === input.replyToken);
   return delivery ? JSON.parse(delivery.options.payload).messages.map(message => message.text).join('\n') : '';
 }
 function v210EditorialOutput(options, overrides = {}) {
@@ -1899,6 +1903,58 @@ function v210EditorialOutput(options, overrides = {}) {
   const newsPayload = JSON.parse(user.split('新聞資料（不含網址）：\n').at(-1).split('\n\n')[0]);
   return JSON.stringify({ newsClusters: [], ungroupedNewsIds: newsPayload.map(item => item.itemId), conversationTopics: [], ...overrides });
 }
+
+check('v210 unclaimed webhooks cannot log, enqueue, archive, clean or deliver pending rows', () => {
+  const e = env();
+  const queue = queueWork(e).sheet;
+  const pendingSheet = e.c.ensurePendingRepliesSheet_();
+  e.c.appendRowByHeaders_(pendingSheet, { PendingId: 'pending-one', ConversationId: 'group:a',
+    ReplyText: '上一個背景結果', Status: 'pending', CreatedAt: new Date(e.now()) });
+  news(e, e.now() - 1000);
+  const before = JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data]));
+  const props = JSON.stringify([...e.props]);
+  const events = ['https://example.org/new', '#清空新聞 確認', '#封存本週新聞', '#小浣 幫我註記進本週新聞：市府宣布取消活動']
+    .map(text => v210TextEvent(e, text));
+  const invalid = v210TextEvent(e, '#清空紀錄 確認');
+  delete invalid.webhookEventId;
+  e.c.HtmlService = { createHtmlOutput: value => value };
+  e.lockWaits.length = 0;
+  e.setBusy(true);
+  assert.equal(e.c.doPost({ postData: { contents: JSON.stringify({ events: [...events, invalid] }) } }), 'OK');
+  e.setBusy(false);
+  assert.deepEqual(e.lockWaits, Array(2 * events.length).fill(300));
+  assert.equal(e.fetches.length, 0);
+  assert.equal(e.models.length, 0);
+  assert.equal(JSON.stringify([...e.props]), props);
+  assert.equal(JSON.stringify([...e.sheets].map(([name, sheet]) => [name, sheet.data])), before);
+  assert.equal(queue.records().length, 1);
+  assert.equal(pendingSheet.records().length, 1);
+});
+
+check('v210 webhook retry can claim a cleanup once and redelivery cannot clear newly added notes', () => {
+  const e = env({ configured: false });
+  const command = v210TextEvent(e, '#清空新聞 確認');
+  const run = () => e.c.handleLineEvent(command, e.now());
+  e.setBusy(true);
+  run();
+  assert.equal(e.fetches.length, 0);
+  e.setBusy(false);
+  e.setBusyUntil(e.now() + 450);
+  e.lockWaits.length = 0;
+  run();
+  assert.deepEqual(e.lockWaits.slice(0, 2), [300, 300]);
+  assert.equal(e.fetches.length, 1);
+  e.setNow(e.now() + 1000);
+  assert(v210Text(e, '#小浣 幫我註記進本週新聞：交通局宣布假日增班').includes('加進本週手動註記'));
+  const writes = e.sheets.get('ConversationLog').records().length;
+  const fetches = e.fetches.length;
+  command.replyToken = 'new-token-same-event';
+  command.deliveryContext = { isRedelivery: true };
+  run();
+  assert.equal(e.fetches.length, fetches);
+  assert.equal(e.sheets.get('ConversationLog').records().length, writes);
+  assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 1);
+});
 
 check('v210 morning messages save both events once and render with an empty NewsInbox even when editing fails', () => {
   const e = env({ configured: false, clock: Date.parse('2026-11-23T09:13:12+08:00') });
@@ -1931,7 +1987,7 @@ check('v210 morning messages save both events once and render with an empty News
   assert(detailed.includes('群組話題尚未完成'));
 
   e.setNow(e.now() + 1000);
-  assert(v210Text(e, '#小浣 幫我註記：對照群宣布月底上線新功能', 'b').includes('加進本週手動註記'));
+  assert(v210Text(e, '#小浣 幫我註記進本週新聞：對照群宣布月底上線新功能', 'b').includes('加進本週手動註記'));
   assert(v210Text(e, '#清空新聞').includes('本週手動註記'));
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 2);
   assert(v210Text(e, '#清空新聞 確認').includes('本週手動註記：2'));
@@ -1955,7 +2011,7 @@ check('v210 a pure note opens follow-up and records a turn only after LINE 2xx i
       }
       throw new Error('A pure note must not dispatch a model request');
     };
-    const question = '幫我註記：城市宣布停辦週末活動';
+    const question = '幫我註記進本週新聞：城市宣布停辦週末活動';
     const ack = v210Text(e, '#小浣 ' + question);
     assert.equal(e.fetches.length, 1);
     assert(ack.includes('加進本週手動註記了'));
@@ -1980,10 +2036,14 @@ check('v210 a pure note opens follow-up and records a turn only after LINE 2xx i
 
 check('v210 an unquoted note can use the same speaker’s recent ordinary description without event keywords', () => {
   const description = '新竹城隍廟旁那家老書店，星期五搬到建國路。';
-  for (const [author, elapsed, saved] of [['alice', 27000, true], ['bob', 27000, false], ['alice', 301000, false]]) {
+  for (const [author, elapsed, saved, contextAuthor] of [
+    ['alice', 27000, true], ['bob', 27000, false], ['alice', 301000, false],
+    ['alice', 27000, true, 'alice'], ['alice', 27000, false, 'bob']
+  ]) {
     const e = env({ configured: false });
     const chat = e.sheets.get('ConversationLog');
     assert.equal(e.c.extractWeeklyNoteText_(description).length, 0);
+    if (contextAuthor) chat.appendRow([new Date(e.now() - 1000), 'group:a', 'user', 'input', contextAuthor, '本週新聞想聊地方活動']);
     chat.appendRow([new Date(e.now()), 'group:a', 'user', 'input', author, description, '650052']);
     e.setNow(e.now() + elapsed - 1000);
     v210Text(e, 'wwww');
@@ -1991,8 +2051,8 @@ check('v210 an unquoted note can use the same speaker’s recent ordinary descri
     e.setNow(e.now() + 1000);
     v210Text(e, '#版本');
     e.setNow(e.now() + 1);
-    const ack = v210Text(e, '#小浣 幫我註記一下');
-    assert(!e.fetches.some(call => call.url.endsWith(':generateContent')));
+    const ack = v210Text(e, contextAuthor ? '#小浣 幫我註記一下' : '#小浣 幫我註記進本週新聞');
+    assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, contextAuthor === 'bob' ? 1 : 0);
     const notes = e.c.getRecentWeeklyNotes_('group:a');
     if (saved) {
       assert(ack.includes(description));
@@ -2000,10 +2060,157 @@ check('v210 an unquoted note can use the same speaker’s recent ordinary descri
       assert.equal(notes[0].sourceId, '650052');
       assert.equal(notes.length, 1);
     } else {
-      assert(ack.includes('補一句事件內容'));
+      if (contextAuthor === 'bob') assert(!ack.includes('本週手動註記'));
+      else assert(ack.includes('補一句事件內容'));
       assert.equal(notes.length, 0);
     }
   }
+});
+
+check('v210 generic private recording requests cannot acquire weekly note intent from quoted words', () => {
+  const e = env({ configured: false });
+  phase4Reply(e, () => '週會挪到星期五啦');
+  for (const text of ['請幫我記一下：公司的週會改到星期五。', '請幫我記一下：公司的週報要在星期五交。']) {
+    const input = v210TextEvent(e, text);
+    input.source.type = 'user';
+    e.c.handleLineEvent(input, e.now());
+    e.setNow(e.now() + 1);
+  }
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 2);
+  assert.equal(e.c.getRecentWeeklyNotes_('user:alice').length, 0);
+  assert(!e.c.isWeeklyNoteRequest_('朋友叫我「幫我註記進本週新聞」。'));
+  assert(!e.c.isWeeklyNoteRequest_('「這週新聞」是標題，請幫我記一下要繳費。'));
+});
+
+check('v210 explicitly referenced LINE quotes win over incidental events and missing quotes stay unwritten', () => {
+  const e = env({ configured: false });
+  const quoted = '港區那家社區電影院，星期四搬到博物館。';
+  e.sheets.get('ConversationLog').appendRow([new Date(e.now() - 1000), 'group:a', 'user', 'input', 'bob', quoted, '650053']);
+  const input = '#小浣 請把我引用的這一句註記進本週新聞，順帶一提市府宣布加開週末場';
+  const ack = v210Text(e, input, 'a', { quotedMessageId: '650053' });
+  assert(ack.includes(quoted));
+  assert(!ack.includes('市府宣布'));
+  e.setNow(e.now() + 1000);
+  const missing = v210Text(e, input.replace('我引用的這一句', '上面這則'), 'a', { quotedMessageId: '650054' });
+  assert(missing.includes('補一句事件內容'));
+  const notes = e.c.getRecentWeeklyNotes_('group:a');
+  assert.equal(notes.length, 1);
+  assert.equal(notes[0].sourceId, '650053');
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 0);
+});
+
+check('v210 a follow-up question is answered after the receipt and does not become a note', () => {
+  const e = env({ configured: false });
+  const followup = '這會對老玩家造成什麼影響？';
+  const answer = '老玩家可能得另外找同伴，已買的內容則要看官方安排。';
+  phase4Reply(e, (_url, options) => {
+    const parts = JSON.parse(options.payload).contents.flatMap(turn => turn.parts);
+    const status = parts.find(part => part.text.startsWith('LINE_TURN_STATUS\n')).text.split('\n')[1];
+    assert.equal(JSON.parse(status).additionalQuestion, followup);
+    return answer;
+  });
+  const text = '#小浣 幫我註記進本週新聞：RPG 伺服器宣布關閉，另外，' + followup;
+  const ack = v210Text(e, text);
+  assert(ack.startsWith('加進本週手動註記了'));
+  assert(ack.endsWith(answer));
+  const notes = e.c.getRecentWeeklyNotes_('group:a');
+  assert.deepEqual(Array.from(notes, item => item.text), ['RPG 伺服器宣布關閉']);
+  assert.deepEqual(e.keyReads, ['GEMINI_API_KEY']);
+  assert.equal(e.c.getConversationHistory('group:a').at(-1).content, ack);
+});
+
+check('v210 news cleanup revokes both pure and mixed note receipts before transport', () => {
+  for (const mixed of [false, true]) {
+    const e = env({ configured: false });
+    const note = '#小浣 幫我註記進本週新聞：市府宣布活動改期';
+    const clearNotes = () => {
+      assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 1);
+      e.setNow(e.now() + 1);
+      e.c.performDataCleanup_('news_data', 'group:a');
+    };
+    if (mixed) {
+      phase4Reply(e, () => {
+        clearNotes();
+        return '改期可能影響交通。';
+      });
+    } else {
+      const send = e.c.sendLineReplyWithLog_;
+      e.c.sendLineReplyWithLog_ = (...args) => {
+        clearNotes();
+        return send(...args);
+      };
+    }
+    const result = v210Text(e, mixed ? note + '\n另外，這會造成什麼影響？' : note);
+    assert(result.includes('請重新註記'));
+    assert(!/加進|活動改期|影響交通/.test(result));
+    assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 0);
+    assert.equal(e.c.getConversationHistory('group:a').length, 0);
+    assert.equal(e.c.readLineChatState_(e.c.getLineChatStateKey_('group:a')).replies, undefined);
+    assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, mixed ? 1 : 0);
+  }
+});
+
+check('v210 weekly report rechecks the note boundary during editing and at final send without another model', () => {
+  for (const stage of ['model', 'send']) {
+    const e = env({ configured: false });
+    e.restoreAi();
+    news(e, e.now() - 1000, 'group:a', '當週原有新聞');
+    assert(v210Text(e, '#小浣 幫我註記進本週新聞：港務處宣布關閉舊貨梯').includes('加進本週手動註記'));
+    e.setNow(e.now() + 1);
+    const clearNotes = () => { e.setNow(e.now() + 1); e.c.performDataCleanup_('news_data', 'group:a'); };
+    phase4Reply(e, (_url, options) => {
+      if (stage === 'model') clearNotes();
+      return v210EditorialOutput(options, { openingComment: '這週新聞主要在聊素材。' });
+    });
+    if (stage === 'send') {
+      const send = e.c.sendLineReplyWithLog_;
+      e.c.sendLineReplyWithLog_ = (...args) => {
+        assert(args[3].text.includes('本週手動註記'));
+        clearNotes();
+        return send(...args);
+      };
+    }
+    const result = v210Text(e, '#本週新聞');
+    assert(result.startsWith('這週新聞主要在聊素材。'));
+    assert(result.includes('當週原有新聞'));
+    assert(!result.includes('本週手動註記'));
+    assert(!result.includes('舊貨梯'));
+    assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 1);
+  }
+});
+
+check('v210 a webhook arriving after reset with an older event timestamp never joins the new generation', () => {
+  const e = env({ configured: false });
+  const scope = 'group:a';
+  const stale = v210TextEvent(e, '#小浣 重設前的遲到問題');
+  stale.source.userId = 'late-author';
+  e.setNow(e.now() + 1000);
+  const resetTime = e.now();
+  assert(v210Text(e, '#reset').includes('短期記憶'));
+  e.setNow(e.now() + 1000);
+  phase4Reply(e, (_url, options) => {
+    if (options.payload.includes('重設前的遲到問題')) {
+      assert(!options.payload.includes('新世代已送達'));
+      return '這則遲到事件仍可回覆';
+    }
+    return '新世代已送達';
+  });
+  v210Text(e, '#小浣 重設後的問題');
+  e.c.handleLineEvent(stale, e.now());
+  assert(e.fetches.some(call => call.url.includes('/message/reply') &&
+    JSON.parse(call.options.payload).messages[0].text.includes('遲到事件仍可回覆')));
+  assert.deepEqual(Array.from(e.c.getConversationHistory(scope), item => item.content), ['重設後的問題', '新世代已送達']);
+  const state = e.c.readLineChatState_(e.c.getLineChatStateKey_(scope));
+  assert(!state.replies.some(reply => reply.userId === 'late-author'));
+  const memoryKey = e.c.getHistoryCacheKey(scope);
+  const snapshot = JSON.parse(e.cache.get(memoryKey));
+  const staleTurn = [{ role: 'user', content: '舊輪', timestampMs: resetTime - 1 },
+    { role: 'assistant', content: '舊輪在重設後晚到的回覆', timestampMs: resetTime + 1 }];
+  e.c.commitConversationTurn_(scope, snapshot.generation, staleTurn, e.now() + 1000);
+  assert.equal(JSON.parse(e.cache.get(memoryKey)).history.length, 2);
+  snapshot.history.unshift(...staleTurn);
+  e.cache.set(memoryKey, JSON.stringify(snapshot));
+  assert.deepEqual(Array.from(e.c.getConversationHistory(scope), item => item.content), ['重設後的問題', '新世代已送達']);
 });
 
 check('v210 context-only weekly report accepts substantive bot calls and skips empty views without AI', () => {
@@ -2023,6 +2230,32 @@ check('v210 context-only weekly report accepts substantive bot calls and skips e
   assert(gen.options.payload.includes('皮克敏伺服器又停服了')); assert(!gen.options.payload.includes('幫我註記'));
   assert(v210Text(e, '#本週新聞 精簡').includes('停服後續'));
   assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 1);
+});
+
+check('v210 unmatched filtered weekly views stay empty and operation-only mentions are not editorial topics', () => {
+  const e = env({ configured: false });
+  const chat = e.sheets.get('ConversationLog');
+  for (const [text, mode] of [
+    ['@小浣 幫我註記一下', 'input'],
+    ['幫我註記進本週新聞', 'input'],
+    ['@小浣 幫我摘要這篇 https://example.org/article', 'news_inbox_url_message'],
+    ['小浣，幫我整理這篇', 'input'],
+    ['幫我查一下', 'input']
+  ]) {
+    chat.appendRow([new Date(e.now() - 1000), 'group:a', 'user', mode, 'alice', text]);
+  }
+  assert(v210Text(e, '#本週新聞').includes('還沒有'));
+  assert.equal(e.models.length, 0);
+  assert(v210Text(e, '#小浣 幫我註記進本週新聞：市府宣布週末活動改期').includes('加進本週手動註記'));
+  news(e, e.now() - 1000, 'group:a', '一般新聞');
+  for (const command of ['#本週新聞 高潛力', '#本週新聞 高潛力 詳細', '#本週新聞 分類 無相符分類', '#本週新聞 詳細 分類 無相符分類']) {
+    const reply = v210Text(e, command);
+    assert(reply.includes('NewsInbox 還沒有可整理'));
+    assert(!reply.includes('本週手動註記'));
+    assert(!reply.includes('一般新聞'));
+  }
+  assert.equal(e.models.length, 0);
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 0);
 });
 
 check('v210 optional editorial opening is cached, evidence-bounded by prompt, and invalid openings preserve coverage', () => {
@@ -2076,15 +2309,69 @@ check('v210 manual notes enforce bounded storage, Unicode-safe display and rolli
   }
   const saved = e.c.getRecentWeeklyNotes_('group:a');
   assert.equal(saved.length, 30);
+  assert.equal(e.c.getRecentWeeklyNotesSnapshot_('group:a').evictedCount, 5);
   assert(Buffer.byteLength(e.props.get(e.c.getWeeklyNotesKey_('group:a')), 'utf8') <= 8700);
   const block = e.c.formatWeeklyManualNotesBlock_(saved);
   assert(block.includes('公司34宣布上市')); assert(!block.includes('公司0宣布上市'));
   const count = block.split('\n').filter(part => part.startsWith('・')).length;
   assert(block.includes('另有 ' + (saved.length - count) + ' 筆手動註記因篇幅省略'));
   assert(block.isWellFormed());
+  assert(v210Text(e, '#本週新聞').includes('另有 5 筆手動註記因容量上限省略'));
   e.setNow(e.now() + 8 * 86400000);
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 0);
   assert.equal(JSON.parse(e.props.get(e.c.getWeeklyNotesKey_('group:a'))).items.length, 0);
+});
+
+check('v210 note dedup preserves decimal precision, signs and percents while folding equivalent typography', () => {
+  const e = env({ configured: false });
+  const note = value => v210Text(e, '#小浣 幫我註記進本週新聞：市府宣布活動預算改為 ' + value);
+  const values = ['5.5%。', '55%。', '+5.5%。', '-5.5%。', '5.5。'];
+  for (const value of values) assert(note(value).includes('加進本週手動註記了'));
+  assert(note('５．５％！').includes('本週已經有這幾筆'));
+  assert(note('−５．５％').includes('本週已經有這幾筆'));
+  assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, values.length);
+  assert.deepEqual(e.keyReads, []);
+});
+
+check('v210 UTF-8 capacity evictions appear in weekly output and clear or expire with the rolling window', () => {
+  for (const mode of ['clear', 'expiry']) {
+    const e = env({ configured: false });
+    const total = 27;
+    for (let i = 0; i < total; i += 9) {
+      const notes = Array.from({ length: 9 }, (_, n) => '公司' + (i + n) + '宣布調整活動：' + '訊'.repeat(145));
+      assert(v210Text(e, ['#小浣 幫我註記本週新聞', ...notes].join('\n')).includes('加進本週手動註記'));
+      e.setNow(e.now() + 1000);
+    }
+    const snapshot = e.c.getRecentWeeklyNotesSnapshot_('group:a');
+    assert(snapshot.items.length < total);
+    assert.equal(snapshot.evictedCount, total - snapshot.items.length);
+    assert(Buffer.byteLength(e.props.get(e.c.getWeeklyNotesKey_('group:a')), 'utf8') <= 8700);
+    assert(v210Text(e, '#本週新聞 詳細').includes(snapshot.evictedCount + ' 筆手動註記因容量上限省略'));
+    if (mode === 'clear') v210Text(e, '#清空新聞 確認');
+    else e.setNow(e.now() + 7 * 86400000 + 1);
+    const after = e.c.getRecentWeeklyNotesSnapshot_('group:a');
+    assert.equal(after.items.length, 0);
+    assert.equal(after.evictedCount, 0);
+    assert(!v210Text(e, '#本週新聞').includes('因容量上限省略'));
+  }
+});
+
+check('v210 evicted notes expire at their source times within the same hour', () => {
+  const e = env({ configured: false });
+  const firstAt = Math.floor(e.now() / 3600000) * 3600000 + 1000;
+  const first = '#小浣 幫我註記進本週新聞：';
+  e.setNow(firstAt);
+  assert(v210Text(e, first + '市府宣布週日加開場次').includes('加進本週手動註記'));
+  e.setNow(firstAt + 1000);
+  assert(v210Text(e, first + '交通局宣布週末延長營業').includes('加進本週手動註記'));
+  e.setNow(firstAt + 2000);
+  const notes = Array.from({ length: 30 }, (_, i) => '公司' + i + '宣布更新項目');
+  assert(v210Text(e, ['#小浣 幫我註記本週新聞', ...notes].join('\n')).includes('加進本週手動註記'));
+  assert.equal(e.c.getRecentWeeklyNotesSnapshot_('group:a').evictedCount, 2);
+  e.setNow(firstAt + 7 * 86400000 + 1);
+  assert.equal(e.c.getRecentWeeklyNotesSnapshot_('group:a').evictedCount, 1);
+  e.setNow(e.now() + 1000);
+  assert.equal(e.c.getRecentWeeklyNotesSnapshot_('group:a').evictedCount, 0);
 });
 
 check('v210 gated note uses trusted context and save status; missing, write failure and ambiguous speaker stay honest', () => {
@@ -2112,7 +2399,7 @@ check('v210 gated note uses trusted context and save status; missing, write fail
 
   e.setNow(e.now() + 1000);
   e.setPropertyFailure(key => { if (key.startsWith('WEEKLY_NOTES_')) throw Error('PRIVATE_WRITE_FAILURE'); });
-  const failed = v210Text(e, '#小浣 幫我註記：城市取消原訂的週末展覽');
+  const failed = v210Text(e, '#小浣 幫我註記進本週新聞：城市取消原訂的週末展覽');
   assert(failed.includes('沒存成功')); assert(!failed.includes('封存好了')); assert(!failed.includes('PRIVATE_WRITE_FAILURE'));
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 1);
   assert.deepEqual(e.keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_API_KEY']);
