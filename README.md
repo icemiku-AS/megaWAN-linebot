@@ -13,11 +13,11 @@
 
 ## 使用方式
 
-私訊直接提問。群組可用 LINE 原生 `@小浣`，或把 `#小浣` 放在訊息任意位置，包括多行訊息的第二行。普通群聊通常保持安靜。遇到明確協作、叫名字或續問時，小浣會判斷是否接話。第三人稱談到小浣或只傳「笑死」「+1」等短訊息通常保持安靜。
+私訊直接提問。群組可用 LINE 原生 `@小浣`，或把 `#小浣` 放在訊息任意位置，包括多行訊息的第二行。小浣會依前文判斷是否接住協作、點名、玩笑或續問。客觀聊版本更新、換模型，或只傳「笑死」「+1」時通常保持安靜。
 
-說「小浣吐嘈啊！」或「呼叫小浣講個冷笑話」可以直接交辦，小浣會用一般聊天回答。這兩類指示仍遵守同房回覆間隔。
+說「小浣吐嘈啊！」「小浣出來面對」或「小浣你怎麼看？」可以直接交辦。「小浣突然掛了，是還在垃圾桶嗎」這類玩笑，小浣也會看前文接話。
 
-小浣可帶入同聊天室最近 2 小時、最多 15 則前文，總預算 3,000 字元。自然接話同房一般間隔 20 秒，直接引用已送達的小浣回覆可略過間隔。彩蛋預設開啟，通過判斷時最多插一句，每房冷卻 6 小時。維護者可在 `00_Config.gs` 將 `ENABLE_CHAT_EASTER_EGG` 設為 `false`。
+小浣可帶入同聊天室最近 2 小時、最多 15 則前文，總預算 3,000 字元。自然接話同房一般間隔 20 秒，直接引用已送達的小浣回覆可略過間隔。一般純閒聊每房每 2 分鐘最多判斷一次，有梗時可以插一句。純閒聊與彩蛋共用 30 分鐘冷卻。維護者可在 `00_Config.gs` 用 `ENABLE_CHAT_AMBIENT_BANTER` 單獨關掉純閒聊探測，或用 `ENABLE_CHAT_EASTER_EGG` 關掉所有主動插話。
 
 ### 聊天與研究
 
@@ -119,13 +119,13 @@ Gemini 是唯一啟用的 AI 供應商。DeepSeek 保留為 dormant。多數模�
 
 Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`。`GEMINI_API_KEY` 供一般任務，`GEMINI_SEARCH_API_KEY` 只在啟用 Google 搜尋時讀取。可分用免費與付費專案，或兩格同填已連結 Google AI Pro 抵免額的付費 Key。填同一 Key 時兩路共用該專案的配額與帳務。憑證值只放 Script Properties。 [Google AI Pro 抵免額說明](https://blog.google/innovation-and-ai/technology/developers-tools/google-cloud-credits-gdp-ai-studio/)
 
-1. 備份現行 GAS、試算表、Properties 和封存游標。已開啟固定封存時，在切換期間暫設 `autoEnabled=false`。從 v2.1.0 更新時同步 `03_ResponseTexts.gs`、`08_ChatWake.gs`、`12_Prompts.gs`。從 v2.0.0 更新時同步全部 24 個同版 `.gs`，包含 `08_ChatWake.gs` 與 `37_WeeklyNotes.gs`。Markdown 與測試留在 Git。
+1. 備份現行 GAS、試算表、Properties 和封存游標。已開啟固定封存時，在切換期間暫設 `autoEnabled=false`。從 v2.1.0 更新時同步 `00_Config.gs`、`03_ResponseTexts.gs`、`08_ChatWake.gs`、`12_Prompts.gs`。從 v2.0.0 更新時同步全部 24 個同版 `.gs`，包含 `08_ChatWake.gs` 與 `37_WeeklyNotes.gs`。Markdown 與測試留在 Git。
 2. 從 v2.0.0 升級需執行 0 個 Sheet migration，手動新增 0 個 Script Property。初始化資料表與封存欄位限首次建置。新專案使用 `setupLogSheet()`，首次啟用固定封存依序用 `previewNewsArchiveSetup()` 與 `setupNewsArchiveStorage()`。
 3. **先更新 Web App deployment**。在 GAS 建立版本並更新原部署，保留 URL。核對每分鐘一個 `processNewsUrlQueue`，需要時執行 `installNewsUrlQueueTrigger()`。
 4. **再驗證新版手動入口**。以 LINE `#版本` 核對 v2.1.1，測試點名吐槽、講笑話、自然喚醒、精確引用、純註記、零新聞週報、網址分流及手動封存。production smoke 要確認真實 `MessageId` 與 `QuotedMessageId` 回讀後仍是原字串。 [完整 LINE／GAS 驗收清單](CURRENT_VERSION.md#line--gas-上線驗收)
 5. **最後啟用自動封存**。恢復已驗收聊天室需要的 `autoEnabled=true` 設定，核對既有 `processScheduledNewsArchives`。首次安裝或需修正時執行 `installNewsArchiveTrigger()`。
 
-本機 `node tests/smoke.cjs` 通過 284 項，`node tests/news_workflows.cjs` 通過 149 項，合計 433 項。測試使用 GAS／LINE／Sheets／Gemini 模擬。 [專案修改規則](AGENTS.md) · [完整部署步驟](CURRENT_VERSION.md#gas-部署與實測)
+本機 `node tests/smoke.cjs` 通過 289 項，`node tests/news_workflows.cjs` 通過 149 項，合計 438 項。測試使用 GAS／LINE／Sheets／Gemini 模擬。 [專案修改規則](AGENTS.md) · [完整部署步驟](CURRENT_VERSION.md#gas-部署與實測)
 
 ## 版本沿革摘要
 
@@ -149,4 +149,4 @@ Script Properties 沿用 `LINE_CHANNEL_ACCESS_TOKEN`、`SPREADSHEET_ID`。`GEMIN
 | v1.17.0 | 固定週三新聞封存、手動／自動防重與補跑；保留週編輯台話題，啟用需補四欄、設定與手動安裝 Trigger |
 | v2.0 | Gemini 雙 Key 與三段配額降級、聊天短鎖、舊快讀與話題功能退場；保留新聞收件與週三封存 |
 | v2.1 | 近期群聊前文、自然喚醒守門員與小浣人設、本週手動註記、零新聞週報及開頭點評 |
-| v2.1.1 | 修正明確點名吐槽或講笑話的漏接，保留同房限頻與待回覆優先 |
+| v2.1.1 | 放寬自然點名與玩笑，新增純閒聊 2 分鐘探測，主動插話共用 30 分鐘冷卻 |

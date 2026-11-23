@@ -6,7 +6,7 @@ MEGA浣 / 小浣 **v2.1.1 Context, Persona & Natural Wake-up Edition**（2026-11
 
 ## 本版邊界
 
-- v2.1.1 修正「小浣吐嘈啊！」或「呼叫小浣講一個冷笑話」這類自然點名漏接。明確短指示直接進聊天回答，仍遵守待回覆優先、同房處理資格與 20 秒回覆間隔。
+- v2.1.1 支援更自然的點名和玩笑，例如「小浣吐嘈啊！」「小浣出來面對」。明確短指示直接進聊天回答。純閒聊有梗可接時也能偶爾插一句，仍遵守待回覆優先、同房處理資格與 20 秒回覆間隔。
 - Google Apps Script 共 24 個活躍 `.gs` 檔。`08_ChatWake.gs` 管理事件去重、自然喚醒與限頻，`37_WeeklyNotes.gs` 管理本週手動註記。Gemini 是唯一啟用的供應商，`15_DeepSeekProvider.gs` 保留供相容與診斷使用。 [完整檔案表](README.md#現行架構)
 - 群組、多人聊天室與私訊加入近期對話前文。群組新增自然喚醒、LINE 原生 `@小浣` 與訊息內 `#小浣` 呼叫。聊天與看圖更新小浣語氣，研究仍按證據回答。
 - 新增本週手動註記，並在週報固定呈現。週編輯台可選擇輸出開頭點評。`#本週新聞` 保留預設、精簡、詳細、高潛力、分類與診斷。`#封存本週新聞`、`#新聞補充`、`#狀態回報` 與 `PendingReplies` 沿用既有流程。
@@ -58,9 +58,10 @@ MEGA浣 / 小浣 **v2.1.1 Context, Persona & Natural Wake-up Edition**（2026-11
 ## 近期對話、自然喚醒與人設
 
 - 群組、多人聊天室及私訊從同一 `ConversationLog` 的尾端最多掃描 500 列，帶入當前訊息之前、最近 2 小時內最新最多 15 則合格文字，動態前文總預算 3,000 字元。一般群聊與小浣回覆可入選，純系統指令排除，圖片衍生摘要由既有圖片回憶路徑取用。精確 LINE 文字引用優先，近期前文與六輪短期記憶共用成員代稱，以可信訊息 ID 去重。
-- 固定指令、LINE 原生 `@小浣`、任意位置的 `#小浣` 與私訊跳過守門員。點名加上明確的吐槽或講笑話短指示也會跳過分類，從一般聊天接上前文。其餘群組自然喚醒先篩姓名、明確協作、同一人最近 90 秒內收到的小浣回覆、直接引用小浣及彩蛋等候選，再以 `chat_gatekeeper` 分類。日常噪音無需分類，第三人稱描述、守門員逾時、配額阻擋或錯誤時保持安靜。
+- 固定指令、LINE 原生 `@小浣`、任意位置的 `#小浣` 與私訊跳過守門員。點名加上明確短指示也會直接進聊天，例如「小浣不要裝死」「小浣你怎麼看」。其餘群組訊息先篩姓名、協作、同一人最近 90 秒內收到的小浣回覆、引用小浣、對小浣開玩笑及彩蛋等候選，再以 `chat_gatekeeper` 分類。「太不吵」「怎麼裝死」等省略姓名的短句可依前文判斷是否在虧小浣。客觀技術敘述、守門員逾時、配額阻擋或錯誤時保持安靜。
 - 正式 webhook 在寫入前用 `webhookEventId` 登記與去重。鎖忙會短重試一次，仍無法登記即結束事件。`PendingReplies` 優先使用 reply token，鎖忙時自動接話讓位。同聊天室只允許一個自動回覆處理中，普通自動回覆有 20 秒間隔。直接引用已確認送達的小浣回覆可略過間隔，仍須取得同一處理資格。
-- `00_Config.gs` 的 `ENABLE_CHAT_EASTER_EGG` 預設開啟，可設為 `false` 關閉。命中觸發詞且通過守門員時可插一句，每聊天室以 Script Properties 持久記錄 6 小時冷卻。彩蛋只用 `GEMINI_API_KEY`。
+- `00_Config.gs` 的 `ENABLE_CHAT_EASTER_EGG` 預設開啟，控制彩蛋與純閒聊主動插話。`ENABLE_CHAT_AMBIENT_BANTER` 預設開啟，可單獨關掉純閒聊探測。沒有姓名、協作、續問或彩蛋詞等訊號的普通群聊，排除網址、指令和短噪後有至少 6 字，才可在 30 分鐘冷卻結束後探測。每房每 2 分鐘最多送守門員一次，時間戳 `ambientProbeAfterMs` 記在既有 `LINE_CHAT_STATE_*`。
+- 守門員選擇略過純閒聊時，只推進 2 分鐘探測間隔。成功插話後，彩蛋與純閒聊共用同房 30 分鐘冷卻。插話最多一句、100 字，只用 `GEMINI_API_KEY`，搜尋與手動註記沿用彩蛋護欄。v2.1.0 已寫入的冷卻紀錄照原定時間到期。
 - 聊天與圖片回覆在靜態系統提示放小浣人設、證據與任務規則，近期前文、回執狀態與最近開頭在使用者訊息區組裝。日常接話簡短，查證與看圖按證據回答。純機器 JSON 任務保持資料格式，週編輯台只有 `openingComment` 使用小浣口吻。
 
 ## 新聞 Queue、週編輯台與固定封存
@@ -85,7 +86,7 @@ MEGA浣 / 小浣 **v2.1.1 Context, Persona & Natural Wake-up Edition**（2026-11
 ### 上傳 GAS 後的手動啟用順序
 
 1. 備份現有 v2.0.0 試算表、GAS 原始碼、Script Properties 和觸發器配置，保留封存游標。已開啟固定封存的聊天室在切換期間先暫設 `autoEnabled=false`，並確認執行中的工作完成。
-2. 已部署 v2.1.0 時，同步本次變更的 `03_ResponseTexts.gs`、`08_ChatWake.gs` 與 `12_Prompts.gs`。從 v2.0.0 升級時同步全部 24 個同版 `.gs`，其中包含 `08_ChatWake.gs` 與 `37_WeeklyNotes.gs`。升級需執行 0 個 Sheet migration，需手動填寫 0 個新 Script Property。沿用五張活躍表、既有憑證、`NEWS_ARCHIVE_CONFIG` 和 `NEWS_ARCHIVE_STATE_*`。`LINE_WEBHOOK_EVENTS_*`、`LINE_CHAT_STATE_*`、`CHAT_EASTER_EGG_STATE` 與 `WEEKLY_NOTES_*` 都由程式按需建立。
+2. 已部署 v2.1.0 時，同步本次變更的 `00_Config.gs`、`03_ResponseTexts.gs`、`08_ChatWake.gs` 與 `12_Prompts.gs`。從 v2.0.0 升級時同步全部 24 個同版 `.gs`，其中包含 `08_ChatWake.gs` 與 `37_WeeklyNotes.gs`。升級需執行 0 個 Sheet migration，需手動填寫 0 個新 Script Property。沿用五張活躍表、既有憑證、`NEWS_ARCHIVE_CONFIG` 和 `NEWS_ARCHIVE_STATE_*`。`LINE_WEBHOOK_EVENTS_*`、`LINE_CHAT_STATE_*`、`CHAT_EASTER_EGG_STATE` 與 `WEEKLY_NOTES_*` 都由程式按需建立。
 3. 首次建置時才執行 `setupLogSheet()`。初次配置固定封存時，先在 `autoEnabled=false` 下填寫 `NEWS_ARCHIVE_CONFIG`，執行 `previewNewsArchiveSetup()` 比對舊期間，再用 `setupNewsArchiveStorage()` 建立封存欄位與初始狀態。
 4. **先更新 Web App deployment**。建立同版 GAS version，更新既有部署並保留 URL，核對 webhook 使用 `doPost`。確認每分鐘一個 `processNewsUrlQueue` 觸發器，缺少或重複時用 `installNewsUrlQueueTrigger()` 修正。既有 v2.0.0 專案應已移除舊 `processWebTaskQueue` 觸發器。
 5. **再驗證新版手動入口**。從 LINE `#版本` 確認 `v2.1.1 Context, Persona & Natural Wake-up Edition` 與 `2026-11-23`。按下方驗收項目檢查喚醒、註記、週報、收件及手動封存。
@@ -99,7 +100,7 @@ MEGA浣 / 小浣 **v2.1.1 Context, Persona & Natural Wake-up Edition**（2026-11
 
 ### LINE / GAS 上線驗收
 
-- 在測試聊天室先聊一件事，再發「小浣吐嘈啊！！！」，核對它會接話。等 20 秒後再測「呼叫小浣講一個冷笑話」。用「小浣吐槽得很好笑」驗證第三人稱描述保持安靜，並核對明確交辦即使在彩蛋冷卻期間也可回答。
+- 在測試聊天室先聊一件事，再發「小浣吐嘈啊！！！」，核對它會接話。隔 20 秒再測「小浣出來面對」和「但小浣突然掛了，是還在垃圾桶嗎」。用客觀的換模型敘述核對它保持安靜。再用有梗的純閒聊核對 2 分鐘探測節流、30 分鐘共用冷卻、短回覆、一般 Key 和純閒聊獨立開關。
 - 驗證原生 `@小浣`、第二行 `#小浣`、私訊及固定指令直通。先貼普通群聊，再提問看小浣能否接前文。測試純噪音、第三人稱聊小浣、五句連發與 webhook 重送。確認收到回覆後可自然續問，直接引用出站訊息可在 20 秒內接話，並檢查彩蛋的關閉設定與冷卻。
 - 用「幫我查我們的新聞有沒有這則」核對只讀內部 NewsInbox。用「幫我查 LINE 的聊天室功能」或明示聯網圖片研究核對 `GEMINI_SEARCH_API_KEY` 與獨立來源。確認守門員只讀一般 Key，並在測試部署核對 429、`AI_CALL_METADATA`、延後時間、重試數與 PT 午夜後的起點。
 - 驗證私訊與引用圖片、群組直接收圖的靜默摘要。測試 `#reset` 與 `#清空紀錄 確認` 後的近期前文、續問與遲到回合。明示引用仍可取用清理範圍外的已保留原文。
@@ -107,4 +108,4 @@ MEGA浣 / 小浣 **v2.1.1 Context, Persona & Natural Wake-up Edition**（2026-11
 - 先在測試聊天室描述無網址的事件，再以同作者請小浣註記進本週新聞。驗證純註記回執、明示引用、重複註記、附帶提問、零篇新聞週報與選填開頭點評。確認高潛力或分類查無匹配。用 `#清空新聞 確認` 檢查註記、NewsInbox 和 Queue 的清除範圍。
 - 驗證群組普通網址靜默收件、明確的網址摘要分流、私訊同步收件、待回覆優先和送達後才刪除。用長週報核對話題及來源，並確認封存到期與防重。清理只在指定測試聊天室驗收，核對其他聊天室及歷史分頁完整。
 
-本機 `node tests/smoke.cjs` 通過 284 項，含 89 項 DeepSeek 相容測試。`node tests/news_workflows.cjs` 通過 149 項，合計 433 項。測試以 24 個 GAS 原始檔執行本機模擬。未能本機執行 GAS，未執行 live LINE／Sheets／Gemini 或部署。上線驗收由維護者在實際專案完成。
+本機 `node tests/smoke.cjs` 通過 289 項，含 89 項 DeepSeek 相容測試。`node tests/news_workflows.cjs` 通過 149 項，合計 438 項。測試以 24 個 GAS 原始檔執行本機模擬。未能本機執行 GAS，未執行 live LINE／Sheets／Gemini 或部署。上線驗收由維護者在實際專案完成。

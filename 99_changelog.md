@@ -1,8 +1,9 @@
 2026-11-23
 v2.1.1 Context, Persona & Natural Wake-up Edition
-- 「小浣吐嘈啊！」與「呼叫小浣講一個冷笑話」這類明確點名短指示直接進聊天回答。辨識吐槽、吐嘈與吐糟，維持同房限頻、待回覆優先與彩蛋冷卻。
-- 調整守門員對直接交辦和第三人稱描述的判斷說明。新增 3 項群組接話回歸，本機 284 項 smoke 與 149 項新聞流程共 433 項通過。
-- 從 v2.1.0 更新需同步 03_ResponseTexts.gs、08_ChatWake.gs 與 12_Prompts.gs，Sheet migration 與新手動 Script Property 為 0。
+- 「小浣吐嘈啊！」「呼叫小浣講一個冷笑話」「小浣出來面對」等明確點名直接進聊天回答。守門員也辨識輕鬆虧小浣的語境，維持同房限頻與待回覆優先。
+- 彩蛋與純閒聊主動插話共用 30 分鐘冷卻。普通群聊有梗時可回一句。每房每 2 分鐘最多探測一次，守門員略過時只推進探測間隔。純閒聊探測可獨立關閉。
+- 本機 289 項 smoke 與 149 項新聞流程共 438 項通過。涵蓋探測節流、送出後冷卻、一般 Key、開關及靜默收件。
+- 從 v2.1.0 更新需同步 00_Config.gs、03_ResponseTexts.gs、08_ChatWake.gs 與 12_Prompts.gs，Sheet migration 與新手動 Script Property 為 0。
 
 2026-11-23
 v2.1.0 Context, Persona & Natural Wake-up Edition

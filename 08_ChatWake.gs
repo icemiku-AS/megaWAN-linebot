@@ -82,16 +82,25 @@ function getLineChatWakeSignals_(event, key, state, text, quote, weeklyNoteReque
     quote.sentAtMs <= before && quote.sentAtMs > resetAtMs || replies.some(function(reply) {
       return reply.at <= before && reply.at > resetAtMs && reply.ids.includes(quotedId);
     }));
-  const compact = text.replace(/[\s！？!?。，、…~～]+/g, '');
-  if (!followUp && !quotesBot && (!compact || /^(?:[wｗ]+|笑死|OP|OK|[+＋]1|哈+|嗯+|喔+|哦+|[\p{P}\p{S}]+)$/iu.test(compact))) return null;
+  const compact = text.replace(/[^\p{L}\p{N}]+/gu, '');
+  if (!followUp && !quotesBot && (!compact || /^(?:[wｗ]+|笑死|OP|OK|1|哈+|嗯+|喔+|哦+)$/iu.test(compact))) return null;
 
   const named = /小浣|mega浣|浣熊/i.test(text);
   const weeklyNote = weeklyNoteRequested === true || isWeeklyNoteRequest_(text);
   const work = weeklyNote || isExplicitWebSearchRequest_(text) || isLineUrlResearchRequest_(text, false) ||
     /幫我(?:查|找|讀|看|整理|比對|補|記|列|確認|想)|幫忙(?:查|讀|整理|註記)|查證|收過嗎|聊過嗎|記進本週新聞|麻煩.{0,12}(?:找|查|整理|確認)/.test(text);
-  const egg = /垃圾|棉花糖|乾脆麵|小熊貓|貍貓|狸貓/.test(text) && isChatEasterEggAvailable_(key, Date.now());
-  return named || followUp || quotesBot || work || egg
-    ? { named: named, followUp: followUp, quotesBot: quotesBot, work: work, easterEggAvailable: egg, weeklyNote: weeklyNote }
+  // 省略姓名的短虧句也先看前文，由守門員確認在跟小浣說話。
+  const teasing = /^(?:或|也|欸)?(?:太不吵|怎麼(?:還|又)?(?:在)?裝死)[了啦啊欸喔哦呀嘛吧耶]*$/.test(compact);
+  const easterEggTerm = teasing || /垃圾|棉花糖|乾脆麵|小熊貓|貍貓|狸貓/.test(text);
+  const now = Date.now();
+  const probeDue = ENABLE_CHAT_AMBIENT_BANTER && !named && !work && !followUp && !quotesBot && !easterEggTerm &&
+    !(state.ambientProbeAfterMs > now) && Array.from(compact).length >= 6 && !text.startsWith('#') && !shouldUseWebReading(text);
+  const mayInterject = (easterEggTerm || probeDue) && isChatEasterEggAvailable_(key, now);
+  const easterEggAvailable = easterEggTerm && mayInterject;
+  const ambientBanterAvailable = probeDue && mayInterject;
+  return named || teasing || followUp || quotesBot || work || easterEggAvailable || ambientBanterAvailable
+    ? { named: named, teasing: teasing, followUp: followUp, quotesBot: quotesBot, work: work, weeklyNote: weeklyNote,
+        easterEggAvailable: easterEggAvailable, ambientBanterAvailable: ambientBanterAvailable }
     : null;
 }
 
@@ -122,7 +131,24 @@ function isDirectLinePlayfulRequest_(text) {
   if (/[嗎？?][。！？!?\s]*$/.test(request)) action = action.replace(/^可以\s*/, '');
   action = action.replace(/[啊呀吧啦嘛喔欸嗎。！？!?~～\s]+$/, '').replace(/\s+/g, '');
   return /^(?:來)?吐[槽嘈糟](?:一[下句])?(?:(?:這|那)(?:句|段|件事)|剛才那句|剛剛那句|我)?(?:一下)?$/.test(action) ||
-    /^(?:講|說|來)(?:一?[個則])?冷?笑話(?:給我聽)?$/.test(action);
+    /^(?:講|說|來)(?:一?[個則])?冷?笑話(?:給我聽)?$/.test(action) ||
+    /^(?:出來(?:面對)?|(?:不要|別)裝死|評評理|怎麼看|說呢)$/.test(action);
+}
+
+function claimLineAmbientProbe_(context) {
+  try {
+    return withDataMutationLock_(function() {
+      const key = context.lineChatKey;
+      const state = readLineChatState_(key);
+      const now = Date.now();
+      // 取得同房資格後重讀節流狀態，避免依兩個 webhook 的舊快照重複探測。
+      if (!state || !state.lease || state.lease.until <= now || state.ambientProbeAfterMs > now ||
+          (state.resetId || '') !== (context.lineChatState.resetId || '') || !isChatEasterEggAvailable_(key, now)) return {};
+      state.ambientProbeAfterMs = now + CHAT_AMBIENT_PROBE_INTERVAL_MS;
+      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
+      return { claimed: true };
+    }, 250).claimed === true;
+  } catch (ignore) { return false; }
 }
 
 function classifyLineChatWake_(text, signals, ambient, executionContext) {
@@ -133,7 +159,7 @@ function classifyLineChatWake_(text, signals, ambient, executionContext) {
   const deadline = executionContext.deadlineAtMs;
   const classificationDeadline = Math.min(deadline - 10000, Date.now() + 8000);
   const seconds = Math.floor((classificationDeadline - Date.now()) / 1000);
-  if (seconds < 2) return null;
+  if (seconds < 2 || signals.ambientBanterAvailable && !claimLineAmbientProbe_(executionContext.conversationContext)) return null;
   const speaker = createConversationSpeakerMap_();
   const currentSpeaker = speaker(executionContext.conversationContext.currentUserId);
   const recent = ambient.slice(-4).map(function(item) {
@@ -148,10 +174,11 @@ function classifyLineChatWake_(text, signals, ambient, executionContext) {
   if (!decision || decision.shouldReply !== true || decision.triggerType === 'ignore') return null;
   const thirdPerson = /(?:小浣|mega浣)(?:背後)?(?:的|最近)?(?:模型|改用|改成|換成|更新了)|(?:我|我們).{0,10}(?:在)?更新(?:了)?(?:小浣|mega浣)/i.test(text);
   if (thirdPerson && !signals.quotesBot && !signals.work && !/小浣[，,：:！!、]|(?:小浣|mega浣)[，,\s]*你/i.test(text)) return null;
-  if (decision.triggerType === 'direct_call' && signals.named ||
+  if (decision.triggerType === 'direct_call' && (signals.named || signals.teasing) ||
       decision.triggerType === 'follow_up' && (signals.followUp || signals.quotesBot) ||
       decision.triggerType === 'work_collab' && signals.work ||
-      decision.triggerType === 'easter_egg' && signals.easterEggAvailable && !signals.work && !signals.quotesBot) return decision;
+      decision.triggerType === 'easter_egg' && (signals.easterEggAvailable || signals.ambientBanterAvailable) &&
+        !signals.work && !signals.quotesBot) return decision;
   return null;
 }
 
@@ -168,7 +195,7 @@ function authorizeLineAutoReply_(key, leaseId, deadline, easterEgg) {
         const cooldowns = readChatEasterEggState_();
         if (cooldowns[key] > now) return {};
         Object.keys(cooldowns).forEach(function(name) { if (!(cooldowns[name] > now)) delete cooldowns[name]; });
-        // 先保留傳送時間，LINE 回應遺失時也守住六小時上限。
+        // 先保留冷卻時間，LINE 回應遺失時也能維持插話間隔。
         cooldowns[key] = now + CHAT_EASTER_EGG_COOLDOWN_MS + LINE_REPLY_TIMEOUT_SECONDS * 1000;
         const serialized = JSON.stringify(cooldowns);
         if (serialized.length > 8700) return {};
