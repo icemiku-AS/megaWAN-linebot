@@ -375,10 +375,13 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v2.0.0 Gemini Architecture Edition'));
-  assert(replies.at(-1).text.includes('2026-11-22'));
+  assert(replies.at(-1).text.includes('v2.1.0 Context, Persona & Natural Wake-up Edition'));
+  assert(replies.at(-1).text.includes('2026-11-23'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.includes('v2.0.0 Gemini Architecture Edition'));
   assert(history.includes('v1.17.0 Weekly News Archive Edition'));
+  assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') >= 0);
+  assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.0.0 Gemini Architecture Edition'));
   assert(history.indexOf('v2.0.0 Gemini Architecture Edition') < history.indexOf('v1.17.0 Weekly News Archive Edition'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
@@ -3479,8 +3482,8 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('feature/v200-gemini-migration')); assert(doc.includes('ad0e861'));
-    assert(doc.includes('v2.0.0 Gemini Architecture Edition')); assert(doc.includes('2026-11-22'));
+    assert(doc.includes('feature/v210-context-persona-gatekeeper')); assert(doc.includes('c6bb060'));
+    assert(doc.includes('v2.1.0 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
     assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));

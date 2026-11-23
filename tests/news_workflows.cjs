@@ -997,7 +997,7 @@ check('all rejected, partial and valid-empty topics keep distinct diagnostics an
       assert.equal(data.stage, 'done'); assert.equal(data.errorCode, '');
     }
     assert.equal(diagnostics[1].cacheHit, true);
-    assert([...e.cache.keys()].some(key => key.startsWith('weekly_editorial:v2.0.0:')));
+    assert([...e.cache.keys()].some(key => key.startsWith('weekly_editorial:v2.1.0:')));
   }
 });
 check('corrupt topic count cache is discarded and regenerated without storing rejected raw content', () => {
@@ -1054,7 +1054,7 @@ check('deployment guides keep auto off through setup, update Web App, verify man
     assert(start >= 0 && setup > 0 && deploy > setup && manual > deploy && enable > manual && install > enable, name);
     assert(section.slice(0, deploy).includes('autoEnabled=false'));
     assert(section.slice(deploy, enable).includes('#版本'));
-    assert(section.slice(deploy, enable).includes('v2.0.0'));
+    assert(section.slice(deploy, enable).includes('v2.1.0'));
   }
 });
 

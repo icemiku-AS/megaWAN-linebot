@@ -113,7 +113,7 @@ const CHAT_EASTER_EGG_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 // 本週編輯台設定
 // ======================================================
 
-const WEEKLY_EDITORIAL_CACHE_VERSION = 'v2.0.0';
+const WEEKLY_EDITORIAL_CACHE_VERSION = 'v2.1.0';
 const WEEKLY_EDITORIAL_CACHE_TTL_SECONDS = 600;
 
 const MAX_WEEKLY_EDITORIAL_NEWS_ITEMS = 30;
