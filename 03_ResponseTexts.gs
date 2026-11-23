@@ -12,11 +12,22 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v2.0.0 Gemini Architecture Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-11-22';
+const BOT_CURRENT_VERSION = 'v2.1.0 Context, Persona & Natural Wake-up Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-11-23';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v2.1.0 Context, Persona & Natural Wake-up Edition',
+    date: '2026-11-23',
+    summary: '小浣能接上同聊天室的前文、判斷何時接話，並把群友明確交辦的事件留給週報。',
+    changes: [
+      '群組與私訊會帶入近期對話。LINE 原生 @ 和訊息中任意位置的 #小浣 可直接呼叫，群組自然接話有守門員與限頻。',
+      '明確交辦的事件可存成「本週手動註記」。純註記直接回執，#清空新聞 確認會一併清除。',
+      '週報可以在沒有新聞網址時整理有效註記和群組話題，週編輯台可在開頭加一句小浣點評。',
+      '聊天與看圖的語氣更像熟悉的群友，研究仍按證據回答。主動彩蛋在同聊天室有六小時冷卻。'
+    ]
+  },
   {
     version: 'v2.0.0 Gemini Architecture Edition',
     date: '2026-11-22',
@@ -653,7 +664,7 @@ function getBotTextWebSearchError_(failure) {
 }
 function getBotTextEmptyReply_() { return '我剛剛沒有產生有效回覆，可能是資料太少或模型沒有順利吐出內容。你可以換個說法再叫我一次。'; }
 function getBotTextNoReadableUrl_() { return '我翻了一下，沒有找到可以讀取的網址。你可以確認一下連結是不是完整，或重新貼一次。'; }
-function getBotTextResetDone_() { return ['好，這個聊天室的短期記憶我先清掉了。', '剛剛腦袋裡暫存的小紙條會消失，但 Google Sheet 裡的長期紀錄還在，不會被我亂丟。'].join('\n'); }
+function getBotTextResetDone_() { return ['這個聊天室的短期記憶清掉了，接話也從現在重新累積。', '原本的對話紀錄仍可用於引用和本週新聞。'].join('\n'); }
 
 function getBotTextCleanupWarning_(cleanupInfo) {
   return [

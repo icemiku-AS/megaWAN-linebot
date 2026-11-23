@@ -1,8 +1,9 @@
-// v2.0.0 與既有回歸：node tests/v1140_smoke.cjs。只用內建模組，不部署到 GAS、不呼叫網路。
+// 本機整合回歸：node tests/smoke.cjs。只用 Node 內建模組，GAS 與 HTTP 皆為模擬。
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
 const files = fs.readdirSync(root).filter(name => name.endsWith('.gs'));
 const source = files.map(name => {
@@ -10,7 +11,8 @@ const source = files.map(name => {
   new vm.Script(code, { filename: name });
   return code;
 }).join('\n');
-assert.equal(files.length, 22);
+assert.equal(files.length, 24);
+new vm.Script(source, { filename: 'GAS shared namespace' });
 assert(!/deepseek-v4-flash|deepseek_v4_flash/.test(source));
 const functions = [...source.matchAll(/^function (\w+)\(/gm)].map(match => match[1]);
 assert.equal(new Set(functions).size, functions.length, 'duplicate GAS function');
@@ -49,13 +51,16 @@ const context = vm.createContext({
   Date: class extends Date { static now() { return now; } },
   Utilities: {
     getUuid: () => "memory-" + ++uuid, formatDate: formatPtDate, parseDate: parsePtDate,
+    DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
+    computeDigest: (algorithm, text) => [...crypto.createHash(algorithm).update(text).digest()],
+    base64EncodeWebSafe: bytes => Buffer.from(bytes).toString('base64url'),
     base64Encode: bytes => { now += encodedDelay; return Buffer.from(bytes).toString('base64'); },
     newBlob: value => ({ getBytes: () => Array.from(typeof value === 'string' ? Buffer.from(value) : Buffer.from(value || [])) })
   },
   PropertiesService: { getScriptProperties: () => ({ getProperty: key => {
     if (key.endsWith('_API_KEY')) keyReads.push(key);
     return properties.get(key) || null;
-  }, setProperty: (key, value) => properties.set(key, value) }) },
+  }, setProperty: (key, value) => properties.set(key, value), deleteProperty: key => properties.delete(key) }) },
   CacheService: { getScriptCache: () => ({ get: key => cache.get(key), put: (key, value) => cache.set(key, value), remove: key => cache.delete(key) }) },
   LockService: { getScriptLock: () => ({ tryLock: () => { now += lockDelay; return true; }, waitLock: () => { now += lockDelay; }, releaseLock() {} }) },
   SpreadsheetApp: { flush() {} },
@@ -73,16 +78,20 @@ context.getSpreadsheet_ = () => ({ getSheetByName: () => null });
 const weeklyMemoryReader = context.getRecentWeeklySummaryText;
 context.getRecentWeeklySummaryText = () => '';
 const pendingDelivery = context.deliverPendingReply_;
-context.deliverPendingReply_ = (conversationId, replyToken, buildDeliveryText) => {
+context.deliverPendingReply_ = (conversationId, replyToken, buildDeliveryText, receipt) => {
   if (!pending) return null;
   const current = pending;
   const deliveryText = buildDeliveryText(current);
-  context.replyToLine(replyToken, deliveryText);
+  context.replyToLine(replyToken, deliveryText, false, '', receipt);
   pending = null;
   return { text: deliveryText, replyMode: current.replyMode || '' };
 };
 const transportReply = context.replyToLine;
-context.replyToLine = (token, text, throwOnHttpError, finalText) => replies.push({ token, text, finalText: finalText || '' });
+context.replyToLine = (token, text, throwOnHttpError, finalText, receipt) => {
+  replies.push({ token, text, finalText: finalText || '' });
+  if (receipt) Object.assign(receipt, { sentAtMs: now, messageIds: [] });
+  return true;
+};
 const value = expression => vm.runInContext(expression, context);
 const json = expression => JSON.parse(JSON.stringify(value(expression)));
 const png = Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64'));
@@ -114,6 +123,7 @@ function schemaExample(schema) {
   if (schema.type === 'object') return Object.fromEntries(Object.entries(schema.properties).map(([key, child]) => [key, schemaExample(child)]));
   if (schema.type === 'array') return [];
   if (schema.type === 'number' || schema.type === 'integer') return schema.minimum || 0;
+  if (schema.type === 'boolean') return false;
   return '有效摘要';
 }
 function anthropicCompletion(text = '純文字回答', options = {}) {
@@ -196,6 +206,7 @@ function checkDeepSeek(name, run) {
     }
     profiles.image_caption_fast = { ...profiles.image_caption_fast, thinking: { type: 'disabled' }, reasoningEffort: undefined, maxOutputTokens: 320 };
     for (const [name, route] of Object.entries(routes)) {
+      if (name === 'chat_gatekeeper') continue;
       const { reasoningEffort, ...legacyRoute } = route;
       const caption = name === 'image_semantic_caption';
       routes[name] = { ...legacyRoute, provider: 'deepseek', model: 'deepseek_flash',
@@ -209,6 +220,7 @@ function event(type = 'image', sourceType = 'user', extra = {}) {
   return { type: 'message', replyToken: 'test-reply', timestamp: now, source: { type: sourceType, userId: 'user1', groupId: 'group1', roomId: 'room1' }, message: { type, id: '123456789012345678', contentProvider: { type: 'line' }, ...extra } };
 }
 const budgets = {
+  chat_gatekeeper: ['gemini_35_flash_lite', 'MINIMAL', 256, 8],
   general_chat: ['gemini_4_hydrogen', 'LOW', 4800, 45],
   news_analysis: ['gemini_4_hydrogen', 'LOW', 8000, 60],
   raw_html_extraction: ['gemini_38_flash', 'LOW', 28000, 90],
@@ -282,7 +294,7 @@ check('text-only chat and conversation isolation', () => {
   assert(payload.contents.every(turn => turn.parts.every(part => typeof part.text === 'string')));
   assert(!geminiSystem(payload).includes('長期週摘要')); assert(!payload.contents.some(turn => turn.role === 'system'));
   assert(payload.contents.some(turn => turn.role === 'model'));
-  assert.equal(payload.contents.at(-1).role, 'user'); assert.equal(payload.contents.at(-1).parts[0].text, '繼續');
+  assert.equal(payload.contents.at(-1).role, 'user'); assert.equal(payload.contents.at(-1).parts.at(-1).text, '繼續');
   assert.equal(context.getConversationHistory('user:user1').length, 4);
   assert.equal(context.getConversationHistory('group:group1').length, 0);
   context.getRecentWeeklySummaryText = () => '';
@@ -291,8 +303,8 @@ check('image payload and text-only persistence', () => {
   context.handleLineEvent(event(), now);
   const payload = JSON.parse(calls[1].options.payload);
   const content = payload.contents.at(-1).parts;
-  assert.equal(typeof content[0].text, 'string');
-  assert.deepEqual(content[1].inline_data, { mime_type: 'image/png', data: Buffer.from(png).toString('base64') });
+  assert.equal(typeof content.at(-2).text, 'string');
+  assert.deepEqual(content.at(-1).inline_data, { mime_type: 'image/png', data: Buffer.from(png).toString('base64') });
   assert.deepEqual(keyReads, ['GEMINI_API_KEY']);
   assert.equal(calls[0].options.timeoutSeconds, 10); assert.equal(calls[1].options.timeoutSeconds, 30);
   const persisted = JSON.stringify([...cache.values(), rows, logs, replies]);
@@ -359,14 +371,17 @@ check('private quoted image accepts natural text and never guesses without quote
   assert.equal(JSON.parse(calls[1].options.payload).contents.at(-1).parts.at(-2).text, '這是什麼？');
   context.handleLineEvent(event('text', 'user', { text: '這是真的嗎？' }), now);
   assert(!calls.slice(2).some(call => call.url.includes('api-data.line.me')), 'no quote never guesses a previous image');
-  assert.equal(JSON.parse(calls.at(-1).options.payload).contents.at(-1).parts[0].text, '這是真的嗎？');
+  assert.equal(JSON.parse(calls.at(-1).options.payload).contents.at(-1).parts.at(-1).text, '這是真的嗎？');
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v2.0.0 Gemini Architecture Edition'));
-  assert(replies.at(-1).text.includes('2026-11-22'));
+  assert(replies.at(-1).text.includes('v2.1.0 Context, Persona & Natural Wake-up Edition'));
+  assert(replies.at(-1).text.includes('2026-11-23'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.includes('v2.0.0 Gemini Architecture Edition'));
   assert(history.includes('v1.17.0 Weekly News Archive Edition'));
+  assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') >= 0);
+  assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.0.0 Gemini Architecture Edition'));
   assert(history.indexOf('v2.0.0 Gemini Architecture Edition') < history.indexOf('v1.17.0 Weekly News Archive Edition'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
@@ -648,7 +663,7 @@ check('LINE transport bounds timeout and never exposes external failures', () =>
   try {
     fetchImpl = url => url.includes('/message/reply') ? (() => { throw new Error(sensitive); })()
       : url.includes('api-data.line.me') ? response(200, '', { 'Content-Type': 'image/png' }, png) : geminiCompletion();
-    assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events: [event()] }) } }), 'OK');
+    assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events: [{ ...event(), webhookEventId: 'reply-transport' }] }) } }), 'OK');
     assert(!JSON.stringify([...cache.values(), rows, logs]).includes('sentinel'));
   } finally { context.replyToLine = mockReply; }
 });
@@ -742,7 +757,8 @@ check('download, lock and encoding all consume the same deadline', () => {
 });
 check('webhook batch cannot refresh budget for the second event', () => {
   fetchImpl = url => { if (url.includes('api-data.line.me')) return response(200, '', { 'Content-Type': 'image/png' }, png); now += 33000; return geminiCompletion('看見可辨識的錯誤訊息。'); };
-  assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events: [event(), event()] }) } }), 'OK');
+  const events = ['batch-image-one', 'batch-image-two'].map(webhookEventId => ({ ...event(), webhookEventId }));
+  assert.equal(context.doPost({ postData: { contents: JSON.stringify({ events }) } }), 'OK');
   assert.equal(calls.length, 2); assert.equal(replies.length, 2); assert(replies[1].text.includes('時間'));
 });
 check('background has full timeout; Reader cap and status zero contract retained', () => {
@@ -1379,8 +1395,9 @@ for (const task of migratedTasks) {
     assert.equal(payload.generationConfig.responseMimeType, 'application/json');
     assert.deepEqual(payload.generationConfig.responseJsonSchema, JSON.parse(JSON.stringify(schema)));
     assert(!('response_format' in payload)); assert(!('tools' in payload));
-    const missing = { ...valid }; delete missing[Object.keys(valid)[0]];
-    for (const invalid of [missing, { ...valid, [Object.keys(valid)[0]]: 42 }, { ...valid, extra: 'must reject' }]) {
+    const required = schema.required[0];
+    const missing = { ...valid }; delete missing[required];
+    for (const invalid of [missing, { ...valid, [required]: 42 }, { ...valid, extra: 'must reject' }]) {
       fetchImpl = () => geminiCompletion(JSON.stringify(invalid));
       assert.equal(context.runAiJsonTask(task, '資料').errorType, 'ai_validation_error');
     }
@@ -1751,8 +1768,8 @@ check('pending research URL stays a question; ordinary and silent group intake r
       context.handleLineEvent(event('text', sourceType, { text: (sourceType === 'group' ? '#小浣 ' : '') + 'https://example.org/news 跟之前收過的有沒有重複？' }), now);
       assert.equal(intakes, 0); assert(replies.at(-1).text.includes('網址問題尚未研究'));
     }
-    context.handleLineEvent(event('text', 'group', { text: 'https://example.org/news 跟之前收過的有沒有重複？' }), now);
-    assert.equal(intakes, 1, 'non-trigger group remains silent intake');
+    context.handleLineEvent(event('text', 'group', { text: 'https://example.org/news 這篇可以當素材' }), now);
+    assert.equal(intakes, 1, 'ordinary group URL remains silent intake');
     pending = { text: '先前結果' };
     context.handleLineEvent(event('text', 'user', { text: 'https://example.org/ordinary' }), now);
     assert.equal(intakes, 2); assert.equal(calls.length, 0);
@@ -2100,9 +2117,9 @@ checkDeepSeek('context fixture gates weekly memory while preserving history and 
     const memory = context.runAiMemoryTask('general_chat', 'group:a', '之前那件事呢', '之前那件事呢');
     assert(memory.ok); assert.equal(reads, 1);
     const memoryPayload = JSON.parse(calls.at(-1).options.payload);
-    assert(memoryPayload.system.includes(weekly));
-    assert(memoryPayload.system.indexOf('你是放在聊天群組') < memoryPayload.system.indexOf('只在問題需要時使用實際提供的工具'));
-    assert(memoryPayload.system.indexOf('只在問題需要時使用實際提供的工具') < memoryPayload.system.indexOf('以下是這個聊天室過去封存'));
+    assert.equal(memoryPayload.system, casualPayload.system);
+    assert(memoryPayload.messages.some(turn => JSON.stringify(turn.content).includes(weekly)));
+    assert(!memoryPayload.system.includes(weekly));
     assert(memory.measurement.contextTextChars > casual.measurement.contextTextChars + 900);
     assert.equal(casual.measurement.modelCalls, 1); assert.equal(memory.measurement.continuationCount, 0);
     process.stdout.write('CONTEXT_FIXTURE casual=' + casual.measurement.contextTextChars + ' memory=' + memory.measurement.contextTextChars +
@@ -2219,7 +2236,7 @@ for (const image of [false, true]) for (const scopeType of ['user', 'group']) {
       fetchImpl = (url, options) => {
         if (url.includes('api-data.line.me')) return response(200, '', { 'Content-Type': 'image/png' }, png);
         const payload = JSON.parse(options.payload);
-        assert.equal(reads.filter(name => name === 'ConversationLog').length, image ? 2 : 1, 'quote lookup and required research have separate bounded reads');
+        assert.equal(reads.filter(name => name === 'ConversationLog').length, 2, 'ambient shares an already-read quote snapshot; required research stays independent');
         assert.equal(reads.filter(name => name === 'NewsInbox').length, 1);
         assert(options.payload.includes('member evidence private-snippet')); assert(options.payload.includes('NEWS_EVIDENCE private-snippet'));
         assert.equal(payload.contents.some(turn => turn.parts.some(part => part.inline_data)), image);
@@ -2861,9 +2878,9 @@ check('protocol symbols stay inside adapters and Gemini owns all active routes',
   }
   assert(Object.values(value('AI_TASK_ROUTES')).every(route => route.provider === 'gemini'));
   assert.equal(value('AI_PROVIDER_REGISTRY.deepseek.status'), 'dormant');
-  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 22);
+  assert(!source.includes('OPENAI_API_KEY')); assert.equal(files.length, 24);
   const secretPattern = /(?:sk-[A-Za-z0-9_-]{20,}|AIza[A-Za-z0-9_-]{30,})/;
-  for (const filename of [...files, 'tests/v1140_smoke.cjs', 'README.md', 'CURRENT_VERSION.md']) {
+  for (const filename of [...files, path.relative(root, __filename), 'README.md', 'CURRENT_VERSION.md']) {
     assert(!secretPattern.test(fs.readFileSync(path.join(root, filename), 'utf8')), filename + ' credential-shaped literal');
   }
 });
@@ -3069,7 +3086,7 @@ check('v1161 direct quote beats intervening topic and same-ID assistant; origina
     assert.equal(calls.length, 1); assert(!calls[0].url.includes('api-data.line.me'));
     const payload = JSON.parse(calls[0].options.payload), evidence = requestData(payload, 'TEXT_QUOTE_CONTEXT');
     assert.equal(evidence[0].text, entries[0].Text); assert.equal(evidence[0].speaker, '成員2');
-    assert(geminiSystem(payload).includes('目前說話者：成員1')); assert(!calls[0].options.payload.includes('ASSISTANT_MUST_NOT_QUOTE'));
+    assert(geminiText(payload).includes('"currentSpeaker":"成員1"')); assert(!calls[0].options.payload.includes('ASSISTANT_MUST_NOT_QUOTE'));
     assert(!calls[0].options.payload.includes('alice')); assert(!calls[0].options.payload.includes('user1'));
     assert.equal(rows[0][9], '#小浣 他這個說法對嗎？'); assert.equal(rows[0][10], '100'); assert.equal(rows[0][11], 'text_found');
     const history = context.getConversationHistory('group:group1');
@@ -3138,9 +3155,11 @@ check('v1161 quote scan is bounded, lazy and shared for direct/parent/history wi
   sheet.getRange = (...args) => { if (args[0] > 1) { reads++; assert(args[2] <= 500); } return original(...args); };
   withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => sheet }) }, () => {
     context.handleLineEvent(event('text', 'group', { text: '#小浣 這句如何理解？', quotedMessageId: '100' }), now);
-    const data = requestData(JSON.parse(calls[0].options.payload), 'TEXT_QUOTE_CONTEXT');
+    const payload = JSON.parse(calls[0].options.payload);
+    const data = requestData(payload, 'TEXT_QUOTE_CONTEXT');
     assert.equal(reads, 1); assert.equal(data.length, 2); assert.equal(data[1].relation, 'current_parent');
-    assert(!calls[0].options.payload.includes('DO_NOT_EXPAND'));
+    assert(!JSON.stringify(data).includes('DO_NOT_EXPAND'));
+    assert(requestData(payload, 'AMBIENT_GROUP_CONTEXT').some(row => row.text === 'DO_NOT_EXPAND'));
   });
   const many = [quoteRecord('100'), ...Array.from({ length: 501 }, (_, i) => quoteRecord(String(1000 + i)))];
   lookupQuotes(many, lookup => assert.equal(lookup('100').status, 'not_found'));
@@ -3463,8 +3482,8 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('feature/v200-gemini-migration')); assert(doc.includes('ad0e861'));
-    assert(doc.includes('v2.0.0 Gemini Architecture Edition')); assert(doc.includes('2026-11-22'));
+    assert(doc.includes('feature/v210-context-persona-gatekeeper')); assert(doc.includes('c6bb060'));
+    assert(doc.includes('v2.1.0 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
     assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
@@ -4101,6 +4120,406 @@ check('Gemini never changes model inside tool continuation or sends a third HTTP
     assert.equal(result.measurement.continuationCount, continuation ? 1 : 0);
     assert.equal(cachedDataCount(), 0);
   }
+});
+
+// v2.1.0 工作分支：經正式 LINE 路由、Gemini adapter 與共用模擬服務驗證。
+let wakeTestId = 410000;
+function wakeEvent(text, { room = 'group1', type = 'group', user = 'user1', quotedMessageId, mention, dedup = false } = {}) {
+  const id = String(++wakeTestId);
+  const input = event('text', type, { id, text, quotedMessageId, mention });
+  input.source = { ...input.source, userId: user, groupId: room };
+  input.replyToken = id;
+  if (dedup) input.webhookEventId = 'test-event-' + id;
+  return input;
+}
+function wakeDecision(triggerType, extra = {}) {
+  return JSON.stringify({ shouldReply: triggerType !== 'ignore', triggerType, noteAction: 'none', needsSearch: false, ...extra });
+}
+function isGateFetch(url) { return url.endsWith('/gemini-3.5-flash-lite:generateContent'); }
+function dispatchWake(input) { context.handleLineEvent(input, now); }
+
+check('v210 native mention, embedded hashtag, and private chat skip classification with stable systemInstruction', () => {
+  const sourceRows = [
+    quoteRecord('9871', 'user1', '私訊前文', { ConversationId: 'user:user1' }),
+    quoteRecord('9872', 'user1', '未點名的群組前文'),
+    quoteRecord('9873', 'user1', '小浣前次已送出的語氣。後半段不該放進開頭提示。', { Role: 'assistant', Mode: 'chat', QuoteStatus: 'line_sent' }),
+    quoteRecord('9874', 'otherUser', 'OTHER_SCOPE_TEXT', { ConversationId: 'group:other' })
+  ];
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet(sourceRows) }) }, () => {
+    dispatchWake(wakeEvent('你知道這件事嗎', { mention: { mentionees: [{ isSelf: false }] } }));
+    assert.equal(calls.length, 0);
+    const embedded = '之前那件有新消息\n#小浣 幫我整理一下\n兩段都要看';
+    dispatchWake(wakeEvent(embedded));
+    dispatchWake(wakeEvent('聊一下這件事', { mention: { mentionees: [{ isSelf: true }] } }));
+    dispatchWake(wakeEvent('接一下剛才的話', { type: 'user' }));
+    assert.equal(calls.length, 3); assert.equal(replies.length, 3);
+    assert(calls.every(call => call.url.endsWith('/gemini-4-hydrogen:generateContent')));
+    const [group, at, privatePayload] = calls.map(call => JSON.parse(call.options.payload));
+    assert.equal(group.contents.at(-1).parts.at(-1).text, embedded);
+    assert.deepEqual(group.systemInstruction, at.systemInstruction);
+    assert(geminiSystem(group).includes('棉花糖'));
+    assert(!geminiSystem(group).includes('未點名的群組前文'));
+    assert(!geminiSystem(group).includes('recentReplyOpenings'));
+    assert.equal(requestData(group, 'LINE_TURN_STATUS').recentReplyOpenings[0], '小浣前次已送出的語氣');
+    assert(requestData(group, 'AMBIENT_GROUP_CONTEXT').some(turn => turn.text === '未點名的群組前文'));
+    assert(!geminiText(group).includes('OTHER_SCOPE_TEXT'));
+    assert.equal(requestData(privatePayload, 'AMBIENT_GROUP_CONTEXT')[0].text, '私訊前文');
+    assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  });
+});
+
+check('v210 third-person name mention remains silent and noise does not invoke Gemini', () => {
+  assert(!context.buildAiSystemPrompt_('chat_gatekeeper').includes('棉花糖'));
+  assert(!context.buildAiSystemPrompt_('weekly_editorial_digest').includes('棉花糖'));
+  for (const text of ['wwww', '笑死', 'OP', 'OK', '+1', '？！。', '我晚餐想吃麵']) dispatchWake(wakeEvent(text));
+  assert.equal(calls.length, 0);
+  fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
+  dispatchWake(wakeEvent('小浣改用 Gemini 了'));
+  fetchImpl = () => geminiCompletion(wakeDecision('direct_call'));
+  dispatchWake(wakeEvent('小浣背後的模型改成 Gemini 了'));
+  assert.equal(calls.length, 2); assert.equal(replies.length, 0);
+  assert(calls.every(call => isGateFetch(call.url)));
+});
+
+check('v210 exact numeric LINE IDs, follow-up identity, and confirmed delivery gate', () => {
+  const outboxId = '621234567890123456';
+  const secondBubbleId = '621234567890123457';
+  const logSheet = mockLogSheet();
+  const gateBodies = [];
+  const sheet = name => name === 'ConversationLog' ? logSheet : null;
+  withStubs({ replyToLine: transportReply, ensureLogSheet_: () => logSheet, getSpreadsheet_: () => ({ getSheetByName: sheet }) }, () => {
+    let lineStatus = 400;
+    fetchImpl = (url, options) => {
+      if (url.includes('/message/reply')) return response(lineStatus,
+        '{"debug":"literal \\"id\\": 42","sentMessages":[{"id":' + outboxId + '},{"id":"' + secondBubbleId + '"}]}');
+      if (isGateFetch(url)) {
+        gateBodies.push(JSON.parse(JSON.parse(options.payload).contents.at(-1).parts.at(-1).text));
+        return geminiCompletion(wakeDecision('follow_up'));
+      }
+      return geminiCompletion('談到第二件我會先看時間順序');
+    };
+    dispatchWake(wakeEvent('#小浣 第一件怎麼看'));
+    now += 1000;
+    dispatchWake(wakeEvent('那第二件呢？'));
+    assert.equal(gateBodies.length, 0);
+    assert.equal(context.getConversationHistory('group:group1').length, 0);
+    lineStatus = 200;
+    dispatchWake(wakeEvent('#小浣 第一件怎麼看'));
+    assert.equal(logSheet.data.at(-1)[8], outboxId);
+    assert.equal(logSheet.data.at(-1)[11], 'line_sent');
+    now += 1000;
+    dispatchWake(wakeEvent('那第二件呢？', { user: 'other' }));
+    assert.equal(gateBodies.length, 0);
+    dispatchWake(wakeEvent('那第二件呢？'));
+    assert.equal(gateBodies.length, 1); assert(gateBodies[0].signals.followUp);
+    now += 91000;
+    dispatchWake(wakeEvent('那第一件呢？', { user: 'other', quotedMessageId: secondBubbleId }));
+    assert.equal(gateBodies.length, 2); assert(gateBodies[1].signals.quotesBot);
+    const ai = calls.filter(call => isGeminiFetch(call.url)).at(-1);
+    assert.equal(requestData(JSON.parse(ai.options.payload), 'TEXT_QUOTE_CONTEXT')[0].status, 'bot_reply');
+    assert(!calls.some(call => call.url.includes('api-data.line.me')));
+  });
+});
+
+check('v210 ambient reader enforces time, count, byte-safe text, scope, and exact source deduplication', () => {
+  now = 12 * 60 * 60 * 1000;
+  const same = '不同作者說出的相同句子';
+  const selectedRows = Array.from({ length: 18 }, (_, i) =>
+    quoteRecord(String(40000 + i), i % 2 ? 'alice' : 'bob', i < 2 ? same : '有效前文' + i, { Timestamp: new Date(now - (i + 1) * 1000) }));
+  const sourceRows = selectedRows.concat(
+    selectedRows[3],
+    quoteRecord('70001', 'a', 'TOO_OLD', { Timestamp: new Date(now - 7200001) }),
+    quoteRecord('70002', 'a', 'FUTURE', { Timestamp: new Date(now + 1) }),
+    quoteRecord('70003', 'a', 'CURRENT', { Timestamp: new Date(now - 1) }),
+    quoteRecord('70004', 'a', '#help 進階', { Mode: 'help_command' }),
+    quoteRecord('70005', 'a', 'DERIVED_IMAGE', { Role: 'derived', Mode: 'image_semantic' }),
+    quoteRecord('70006', 'b', 'CROSS_ROOM', { ConversationId: 'group:other' }));
+  const opts = { beforeTimestampMs: now, excludeMessageId: '70003', deadlineAtMs: now + 40000 };
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet(sourceRows) }),
+    ensureLogSheet_: () => { throw Error('read path must never ensure a sheet'); } }, () => {
+    const result = context.getRecentAmbientConversationContext_('group:group1', opts);
+    assert.equal(result.length, 15);
+    assert(result.every((row, index) => index === 0 || result[index - 1].timestampMs <= row.timestampMs));
+    assert.equal(result.filter(row => row.messageId === '40003').length, 1);
+    assert.equal(result.filter(row => row.text === same).length, 2);
+    assert(!/TOO_OLD|FUTURE|CURRENT|#help|DERIVED_IMAGE|CROSS_ROOM/.test(JSON.stringify(result)));
+    const history = [{ role: 'user', userId: 'alice', messageId: '40001', provenance: 'user_text', content: same }];
+    const quote = { status: 'text_found', messageId: '40004', userId: 'bob', text: '有效前文4', truncated: false };
+    const assembled = context.buildAiConversationContext_(history, { ambientContext: result, textQuote: quote,
+      currentUserId: 'alice', conversationId: 'group:group1' });
+    assert.equal(assembled.ambient.filter(row => row.text === same).length, 1);
+    assert(!assembled.ambient.some(row => row.text === quote.text));
+    assert.equal(assembled.quoteData[0].text, quote.text);
+  });
+  const longRows = Array.from({ length: 15 }, (_, i) => quoteRecord(String(60000 + i), 'alice', '字' + '🦝'.repeat(600),
+    { Timestamp: new Date(now - 1 - i) }));
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet(longRows) }) }, () => {
+    const result = context.getRecentAmbientConversationContext_('group:group1', opts);
+    assert(result.length > 0 && result.length < 15);
+    assert(JSON.stringify(result).length <= 3000);
+    assert(result.every(row => row.text.isWellFormed()));
+  });
+});
+
+check('v210 reset cuts ambient and follow-up while preserving explicit text quotes', () => {
+  const sheet = mockLogSheet(logHeaders, [quoteRecord('81500', 'user1', '重設前可以明示引用的過往話題')]);
+  withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => sheet }), ensureLogSheet_: () => sheet }, () => {
+    dispatchWake(wakeEvent('#小浣 講一下剛才'));
+    assert(requestData(JSON.parse(calls[0].options.payload), 'AMBIENT_GROUP_CONTEXT').length > 0);
+    now += 1000;
+    dispatchWake(wakeEvent('#reset'));
+    now += 1000;
+    dispatchWake(wakeEvent('那後續呢？'));
+    assert.equal(calls.length, 1);
+    dispatchWake(wakeEvent('#小浣 我在問哪句', { quotedMessageId: '81500' }));
+    const payload = JSON.parse(calls.at(-1).options.payload);
+    assert.equal(requestData(payload, 'TEXT_QUOTE_CONTEXT')[0].text, '重設前可以明示引用的過往話題');
+    assert(!JSON.stringify(requestData(payload, 'AMBIENT_GROUP_CONTEXT')).includes('過往話題'));
+  });
+});
+
+check('v210 five-event burst shares one automatic reservation and redelivery is idempotent', () => {
+  const input = wakeEvent('小浣，幫我想標題', { dedup: true });
+  fetchImpl = url => {
+    if (isGateFetch(url)) {
+      for (let i = 0; i < 4; i++) dispatchWake(wakeEvent('小浣，還有一句補充' + i, { dedup: true }));
+      return geminiCompletion(wakeDecision('direct_call'));
+    }
+    return geminiCompletion('從事件的反差開始就有標題了');
+  };
+  dispatchWake(input);
+  assert.equal(calls.length, 2); assert.equal(replies.length, 1);
+  assert.equal(rows.filter(row => row[6] === 'user').length, 5);
+  const count = rows.length;
+  dispatchWake(input);
+  assert.equal(calls.length, 2); assert.equal(rows.length, count);
+  now += 1000;
+  dispatchWake(wakeEvent('小浣，還有一個問題'));
+  assert.equal(calls.length, 2);
+});
+
+check('v210 pending lock busy defers automatic chat and a delivered pending reply wins the token', () => {
+  const before = wakeEvent('小浣，幫我想標題');
+  withStubs({ deliverPendingReply_: pendingDelivery }, () => {
+    const original = context.LockService.getScriptLock;
+    context.LockService.getScriptLock = () => ({ tryLock: () => false, releaseLock() { throw Error('lock was not acquired'); } });
+    try { dispatchWake(before); } finally { context.LockService.getScriptLock = original; }
+  });
+  assert.equal(calls.length, 0); assert.equal(replies.length, 0);
+  pending = { text: '舊網址整理結果' };
+  dispatchWake(wakeEvent('#小浣 幫我讀這篇 https://example.org/story'));
+  assert.equal(calls.length, 0); assert.equal(replies.length, 1);
+  assert(replies[0].text.includes('舊網址整理結果')); assert(replies[0].text.includes('網址問題尚未研究'));
+});
+
+check('v210 quota, malformed and timed-out gate stay quiet and main answer cannot send a third HTTP', () => {
+  for (const result of [quotaReply(), geminiCompletion('not json'), null]) {
+    reset();
+    fetchImpl = () => {
+      if (result) return result;
+      now += 8500;
+      return geminiCompletion(wakeDecision('direct_call'));
+    };
+    dispatchWake(wakeEvent('小浣，你想怎麼看這件事'));
+    assert.equal(calls.length, 1); assert.equal(replies.length, 0); assert.deepEqual(keyReads, ['GEMINI_API_KEY']);
+  }
+  reset();
+  fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('direct_call', { needsSearch: true })) : quotaReply();
+  dispatchWake(wakeEvent('小浣，你想怎麼看一下'));
+  assert.equal(calls.length, 2); assert.equal(replies.length, 0);
+  assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  reset(); fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('work_collab')) : groundedGemini('已查到外部來源');
+  dispatchWake(wakeEvent('幫我上網查最新消息'));
+  assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_SEARCH_API_KEY']);
+  assert.equal(calls.length, 2); assert.equal(replies.length, 1);
+  assert(!JSON.parse(calls[0].options.payload).tools);
+});
+
+check('v210 a pure note with an attached source or a described search feature does not dispatch AI', () => {
+  const url = 'https://example.org/weekly-note-source';
+  for (const note of ['市府宣布活動改期，變更內容見原帖 ' + url, '書店更新了站內搜尋功能。']) {
+    reset();
+    dispatchWake(wakeEvent('#小浣 幫我註記進本週新聞：' + note));
+    assert.equal(calls.length, 0);
+    assert.deepEqual(keyReads, []);
+    assert.equal(replies.length, 1);
+    assert(replies[0].text.startsWith('加進本週手動註記了'));
+    assert.equal(context.getRecentWeeklyNotes_('group:group1').length, 1);
+  }
+});
+
+check('v210 a note combined with Search or URL research keeps both the receipt and the researched answer', () => {
+  const url = 'https://example.org/weekly-note-source';
+  const answer = '活動時間移到週日下午。';
+  for (const [request, usesSearch] of [['順便閱讀 ' + url, false], ['順便摘要這篇 ' + url, false], ['幫我上網查一下', true]]) {
+    reset();
+    const readerCalls = [];
+    withStubs({ fetchAndExtractWebPageByReaderLayer_: address => {
+      readerCalls.push(address);
+      return { ok: true, title: '原文', mainText: answer };
+    } }, () => {
+      fetchImpl = () => usesSearch ? groundedGemini(answer, [{ uri: url, title: '原文' }]) : geminiCompletion(answer);
+      dispatchWake(wakeEvent('#小浣 幫我註記進本週新聞：市府宣布週末活動改期\n' + request));
+      assert.equal(calls.length, 1);
+      assert.equal(replies.length, 1);
+      assert(replies[0].text.startsWith('加進本週手動註記了'));
+      assert(replies[0].text.endsWith(answer));
+      assert.deepEqual(keyReads, [usesSearch ? 'GEMINI_SEARCH_API_KEY' : 'GEMINI_API_KEY']);
+      assert.deepEqual(readerCalls, usesSearch ? [] : [url]);
+      assert.equal(context.getRecentWeeklyNotes_('group:group1').length, 1);
+      assert.equal(context.getConversationHistory('group:group1').at(-1).content, replies[0].text);
+    });
+  }
+});
+
+check('v210 ordinary URL intake stays silent while clearly addressed and internal research stays out of queue', () => {
+  const intake = [];
+  assert(!context.isExplicitWebSearchRequest_('有意思 https://example.org/story?搜尋'));
+  assert(context.isExplicitWebSearchRequest_('小浣，查證這則新聞'));
+  assert(!context.isLineUrlResearchRequest_('https://example.org/閱讀內容', true));
+  assert(context.isLineUrlResearchRequest_('小浣，讀這篇 https://example.org/story', false));
+  const nowRow = chatEvidence('group:group1', '之前在群裡聊過的事件');
+  const newsRow = { ConversationId: 'group:group1', Status: 'ok', CreatedAt: new Date(now - 100), Title: '之前的素材', Url: 'https://example.org/story' };
+  withStubs({ handleSilentNewsUrlMessage_: (_event, scope, text) => { intake.push([scope, text]); return { ok: true }; },
+    getSpreadsheet_: () => ({ getSheetByName: name => readOnlySheet(name === 'NewsInbox' ? [newsRow] : [nowRow]) }),
+    fetchAndExtractWebPageByReaderLayer_: () => ({ ok: true, title: '來源', mainText: '可用正文' }) }, () => {
+    fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('work_collab', { needsSearch: true })) : geminiCompletion('這篇已經收過');
+    dispatchWake(wakeEvent('有意思 https://example.org/story'));
+    assert.equal(intake.length, 1); assert.equal(calls.length, 0);
+    dispatchWake(wakeEvent('小浣，幫我查一下群裡是否收過這篇 https://example.org/story'));
+    assert.equal(intake.length, 1); assert.equal(replies.length, 1);
+    assert.equal(calls.length, 2); assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  });
+});
+
+check('v210 actionable article summaries share the gate, native mention and pending routing', () => {
+  const url = 'https://example.org/article-summary';
+  const nativeMention = { mentionees: [{ isSelf: true }] };
+  const tasks = ['幫我整理這篇', '幫我摘要這篇', '總結一下', '這篇的重點是什麼？', '給我這篇重點', '分析這篇'];
+  for (const task of tasks) {
+    for (const path of ['gate', 'mention', 'pending']) {
+      reset();
+      const readers = [];
+      const text = (path === 'mention' ? '@小浣 ' : '小浣，') + task + ' ' + url;
+      const noIntake = () => assert.fail('article research cannot enter news intake');
+      withStubs({ handleSilentNewsUrlMessage_: noIntake, handleDirectNewsUrlMessage_: noIntake,
+        fetchAndExtractWebPageByReaderLayer_: address => {
+          readers.push(address);
+          return { ok: true, title: '原文', mainText: '活動在週日。' };
+        } }, () => {
+        fetchImpl = address => isGateFetch(address) ? geminiCompletion(wakeDecision('work_collab')) : geminiCompletion('文章重點');
+        if (path === 'pending') pending = { text: '上次的背景結果' };
+        dispatchWake(wakeEvent(text, { mention: path === 'mention' ? nativeMention : undefined }));
+        assert.equal(replies.length, 1, path + ' ' + task);
+        if (path === 'pending') {
+          assert.equal(calls.length, 0);
+          assert.deepEqual(readers, []);
+          assert(replies[0].text.includes('網址問題尚未研究'));
+        } else {
+          assert.equal(calls.length, path === 'gate' ? 2 : 1);
+          assert.deepEqual(readers, [url]);
+          assert.equal(replies[0].text, '文章重點');
+        }
+      });
+    }
+  }
+
+  reset();
+  const ordinary = '這篇的摘要和分析很精彩 ' + url;
+  assert(!context.isLineUrlResearchRequest_(ordinary, false));
+  let collected = '';
+  withStubs({ handleSilentNewsUrlMessage_: (_event, _scope, text) => { collected = text; } }, () => {
+    dispatchWake(wakeEvent(ordinary));
+  });
+  assert.equal(collected, ordinary);
+  assert.equal(calls.length, 0);
+});
+
+check('v210 Search and internal tools agree on the scope of each current clause', () => {
+  const cases = [
+    ['幫我查我們的新聞有沒有這則', false, ['search_news_inbox']],
+    ['幫我查 LINE 的聊天室功能', true, []],
+    ['幫我查 LINE 的聊天紀錄保留多久', true, []],
+    ['幫我查 LINE 的聊天室功能，順便查我們的新聞有沒有這則', true, ['search_news_inbox']],
+    ['幫我查群組裡聊過什麼', false, ['search_conversation_log']]
+  ];
+  for (const [text, search, expected] of cases) {
+    reset();
+    assert.equal(context.isExplicitWebSearchRequest_(text), search);
+    assert.deepEqual(Array.from(context.getAiRequiredResearch_(text), item => item.name), expected);
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: name => readOnlySheet(name === 'NewsInbox'
+      ? [newsEvidence('group:group1', '這則新聞')] : [chatEvidence('group:group1', '先前的對話')]) }) }, () => {
+      fetchImpl = () => search ? groundedGemini('外部研究已完成') : geminiCompletion('內部資料查到了');
+      dispatchWake(wakeEvent('#小浣 ' + text));
+      assert.equal(replies.length, 1);
+      assert.deepEqual(keyReads, [search ? 'GEMINI_SEARCH_API_KEY' : 'GEMINI_API_KEY']);
+      const payload = JSON.parse(calls[0].options.payload);
+      assert.equal(payload.tools.some(tool => 'google_search' in tool), search);
+      for (const name of expected) assert.match(researchStatus(latestMetadata(), name), /^SEARCHED_/);
+    });
+  }
+});
+
+check('v210 an exact delivered bot quote skips the cooldown but cannot take a second room lease', () => {
+  const replyId = '90071992547409971';
+  const sent = [];
+  const gates = [];
+  withStubs({ replyToLine: transportReply }, () => {
+    fetchImpl = (url, options) => {
+      if (url.includes('/message/reply')) {
+        sent.push(JSON.parse(options.payload));
+        return response(200, { sentMessages: [{ id: sent.length === 1 ? replyId : '90071992547409972' }] });
+      }
+      if (!isGateFetch(url)) return geminiCompletion('標題可以從時間順序切入');
+      const body = JSON.parse(JSON.parse(options.payload).contents.at(-1).parts.at(-1).text);
+      gates.push(body);
+      if (gates.length === 2) {
+        dispatchWake(wakeEvent('那另一個細節呢？', { user: 'user3', quotedMessageId: replyId, dedup: true }));
+      }
+      return geminiCompletion(wakeDecision(body.signals.quotesBot ? 'follow_up' : 'direct_call'));
+    };
+
+    dispatchWake(wakeEvent('小浣，幫我想標題', { dedup: true }));
+    assert.equal(sent.length, 1);
+    now += 1000;
+    dispatchWake(wakeEvent('還有什麼細節？'));
+    dispatchWake(wakeEvent('還有什麼細節？', { quotedMessageId: '90071992547409970' }));
+    assert.equal(gates.length, 1);
+
+    const followUp = wakeEvent('你說時間順序是什麼意思？', { user: 'user2', quotedMessageId: replyId, dedup: true });
+    dispatchWake(followUp);
+    dispatchWake(followUp);
+    assert.equal(gates.length, 2);
+    assert.equal(gates[1].signals.quotesBot, true);
+    assert.equal(sent.length, 2);
+    now += 1000;
+    dispatchWake(wakeEvent('那這個呢？', { user: 'user2' }));
+    assert.equal(gates.length, 2, 'ordinary follow-ups remain rate limited');
+  });
+});
+
+check('v210 six-hour egg survives cache loss, never searches, and can be disabled independently', () => {
+  fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('easter_egg', { needsSearch: true })) :
+    geminiCompletion('等等，垃圾桶裡還有寶。這句不該送出。');
+  dispatchWake(wakeEvent('垃圾桶裡有棉花糖嗎'));
+  assert.equal(calls.length, 2); assert.equal(replies[0].text, '等等，垃圾桶裡還有寶');
+  const key = context.getLineChatStateKey_('group:group1');
+  const until = JSON.parse(properties.get('CHAT_EASTER_EGG_STATE'))[key];
+  assert.equal(until, now + 6 * 60 * 60 * 1000);
+  assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  cache.clear(); now = until - 1;
+  dispatchWake(wakeEvent('棉花糖化光了'));
+  assert.equal(calls.length, 2);
+  now = until;
+  dispatchWake(wakeEvent('棉花糖再來一顆'));
+  assert.equal(calls.length, 4);
+
+  const off = vm.createContext({ console: context.console, Date: context.Date, PropertiesService: context.PropertiesService,
+    Utilities: context.Utilities, LockService: context.LockService, UrlFetchApp: context.UrlFetchApp });
+  vm.runInContext(source.replace('const ENABLE_CHAT_EASTER_EGG = true;', 'const ENABLE_CHAT_EASTER_EGG = false;'), off);
+  off.deliverPendingReply_ = () => null; off.logMessageToSheet = () => {};
+  off.handleLineEvent(wakeEvent('垃圾桶找寶', { room: 'unused-room' }), now);
+  assert.equal(calls.length, 4);
 });
 
 process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed (${deepSeekChecks} dormant DeepSeek fixtures). No live GAS/LINE/DeepSeek/Gemini/OpenAI calls.\n`);

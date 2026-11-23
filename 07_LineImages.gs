@@ -42,7 +42,10 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
       return getBotTextImageError_(downloaded);
     }
 
-    const needsSearch = isExplicitWebSearchRequest_(safeQuestion) || /最新|查證|來源|即時/.test(safeQuestion);
+    const internalOnly = getLineRequestClauses_(safeQuestion).some(function(clause) {
+      return getAiInternalResearchKinds_(clause).length > 0;
+    });
+    const needsSearch = isExplicitWebSearchRequest_(safeQuestion) || !internalOnly && /最新|查證|來源|即時/.test(safeQuestion);
     const clientToolNames = selectImageResearchToolNames_(safeQuestion);
     const research = needsSearch || clientToolNames.length > 0;
     const result = runAiMemoryTask(research ? 'multimodal_research' : 'image_analysis', conversationId, historyText, [
@@ -60,6 +63,7 @@ function analyzeLineImage_(event, conversationId, messageId, question, execution
     }
 
     // 可選的純展示 metadata 保持舊 string caller 相容；來源 bubble 不進 ConversationLog。
+    if (replyMetadata) replyMetadata.ok = true;
     if (replyMetadata && (result.usedWebSearch || result.sources.length)) {
       replyMetadata.finalMessage = buildWebSearchSourcesBubble_(result.sources);
     }

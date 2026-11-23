@@ -29,6 +29,16 @@ function withDataMutationLock_(action, waitMs) {
   try { return action(); } finally { lock.releaseLock(); }
 }
 
+function isValidLineConversationId_(conversationId) {
+  return typeof conversationId === 'string' && /^(?:user|group|room):[^\s:]{1,128}$/.test(conversationId) &&
+    !/:(?:undefined|null)$/.test(conversationId);
+}
+
+function computeSha256Text_(text) {
+  const digest = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(text || ''), Utilities.Charset.UTF_8);
+  return Utilities.base64EncodeWebSafe(digest).replace(/=+$/g, '');
+}
+
 function parseJsonObjectLoose(text) {
   const raw = String(text || '').trim();
 
