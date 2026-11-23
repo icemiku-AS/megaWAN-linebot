@@ -425,14 +425,23 @@ function buildLineChatReply_(event, conversationId, text, executionContext, deci
   const note = !easterEgg && isWeeklyNoteRequest_(text) && (!decision || decision.noteAction === 'save_weekly_note')
     ? saveLineWeeklyNotes_(event, conversationId, text, executionContext, context.lineChatKey, lease) : null;
   const noteAck = note ? formatWeeklyNoteAcknowledgement_(note) : '';
-  const search = !easterEgg && isExplicitWebSearchRequest_(text);
+  const research = noteAck ? getWeeklyNoteResearchIntent_(text) : null;
+  const search = !easterEgg && (research ? research.search : isExplicitWebSearchRequest_(text));
+  const noteReply = noteAck ? { text: noteAck, mode: 'weekly_note', followUp: true, leaseId: lease } : null;
+  if (noteReply && !search && !research.url) {
+    if (note.status === 'ok' && note.saved.length && !shouldUseWebReading(text)) {
+      noteReply.text += '\n\n有原帖再丟，之後比較好對來源。';
+    }
+    stageLineNoteMemory_(conversationId, text, noteReply.text, executionContext);
+    return noteReply;
+  }
   const options = buildAiCallOptionsForExecutionContext_(executionContext, {
     forceWebSearch: search, maxModelCalls: decision ? 1 : 2,
-    disableClientResearch: easterEgg || !!note && !search && !isLineUrlResearchRequest_(text, true),
+    disableClientResearch: easterEgg,
     weeklyNoteResult: note, easterEggReply: easterEgg, excludeMessageId: context.currentMessageId
   });
   const failed = function(result) {
-    if (noteAck) return { text: noteAck, mode: 'weekly_note', followUp: true, leaseId: lease };
+    if (noteReply) return noteReply;
     if (decision) return null;
     const searchFailure = result && result.errorType === 'ai_web_search_failed';
     return { text: result && result.errorType === 'ai_required_evidence_failed' ? getBotTextRequiredEvidenceError_(result)
@@ -449,14 +458,26 @@ function buildLineChatReply_(event, conversationId, text, executionContext, deci
     if (!answer || /[*#\x60]|https?:|www\./i.test(answer)) return null;
     answer = answer.slice(0, getLineMessageSafeSliceIndex_(answer, 100));
   }
-  if (noteAck) {
-    // 儲存回執由程式決定。模型可選擇提示補原帖，但不能自行改寫成功、失敗或事件清單。
-    const optionalHint = '有原帖再丟，我可以幫你對來源。';
-    answer = noteAck + (note.status === 'ok' && answer.trim() === optionalHint ? '\n\n' + optionalHint : '');
-  }
+  // 儲存回執由程式定稿，混合請求同時保留模型回答的研究內容。
+  if (noteReply) answer = noteReply.text + '\n\n' + answer;
   const sources = result.usedWebSearch || result.sources.length ? buildWebSearchSourcesBubble_(result.sources) : '';
   return { text: answer, mode: note ? 'weekly_note' : sources ? 'general_chat_search' : 'chat',
     finalMessage: sources, followUp: !easterEgg, leaseId: lease, easterEgg: easterEgg };
+}
+
+function stageLineNoteMemory_(conversationId, text, replyText, executionContext) {
+  const context = executionContext.conversationContext;
+  if (!context.lineChatState || typeof context.onMemoryTurn !== 'function') return;
+  try {
+    const deadline = executionContext.deadlineAtMs;
+    const snapshot = snapshotConversationMemory_(conversationId, deadline);
+    if (snapshot.status === 'busy') return;
+    const state = readLineChatState_(context.lineChatKey);
+    if (!state || (state.resetId || '') !== (context.lineChatState.resetId || '') ||
+        context.beforeTimestampMs <= (state.resetAtMs || 0)) return;
+    // 與模型回覆共用 LINE 確認送出後的記憶提交。
+    context.onMemoryTurn(buildConversationTurnCommit_(conversationId, snapshot.generation, text, replyText, context, deadline));
+  } catch (ignore) { console.warn('CONVERSATION_MEMORY_STAGE_FAILED'); }
 }
 
 function sendLineReplyWithLog_(event, conversationId, context, reply) {

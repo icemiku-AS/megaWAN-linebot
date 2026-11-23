@@ -115,33 +115,19 @@ function runAiMemoryTask(task, conversationId, userTextForHistory, aiUserContent
     if (safeOptions.weeklyNoteResult) status.weeklyNote = safeOptions.weeklyNoteResult;
     if (safeOptions.easterEggReply === true) status.replyStyle = '彩蛋只回一句，直接接梗。';
     messages.push({ role: 'user', content: 'LINE_TURN_STATUS\n' + JSON.stringify(status) });
-    messages.push({ role: 'user', content: '現在接最後的問題。用繁體中文純文字，直接切題，避開剛用過的開頭，只說確實做過的事。' });
+    messages.push({ role: 'user', content: '現在接最後的問題。用繁體中文純文字，直接切題，避開剛用過的開頭，只說確實做過的事。' +
+      (safeOptions.weeklyNoteResult ? '\n註記回執由程式顯示。請直接回答同一則訊息提出的搜尋或網址研究問題。' : '') });
     messages.push({ role: 'user', content: aiUserContent || '' });
 
     const result = runAiMessagesTask(task, messages, safeOptions);
     if (!result.ok) return result;
 
-    const turn = [
-      // 圖片 caller 必須另提供文字 placeholder；structured content 絕不進 history。
-      { role: 'user', userId: safeOptions.currentUserId,
-        messageId: safeOptions.currentMessageId, provenance: safeOptions.currentMessageId ? 'user_text' : '',
-        timestampMs: before,
-        quoteStatus: safeOptions.textQuote && safeOptions.textQuote.status,
-        quotedMessageId: safeOptions.textQuote && safeOptions.textQuote.status === 'text_found' ? safeOptions.textQuote.messageId : '',
-        content: Array.isArray(aiUserContent)
-        ? redactAiMediaText_(typeof userTextForHistory === 'string' ? userTextForHistory : '[使用者提供圖片]')
-        : String(userTextForHistory || '') },
-      { role: 'assistant', content: result.text }
-    ];
-    const commit = function(receipt, deliveredText) {
-      if (receipt) {
-        turn[1].messageId = (receipt.messageIds || [])[0];
-        turn[1].timestampMs = receipt.sentAtMs;
-      }
-      if (deliveredText) turn[1].content = deliveredText;
-      try { commitConversationTurn_(conversationId, snapshot.generation, turn, safeOptions.executionDeadlineAtMs); }
-      catch (ignore) { console.warn('CONVERSATION_MEMORY_COMMIT_FAILED'); }
-    };
+    // 圖片 caller 必須另提供文字 placeholder；structured content 絕不進 history。
+    const historyText = Array.isArray(aiUserContent)
+      ? redactAiMediaText_(typeof userTextForHistory === 'string' ? userTextForHistory : '[使用者提供圖片]')
+      : String(userTextForHistory || '');
+    const commit = buildConversationTurnCommit_(conversationId, snapshot.generation, historyText, result.text,
+      safeOptions, safeOptions.executionDeadlineAtMs);
     if (typeof safeOptions.onMemoryTurn === 'function') safeOptions.onMemoryTurn(commit);
     else commit();
     return result;

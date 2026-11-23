@@ -17,7 +17,30 @@ function isWeeklyNoteRequest_(text) {
   });
 }
 
-function extractWeeklyNoteText_(rawText, explicitlyQuoted) {
+function getWeeklyNoteResearchIntent_(text) {
+  // 單純附原帖或在事件內文提到搜尋功能，不等於同時交辦研究。
+  const clauses = text.split(/\r?\n/).map(stripUrlsForWeeklyEditorial_).join('\n').replace(/[#@]小浣/g, '')
+    .split(/[，,。；;！？!?\n]|順便|另外|同時|並且|(?:並|再|也)(?=請|幫我|上網|聯網|閱讀|讀取|確認)/);
+  const requestLead = /^(?:(?:也|再|先|請問|請你?|麻煩你?|幫我|幫忙|可以|能否|可否)\s*)*/;
+  const requests = clauses.map(function(clause) { return clause.trim(); });
+  const search = isExplicitWebSearchRequest_(text) && requests.some(function(request) {
+    return /^(?:上網|聯網|網路|網上|外部|查|找|搜尋|搜索)/.test(request.replace(requestLead, '')) &&
+      isExplicitWebSearchRequest_(request);
+  });
+  const url = shouldUseWebReading(text) && requests.some(function(request) {
+    const action = request.replace(requestLead, '');
+    return /^(?:讀取|讀一下|閱讀|看一下|看看|解讀|摘要|比對|(?:讀|看|整理(?:一下)?)\s*(?:這篇|這則|原文|原帖|網址|連結|重點)|(?:讀|看)$)/.test(action) ||
+      /^(?:(?:確認|查)?(?:這篇|這則|連結|網址).{0,12}(?:收過|重複|重點|說了什麼)|(?:確認(?:一下)?|查)?(?:是否|有沒有)收過)/.test(action);
+  });
+  return { search: search, url: url };
+}
+
+function isWeeklyNoteNoise_(text) {
+  const compact = text.replace(/[\s\p{P}\p{S}]+/gu, '');
+  return !compact || /^(?:[wｗ]+|笑死|OP|OK|1|嗯+|好|哈+|喔+|哦+)$/i.test(compact);
+}
+
+function extractWeeklyNoteText_(rawText, allowDescriptiveText) {
   const tagged = isWeeklyNoteRequest_(rawText);
   const pieces = redactAiMediaText_(rawText).split(/\r?\n|[；;]/);
   return pieces.map(function(piece) {
@@ -30,10 +53,10 @@ function extractWeeklyNoteText_(rawText, explicitlyQuoted) {
       text = suffix ? suffix[1] : prefix ? prefix[1] : object ? object[1] : '';
     }
     text = stripUrlsForWeeklyEditorial_(text).replace(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g, '').trim();
-    if (text.length < 5 ||
+    if (text.length < 5 || isWeeklyNoteNoise_(text) ||
         /^(?:[#>＞]|沒有|沒新聞|我(?:這裡|這邊)?(?:沒有|沒)|(?:這|那)(?:兩|個|幾|則|件|篇|裡|邊)[^。！？]{0,8}$|(?:最近|本週|這週).{0,12}(?:事件|消息|新聞)[，,、：:\s]*(?:提一下|說一下|分享一下)?$|(?:提|說|看|查|記|註記|補充|分享)一下(?:[。！？…]+)?$)/.test(text)) return '';
     const concrete = /事件|爭議|炎上|流失|停服|關服|伺服器|上市|宣布|發表|發布|推出|上映|上線|更新|故障|延[期後]|漲價|取消|爆發|開唱|演唱|開放|下架|通過|倒閉|server|launch|outage/i.test(text);
-    if (!concrete && (!(tagged || explicitlyQuoted) || text.length < 8 ||
+    if (!concrete && (!(tagged || allowDescriptiveText) || text.length < 8 ||
         !/[a-z\d]|[，,。]|有了|成為|開始|改為|調整|收到|提供|出現|停止|(?:要|將|已|會|在).{2,}/i.test(text))) return '';
     const bounded = truncateWeeklyEditorialText_(text, WEEKLY_NOTE_MAX_LENGTH);
     return bounded.replace(/^(?:[>＞]+|\*+)\s*/, '');
@@ -42,8 +65,8 @@ function extractWeeklyNoteText_(rawText, explicitlyQuoted) {
 
 function buildWeeklyNoteCandidates_(event, text, executionContext) {
   const context = executionContext.conversationContext;
-  const make = function(rawText, messageId, explicitlyQuoted) {
-    return extractWeeklyNoteText_(rawText, explicitlyQuoted).slice(0, MAX_WEEKLY_NOTES).map(function(summary, index) {
+  const make = function(rawText, messageId, allowDescriptiveText) {
+    return extractWeeklyNoteText_(rawText, allowDescriptiveText).slice(0, MAX_WEEKLY_NOTES).map(function(summary, index) {
       return { text: summary, sourceId: isExactLineMessageId_(messageId) ? messageId : '', index: index };
     });
   };
@@ -58,10 +81,11 @@ function buildWeeklyNoteCandidates_(event, text, executionContext) {
   if (!context.currentUserId) return [];
   const before = context.beforeTimestampMs;
   const previous = (context.ambientContext || []).slice().reverse().find(function(item) {
-    return item.role === 'user' && before - item.timestampMs <= WEEKLY_NOTE_REFERENCE_MS &&
-      (make(item.text, item.messageId).length || !isWeeklyNoteRequest_(item.text) && !/^(?:[wｗ]+|笑死|OP|OK|[+＋]1|嗯+|好)[！？!?.。]*$/i.test(item.text));
+    if (item.role !== 'user' || before - item.timestampMs > WEEKLY_NOTE_REFERENCE_MS) return false;
+    const textWithoutUrl = stripUrlsForWeeklyEditorial_(item.text.replace(/^(?:#小浣|@小浣)\s*/, ''));
+    return !isWeeklyNoteNoise_(textWithoutUrl) && (!isWeeklyNoteRequest_(item.text) || make(item.text, item.messageId).length > 0);
   });
-  return previous && previous.userId === context.currentUserId ? make(previous.text, previous.messageId) : [];
+  return previous && previous.userId === context.currentUserId ? make(previous.text, previous.messageId, true) : [];
 }
 
 function getWeeklyNotesKey_(conversationId) {

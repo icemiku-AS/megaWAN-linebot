@@ -86,6 +86,26 @@ function commitConversationTurn_(conversationId, generation, turn, deadlineAtMs)
   }, Math.min(1000, remaining));
 }
 
+function buildConversationTurnCommit_(conversationId, generation, userText, assistantText, context, deadlineAtMs) {
+  const quote = context.textQuote;
+  const user = {
+    role: 'user', content: userText, userId: context.currentUserId,
+    messageId: context.currentMessageId, provenance: context.currentMessageId ? 'user_text' : '',
+    timestampMs: Number(context.beforeTimestampMs) || 0,
+    quoteStatus: quote && quote.status,
+    quotedMessageId: quote && quote.status === 'text_found' ? quote.messageId : ''
+  };
+  return function(receipt, deliveredText) {
+    const assistant = { role: 'assistant', content: deliveredText || assistantText };
+    if (receipt) {
+      assistant.messageId = (receipt.messageIds || [])[0];
+      assistant.timestampMs = receipt.sentAtMs;
+    }
+    try { commitConversationTurn_(conversationId, generation, [user, assistant], deadlineAtMs); }
+    catch (ignore) { console.warn('CONVERSATION_MEMORY_COMMIT_FAILED'); }
+  };
+}
+
 function getHistoryCacheKey(conversationId) {
   return 'linebot_history_' + conversationId;
 }

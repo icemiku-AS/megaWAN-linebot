@@ -4331,6 +4331,43 @@ check('v210 quota, malformed and timed-out gate stay quiet and main answer canno
   assert(!JSON.parse(calls[0].options.payload).tools);
 });
 
+check('v210 a pure note with an attached source or a described search feature does not dispatch AI', () => {
+  const url = 'https://example.org/weekly-note-source';
+  for (const note of ['市府宣布活動改期，變更內容見原帖 ' + url, '書店更新了站內搜尋功能。']) {
+    reset();
+    dispatchWake(wakeEvent('#小浣 幫我註記：' + note));
+    assert.equal(calls.length, 0);
+    assert.deepEqual(keyReads, []);
+    assert.equal(replies.length, 1);
+    assert(replies[0].text.startsWith('加進本週手動註記了'));
+    assert.equal(context.getRecentWeeklyNotes_('group:group1').length, 1);
+  }
+});
+
+check('v210 a note combined with Search or URL research keeps both the receipt and the researched answer', () => {
+  const url = 'https://example.org/weekly-note-source';
+  const answer = '活動時間移到週日下午。';
+  for (const [request, usesSearch] of [['順便閱讀 ' + url, false], ['幫我上網查一下', true]]) {
+    reset();
+    const readerCalls = [];
+    withStubs({ fetchAndExtractWebPageByReaderLayer_: address => {
+      readerCalls.push(address);
+      return { ok: true, title: '原文', mainText: answer };
+    } }, () => {
+      fetchImpl = () => usesSearch ? groundedGemini(answer, [{ uri: url, title: '原文' }]) : geminiCompletion(answer);
+      dispatchWake(wakeEvent('#小浣 幫我註記：市府宣布週末活動改期\n' + request));
+      assert.equal(calls.length, 1);
+      assert.equal(replies.length, 1);
+      assert(replies[0].text.startsWith('加進本週手動註記了'));
+      assert(replies[0].text.endsWith(answer));
+      assert.deepEqual(keyReads, [usesSearch ? 'GEMINI_SEARCH_API_KEY' : 'GEMINI_API_KEY']);
+      assert.deepEqual(readerCalls, usesSearch ? [] : [url]);
+      assert.equal(context.getRecentWeeklyNotes_('group:group1').length, 1);
+      assert.equal(context.getConversationHistory('group:group1').at(-1).content, replies[0].text);
+    });
+  }
+});
+
 check('v210 ordinary URL intake stays silent while clearly addressed and internal research stays out of queue', () => {
   const intake = [];
   assert(!context.isExplicitWebSearchRequest_('有意思 https://example.org/story?搜尋'));

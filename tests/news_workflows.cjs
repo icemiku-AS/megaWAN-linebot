@@ -1903,34 +1903,26 @@ function v210EditorialOutput(options, overrides = {}) {
 check('v210 morning messages save both events once and render with an empty NewsInbox even when editing fails', () => {
   const e = env({ configured: false, clock: Date.parse('2026-11-23T09:13:12+08:00') });
   e.restoreAi();
-  const promptParts = [];
-  phase4Reply(e, (_url, options) => {
-    const body = JSON.parse(options.payload);
-    if (body.generationConfig.responseJsonSchema?.properties.openingComment) {
-      return v210EditorialOutput(options, { openingComment: '這週光聊社群和遊戲就有兩條線。' });
-    }
-    promptParts.push(body.contents.at(-1).parts.map(part => part.text));
-    return '有原帖再丟，我可以幫你對來源。';
-  });
+  phase4Reply(e, (_url, options) => v210EditorialOutput(options, { openingComment: '這週光聊社群和遊戲就有兩條線。' }));
   const first = '最近兩個社群事件，提一下\n#小浣 到時候本週新聞時當我註記\nBTS來高雄，南美洲社群大炎上……\n皮克敏那伺服器事件導致台灣玩家流失……';
   const ack = v210Text(e, first);
   assert(ack.includes('加進本週手動註記了')); assert(ack.includes('BTS來高雄')); assert(ack.includes('皮克敏'));
-  assert.equal(promptParts[0].at(-1), first);
-  assert(promptParts[0].some(part => part.startsWith('LINE_TURN_STATUS\n') && part.includes('"status":"ok"') && part.includes('BTS')));
+  assert.deepEqual(Array.from(e.c.getConversationHistory('group:a'), item => item.content), [first, ack]);
 
   e.setNow(e.now() + 27000);
   const duplicate = v210Text(e, '#小浣 我這裡沒新聞，到時候就協助註記紀錄一下');
   assert(duplicate.includes('本週已經有這幾筆')); assert(duplicate.includes('BTS')); assert(duplicate.includes('皮克敏'));
-  assert(promptParts[1].some(part => part.includes('BTS'))); assert(promptParts[1].some(part => part.includes('皮克敏')));
+  assert.equal(e.c.getConversationHistory('group:a').at(-1).content, duplicate);
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 2);
   assert.equal(e.sheets.get('NewsInbox').records().length, 0);
-  assert.deepEqual(e.keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  assert.deepEqual(e.keyReads, []);
+  assert(!e.fetches.some(call => call.url.endsWith(':generateContent')));
 
   e.cache.clear(); e.setNow(e.now() + 1000);
   const weekly = v210Text(e, '#本週新聞');
   assert(weekly.startsWith('這週光聊社群和遊戲就有兩條線。'));
   for (const text of ['本週手動註記', 'BTS來高雄', '皮克敏']) assert(weekly.includes(text));
-  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 3);
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 1);
 
   e.cache.clear();
   phase4Reply(e, () => '{invalid-JSON');
@@ -1946,6 +1938,72 @@ check('v210 morning messages save both events once and render with an empty News
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 0);
   assert.equal(e.c.getRecentWeeklyNotes_('group:b').length, 1);
   assert(!v210Text(e, '#本週新聞 精簡').includes('本週手動註記'));
+});
+
+check('v210 a pure note opens follow-up and records a turn only after LINE 2xx in the current generation', () => {
+  for (const [status, resetOnDelivery] of [[200, false], [503, false], [200, true]]) {
+    const e = env({ configured: false });
+    const outboundId = '90071992547409933';
+    const scope = 'group:a';
+    e.c.UrlFetchApp.fetch = (url, options) => {
+      e.fetches.push({ url, options });
+      if (url.endsWith('/message/reply')) {
+        assert(!e.held());
+        assert.equal(e.c.getConversationHistory(scope).length, 0);
+        if (resetOnDelivery) e.c.clearConversationHistory(scope);
+        return { getResponseCode: () => status, getContentText: () => JSON.stringify({ sentMessages: [{ id: outboundId }] }) };
+      }
+      throw new Error('A pure note must not dispatch a model request');
+    };
+    const question = '幫我註記：城市宣布停辦週末活動';
+    const ack = v210Text(e, '#小浣 ' + question);
+    assert.equal(e.fetches.length, 1);
+    assert(ack.includes('加進本週手動註記了'));
+    assert.equal(e.c.getRecentWeeklyNotes_(scope).length, 1);
+    const history = e.c.getConversationHistory(scope);
+    const key = e.c.getLineChatStateKey_(scope);
+    const state = e.c.readLineChatState_(key);
+    if (status === 200 && !resetOnDelivery) {
+      assert.deepEqual(Array.from(history, item => item.content), [question, ack]);
+      assert.equal(history[1].messageId, outboundId);
+      assert.equal(history[1].timestampMs, e.now());
+      assert.equal(state.replies[0].userId, 'alice');
+      assert.equal(state.replies[0].ids[0], outboundId);
+      const followUp = { ...event, timestamp: e.now() + 1000, message: { type: 'text' } };
+      assert.equal(e.c.getLineChatWakeSignals_(followUp, key, state, '再說一點', { status: 'none' }).followUp, true);
+    } else {
+      assert.equal(history.length, 0);
+      assert.equal(state.replies, undefined);
+    }
+  }
+});
+
+check('v210 an unquoted note can use the same speaker’s recent ordinary description without event keywords', () => {
+  const description = '新竹城隍廟旁那家老書店，星期五搬到建國路。';
+  for (const [author, elapsed, saved] of [['alice', 27000, true], ['bob', 27000, false], ['alice', 301000, false]]) {
+    const e = env({ configured: false });
+    const chat = e.sheets.get('ConversationLog');
+    assert.equal(e.c.extractWeeklyNoteText_(description).length, 0);
+    chat.appendRow([new Date(e.now()), 'group:a', 'user', 'input', author, description, '650052']);
+    e.setNow(e.now() + elapsed - 1000);
+    v210Text(e, 'wwww');
+    v210Text(e, '。。。。。。。。');
+    e.setNow(e.now() + 1000);
+    v210Text(e, '#版本');
+    e.setNow(e.now() + 1);
+    const ack = v210Text(e, '#小浣 幫我註記一下');
+    assert(!e.fetches.some(call => call.url.endsWith(':generateContent')));
+    const notes = e.c.getRecentWeeklyNotes_('group:a');
+    if (saved) {
+      assert(ack.includes(description));
+      assert.equal(notes[0].text, description);
+      assert.equal(notes[0].sourceId, '650052');
+      assert.equal(notes.length, 1);
+    } else {
+      assert(ack.includes('補一句事件內容'));
+      assert.equal(notes.length, 0);
+    }
+  }
 });
 
 check('v210 context-only weekly report accepts substantive bot calls and skips empty views without AI', () => {
@@ -1969,9 +2027,16 @@ check('v210 context-only weekly report accepts substantive bot calls and skips e
 
 check('v210 optional editorial opening is cached, evidence-bounded by prompt, and invalid openings preserve coverage', () => {
   const safe = '這週的兩篇新聞可以放一起聊。';
-  for (const [comment, show] of [
-    [safe, true], ['字' + '🦝'.repeat(80), true], ['https://example.org/fake', false], ['看 www.example.org', false],
-    ['**先看這個**', false], ['# 一句標題', false], ['[連結](example.net)', false], ['', false], [37, false], [undefined, false]
+  const twoLines = '這週線索好多～  \r\n \n  剛好有兩條。';
+  const folded = '這週線索好多～ 剛好有兩條。';
+  const normalizedEmoji = '字' + '🦝'.repeat(59) + '…';
+  const fallback = '我把最近 7 天可聊的素材整理好了';
+  for (const [comment, expected] of [
+    [safe, safe], [twoLines, folded], ['這週真忙~', '這週真忙~'], ['字' + '🦝'.repeat(80), normalizedEmoji],
+    ['https://example.org/fake', ''], ['第一句。\n看 www.example.org', ''], ['**先看這個**', ''], ['# 一句標題', ''],
+    ['[連結](example.net)', ''], ['~~劃掉~~', ''], ['～～劃掉～～', ''], ['第一句。\n- 列表項目', ''],
+    ['第一句。\r\n１． 編號項目', ''], ['有\t控制符', ''], ['第一句。\r\n\u202e第二句。', ''],
+    ['', ''], [37, ''], [undefined, '']
   ]) {
     const e = env({ configured: false });
     news(e, e.now() - 1000, 'group:a', '素材一');
@@ -1980,15 +2045,19 @@ check('v210 optional editorial opening is cached, evidence-bounded by prompt, an
     phase4Reply(e, (_url, options) => {
       const body = JSON.parse(options.payload);
       assert(!body.generationConfig.responseJsonSchema.required.includes('openingComment'));
-      assert(body.systemInstruction.parts[0].text.includes('不編造事件'));
+      const prompt = body.systemInstruction.parts[0].text;
+      assert(prompt.includes('不編造事件'));
+      assert(prompt.includes('除選填 openingComment 外，其餘欄位保持純資料格式'));
+      assert(prompt.includes('熟門熟路的群友') && prompt.includes('避開客服套話'));
+      assert(!prompt.includes('不加入角色前言、笑話或人設文字'));
       return v210EditorialOutput(options, { openingComment: comment });
     });
     const first = v210Text(e, '#本週新聞');
     const second = v210Text(e, '#本週新聞');
     assert.equal(first, second);
     assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 1);
-    if (show) assert(first.startsWith(e.c.normalizeWeeklyEditorialOpeningComment_(comment)));
-    else assert(first.startsWith('我把最近 7 天可聊的素材整理好了'));
+    assert.equal(e.c.normalizeWeeklyEditorialOpeningComment_(comment), expected);
+    assert(first.startsWith(expected || fallback));
     assert(first.isWellFormed());
     for (const row of e.sheets.get('NewsInbox').records()) assert.equal(first.split(row.Url).length - 1, 1);
     assert(!first.includes('群組話題尚未完成'));
@@ -2021,33 +2090,35 @@ check('v210 manual notes enforce bounded storage, Unicode-safe display and rolli
 check('v210 gated note uses trusted context and save status; missing, write failure and ambiguous speaker stay honest', () => {
   const e = env({ configured: false });
   e.restoreAi();
-  const statuses = [];
   phase4Reply(e, (url, options) => {
-    if (url.includes('gemini-3.5-flash-lite')) return JSON.stringify({
-      shouldReply: true, triggerType: 'work_collab', noteAction: 'save_weekly_note', needsSearch: false
+    assert(url.includes('gemini-3.5-flash-lite'));
+    const payload = JSON.parse(options.payload);
+    const { currentMessage } = JSON.parse(payload.contents.at(-1).parts.at(-1).text);
+    const shouldReply = e.c.isWeeklyNoteRequest_(currentMessage);
+    return JSON.stringify({
+      shouldReply, triggerType: shouldReply ? 'work_collab' : 'ignore',
+      noteAction: shouldReply ? 'save_weekly_note' : 'none', needsSearch: false
     });
-    const parts = JSON.parse(options.payload).contents.at(-1).parts;
-    statuses.push(JSON.parse(parts.find(part => part.text.startsWith('LINE_TURN_STATUS\n')).text.split('\n')[1]).weeklyNote);
-    return '我已經全部存好也封存好了！';
   });
   assert(v210Text(e, '幫我註記進本週新聞').includes('補一句事件內容'));
-  assert.equal(statuses.at(-1).status, 'missing');
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 0);
   e.setNow(e.now() + 30000);
-  v210Text(e, '某平台宣布新政策，台灣區下週生效');
+  assert.equal(v210Text(e, '某平台宣布新政策，台灣區下週生效'), '');
   e.setNow(e.now() + 1000);
   assert(!e.c.isWeeklyNoteRequest_('#小浣 群友會打「幫我註記進本週新聞」這句嗎？'));
   assert(!e.c.isWeeklyNoteRequest_('#小浣 本週新聞是不是已經有註記？'));
   assert(v210Text(e, '幫我註記進本週新聞').includes('某平台宣布新政策'));
-  assert.equal(statuses.at(-1).status, 'ok');
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 1);
 
   e.setNow(e.now() + 1000);
   e.setPropertyFailure(key => { if (key.startsWith('WEEKLY_NOTES_')) throw Error('PRIVATE_WRITE_FAILURE'); });
   const failed = v210Text(e, '#小浣 幫我註記：城市取消原訂的週末展覽');
   assert(failed.includes('沒存成功')); assert(!failed.includes('封存好了')); assert(!failed.includes('PRIVATE_WRITE_FAILURE'));
-  assert.equal(statuses.at(-1).status, 'failed');
   assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 1);
+  assert.deepEqual(e.keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  const modelCalls = e.fetches.filter(call => call.url.endsWith(':generateContent'));
+  assert.equal(modelCalls.length, 3);
+  assert(modelCalls.every(call => call.url.endsWith('/gemini-3.5-flash-lite:generateContent')));
 });
 
 check('v210 confirmed ConversationLog cleanup revokes late gated reply and memory commit', () => {

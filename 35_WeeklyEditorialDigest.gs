@@ -582,11 +582,11 @@ function computeWeeklyEditorialInputHash_(value) {
 
 function normalizeWeeklyEditorialOpeningComment_(value) {
   if (typeof value !== 'string') return '';
-  const text = value.trim();
+  const text = value.replace(/ *[\r\n]+(?: +[\r\n]+)* */g, ' ').trim();
   // 點評獨立驗證。壞欄位直接略過，已通過的新聞分組與話題仍保留。
   const plain = text.normalize('NFKC');
-  if (!text || /[\x00-\x1f\x7f\u2028-\u202e\u2066-\u2069*#_\x60<>\[\]|~]/.test(plain) ||
-      /^(?:[-=+]{3,}|[-+]\s|\d+[.)]\s)/.test(plain) ||
+  if (!text || /[\x00-\x1f\x7f\u2028-\u202e\u2066-\u2069*#_\x60<>\[\]|]|~~/.test(plain) ||
+      /^\s*(?:[-=+]{3,}|[-+]\s|\d+[.)]\s)/m.test(value.normalize('NFKC')) ||
       /https?\s*:|www\.|[a-z][a-z0-9+.-]*:\/\/|(?:[a-z0-9-]+\.)+(?:com|org|net|gov|edu|io|tw|ly|co|dev|ai|gg|me)\b/i.test(plain)) return '';
   return truncateWeeklyEditorialText_(text, MAX_WEEKLY_EDITORIAL_OPENING_LENGTH);
 }
