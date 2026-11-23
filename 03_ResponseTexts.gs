@@ -12,11 +12,21 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v2.1.0 Context, Persona & Natural Wake-up Edition';
+const BOT_CURRENT_VERSION = 'v2.1.1 Context, Persona & Natural Wake-up Edition';
 const BOT_CURRENT_VERSION_DATE = '2026-11-23';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v2.1.1 Context, Persona & Natural Wake-up Edition',
+    date: '2026-11-23',
+    summary: '小浣更容易接到自然點名和玩笑，也會在純閒聊有梗可接時偶爾插一句。',
+    changes: [
+      '「小浣吐嘈啊！」「小浣出來面對」這類明確點名可直接交辦。輕鬆虧小浣時，也能看前文接話。',
+      '符合條件的純閒聊，每房每兩分鐘最多判斷一次。遇到有梗的話題，小浣可探頭回一句。',
+      '彩蛋與閒聊插話共用每房 30 分鐘冷卻。判斷後保持安靜時，只推進兩分鐘探測間隔。'
+    ]
+  },
   {
     version: 'v2.1.0 Context, Persona & Natural Wake-up Edition',
     date: '2026-11-23',

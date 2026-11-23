@@ -375,12 +375,14 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v2.1.0 Context, Persona & Natural Wake-up Edition'));
+  assert(replies.at(-1).text.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(replies.at(-1).text.includes('2026-11-23'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.includes('v2.0.0 Gemini Architecture Edition'));
   assert(history.includes('v1.17.0 Weekly News Archive Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') >= 0);
+  assert(history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.0.0 Gemini Architecture Edition'));
   assert(history.indexOf('v2.0.0 Gemini Architecture Edition') < history.indexOf('v1.17.0 Weekly News Archive Edition'));
 });
@@ -3094,14 +3096,16 @@ check('v1161 direct quote beats intervening topic and same-ID assistant; origina
     assert(!JSON.stringify([...cache.values()]).includes(entries[0].Text));
   });
 });
-check('v1161 self quote and group/room silent quote preserve relationship without AI or reply', () => {
+check('v1161 self quote and group/room silent quote preserve relationship without a chat reply', () => {
   for (const sourceType of ['group', 'room']) {
     reset(); const scope = sourceType + ':' + sourceType + '1';
+    fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('ignore')) : geminiCompletion();
     withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord('100', 'user1', '我的原話', { ConversationId: scope })]) }) }, () => {
       context.handleLineEvent(event('text', sourceType, { text: '這句是我說的', quotedMessageId: '100' }), now);
-      assert.equal(calls.length, 0); assert.equal(replies.length, 0); assert.equal(rows[0][10], '100');
+      assert.equal(calls.length, 1); assert(isGateFetch(calls[0].url));
+      assert.equal(replies.length, 0); assert.equal(rows[0][10], '100');
       context.handleLineEvent(event('text', sourceType, { text: '#小浣 我剛剛的意思？', quotedMessageId: '100' }), now);
-      const quote = requestData(JSON.parse(calls[0].options.payload), 'TEXT_QUOTE_CONTEXT')[0];
+      const quote = requestData(JSON.parse(calls[1].options.payload), 'TEXT_QUOTE_CONTEXT')[0];
       assert.equal(quote.speaker, '成員1');
     });
   }
@@ -3363,6 +3367,7 @@ check('v1161 review pending text quote warns private/group/room without AI, Read
 check('v1161 review ordinary group and room text delivers pending without quote reminders or AI', () => {
   for (const type of ['group', 'room']) for (const quotedMessageId of [undefined, '100', '404']) {
     reset(); pending = { text: '先前已完成的結果' };
+    fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
     withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet([quoteRecord('100', 'alice', '原本的文字', { ConversationId: type + ':' + type + '1' })]) }),
       handleSilentNewsUrlMessage_: () => assert.fail('ordinary text must not enqueue') }, () => {
       context.handleLineEvent(event('text', type, { text: '這是群友之間的普通回覆', quotedMessageId }), now);
@@ -3370,7 +3375,8 @@ check('v1161 review ordinary group and room text delivers pending without quote 
       assert.equal(pending, null); assert.equal(calls.length, 0); assert.equal(cachedDataCount(), 0);
       if (quotedMessageId === '100') assert.equal(rows[0][11], 'text_found');
       context.handleLineEvent(event('text', type, { text: '沒有 pending 的普通回覆', quotedMessageId }), now);
-      assert.equal(replies.length, 1, 'ordinary chat itself remains silent without pending'); assert.equal(calls.length, 0);
+      assert.equal(replies.length, 1, 'ordinary chat itself remains silent without pending');
+      assert.equal(calls.length, 1); assert(isGateFetch(calls[0].url));
     });
   }
 });
@@ -3482,8 +3488,8 @@ check('version documents preserve refs and the inherited real Sheet ID gate', ()
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('feature/v210-context-persona-gatekeeper')); assert(doc.includes('c6bb060'));
-    assert(doc.includes('v2.1.0 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
+    assert(doc.includes('hotfix/v211-natural-direct-call')); assert(doc.includes('0f356a1'));
+    assert(doc.includes('v2.1.1 Context, Persona & Natural Wake-up Edition')); assert(doc.includes('2026-11-23'));
     assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
@@ -4137,6 +4143,9 @@ function wakeDecision(triggerType, extra = {}) {
 }
 function isGateFetch(url) { return url.endsWith('/gemini-3.5-flash-lite:generateContent'); }
 function dispatchWake(input) { context.handleLineEvent(input, now); }
+function readWakeSignals(call) {
+  return JSON.parse(JSON.parse(call.options.payload).contents.at(-1).parts.at(-1).text).signals;
+}
 
 check('v210 native mention, embedded hashtag, and private chat skip classification with stable systemInstruction', () => {
   const sourceRows = [
@@ -4146,15 +4155,17 @@ check('v210 native mention, embedded hashtag, and private chat skip classificati
     quoteRecord('9874', 'otherUser', 'OTHER_SCOPE_TEXT', { ConversationId: 'group:other' })
   ];
   withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => readOnlySheet(sourceRows) }) }, () => {
+    fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('ignore')) : geminiCompletion();
     dispatchWake(wakeEvent('你知道這件事嗎', { mention: { mentionees: [{ isSelf: false }] } }));
-    assert.equal(calls.length, 0);
+    assert.equal(calls.length, 1); assert(isGateFetch(calls[0].url)); assert.equal(replies.length, 0);
     const embedded = '之前那件有新消息\n#小浣 幫我整理一下\n兩段都要看';
     dispatchWake(wakeEvent(embedded));
     dispatchWake(wakeEvent('聊一下這件事', { mention: { mentionees: [{ isSelf: true }] } }));
     dispatchWake(wakeEvent('接一下剛才的話', { type: 'user' }));
-    assert.equal(calls.length, 3); assert.equal(replies.length, 3);
-    assert(calls.every(call => call.url.endsWith('/gemini-4-hydrogen:generateContent')));
-    const [group, at, privatePayload] = calls.map(call => JSON.parse(call.options.payload));
+    assert.equal(calls.length, 4); assert.equal(replies.length, 3);
+    const directCalls = calls.slice(1);
+    assert(directCalls.every(call => call.url.endsWith('/gemini-4-hydrogen:generateContent')));
+    const [group, at, privatePayload] = directCalls.map(call => JSON.parse(call.options.payload));
     assert.equal(group.contents.at(-1).parts.at(-1).text, embedded);
     assert.deepEqual(group.systemInstruction, at.systemInstruction);
     assert(geminiSystem(group).includes('棉花糖'));
@@ -4164,14 +4175,14 @@ check('v210 native mention, embedded hashtag, and private chat skip classificati
     assert(requestData(group, 'AMBIENT_GROUP_CONTEXT').some(turn => turn.text === '未點名的群組前文'));
     assert(!geminiText(group).includes('OTHER_SCOPE_TEXT'));
     assert.equal(requestData(privatePayload, 'AMBIENT_GROUP_CONTEXT')[0].text, '私訊前文');
-    assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY', 'GEMINI_API_KEY']);
+    assert.deepEqual(keyReads, Array(4).fill('GEMINI_API_KEY'));
   });
 });
 
 check('v210 third-person name mention remains silent and noise does not invoke Gemini', () => {
   assert(!context.buildAiSystemPrompt_('chat_gatekeeper').includes('棉花糖'));
   assert(!context.buildAiSystemPrompt_('weekly_editorial_digest').includes('棉花糖'));
-  for (const text of ['wwww', '笑死', 'OP', 'OK', '+1', '？！。', '我晚餐想吃麵']) dispatchWake(wakeEvent(text));
+  for (const text of ['wwww', '笑死', 'OP', 'OK', '+1', '？！。', '好，先這樣喔', '😂😂😂😂😂😂']) dispatchWake(wakeEvent(text));
   assert.equal(calls.length, 0);
   fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
   dispatchWake(wakeEvent('小浣改用 Gemini 了'));
@@ -4179,6 +4190,67 @@ check('v210 third-person name mention remains silent and noise does not invoke G
   dispatchWake(wakeEvent('小浣背後的模型改成 Gemini 了'));
   assert.equal(calls.length, 2); assert.equal(replies.length, 0);
   assert(calls.every(call => isGateFetch(call.url)));
+});
+
+check('v211 direct playful requests use one chat call with ambient context during easter egg cooldown', () => {
+  const prior = '反正如果太吵就再調整就好';
+  for (const text of ['小浣吐嘈啊！！！', '小浣，幫我吐槽一下這句', '呼叫小浣講一個冷笑話',
+    'MEGA浣，來個冷笑話吧！', '小浣你可以吐糟那句一下嗎？', '小浣出來面對', 'MEGA浣出來',
+    '小浣不要裝死', '小浣，評評理', '小浣你怎麼看？', '小浣你說呢？']) {
+    reset();
+    const key = context.getLineChatStateKey_('group:group1');
+    const cooldown = JSON.stringify({ [key]: now + 30 * 60 * 1000 });
+    properties.set('CHAT_EASTER_EGG_STATE', cooldown);
+    const sheet = readOnlySheet([quoteRecord('62001', 'user2', prior)]);
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => sheet }) }, () => {
+      fetchImpl = url => isGateFetch(url) ? quotaReply() : geminiCompletion('你們先說怕太吵，現在又催我開麥，這驗收也太忙。');
+      dispatchWake(wakeEvent(text, { dedup: true }));
+      assert.equal(calls.length, 1, text);
+      assert(!isGateFetch(calls[0].url), text);
+      assert.equal(replies.length, 1, text);
+      const payload = JSON.parse(calls[0].options.payload);
+      assert.equal(payload.contents.at(-1).parts.at(-1).text, text);
+      assert(requestData(payload, 'AMBIENT_GROUP_CONTEXT').some(turn => turn.text === prior));
+      assert(geminiSystem(payload).includes('群友明確請你吐槽'));
+      assert.deepEqual(keyReads, ['GEMINI_API_KEY']);
+      assert.equal(properties.get('CHAT_EASTER_EGG_STATE'), cooldown);
+    });
+  }
+});
+
+check('v211 descriptions and quoted examples do not become direct playful replies', () => {
+  const descriptions = ['小浣吐槽得很好笑', '小浣講了一個冷笑話', '小浣可以吐槽', '小浣出來了', '朋友說小浣吐嘈啊！！！',
+    '「小浣吐嘈啊！！！」是剛剛的例句'];
+  fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
+  for (const text of descriptions) dispatchWake(wakeEvent(text, { dedup: true }));
+  assert.equal(calls.length, descriptions.length);
+  assert(calls.every(call => isGateFetch(call.url)));
+  assert.equal(replies.length, 0);
+});
+
+check('v211 direct playful requests respect pending delivery, the room lease, and the reply interval', () => {
+  pending = { text: '先前已完成的背景結果' };
+  dispatchWake(wakeEvent('小浣吐嘈啊！！！', { dedup: true }));
+  assert.equal(calls.length, 0);
+  assert.equal(replies.length, 1);
+  assert(replies[0].text.includes('先前已完成的背景結果'));
+
+  reset();
+  fetchImpl = () => {
+    if (calls.length === 1) dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
+    return geminiCompletion('你們一個要我安靜，一個要我開麥，兩邊的驗收標準先統一一下啦');
+  };
+  dispatchWake(wakeEvent('小浣吐嘈啊！！！', { dedup: true }));
+  assert.equal(calls.length, 1, 'same-room in-flight request retains its lease');
+  now += 1000;
+  dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
+  assert.equal(calls.length, 1, 'the twenty-second interval still applies');
+  assert.equal(replies.length, 1);
+  now += 20000;
+  dispatchWake(wakeEvent('小浣講個冷笑話', { dedup: true }));
+  assert.equal(calls.length, 2);
+  assert(calls.every(call => !isGateFetch(call.url)));
+  assert.equal(replies.length, 2);
 });
 
 check('v210 exact numeric LINE IDs, follow-up identity, and confirmed delivery gate', () => {
@@ -4498,17 +4570,18 @@ check('v210 an exact delivered bot quote skips the cooldown but cannot take a se
   });
 });
 
-check('v210 six-hour egg survives cache loss, never searches, and can be disabled independently', () => {
+check('v211 thirty-minute interjection cooldown survives cache loss and the master switch stops all proactive replies', () => {
   fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision('easter_egg', { needsSearch: true })) :
     geminiCompletion('等等，垃圾桶裡還有寶。這句不該送出。');
   dispatchWake(wakeEvent('垃圾桶裡有棉花糖嗎'));
   assert.equal(calls.length, 2); assert.equal(replies[0].text, '等等，垃圾桶裡還有寶');
   const key = context.getLineChatStateKey_('group:group1');
   const until = JSON.parse(properties.get('CHAT_EASTER_EGG_STATE'))[key];
-  assert.equal(until, now + 6 * 60 * 60 * 1000);
+  assert.equal(until, now + 30 * 60 * 1000);
   assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
   cache.clear(); now = until - 1;
   dispatchWake(wakeEvent('棉花糖化光了'));
+  dispatchWake(wakeEvent('我剛出門上班才發現今天放假'));
   assert.equal(calls.length, 2);
   now = until;
   dispatchWake(wakeEvent('棉花糖再來一顆'));
@@ -4519,7 +4592,137 @@ check('v210 six-hour egg survives cache loss, never searches, and can be disable
   vm.runInContext(source.replace('const ENABLE_CHAT_EASTER_EGG = true;', 'const ENABLE_CHAT_EASTER_EGG = false;'), off);
   off.deliverPendingReply_ = () => null; off.logMessageToSheet = () => {};
   off.handleLineEvent(wakeEvent('垃圾桶找寶', { room: 'unused-room' }), now);
+  off.handleLineEvent(wakeEvent('我剛出門上班才發現今天放假', { room: 'unused-room' }), now);
   assert.equal(calls.length, 4);
+});
+
+check('v211 light teasing of the bot is classified as direct chat or a keyword interjection', () => {
+  const namedTease = '但小浣突然掛了，是還在垃圾桶嗎';
+  const earlier = quoteRecord('62222', 'user2', '我想知道小浣到底會不會接話');
+  const prompt = context.buildAiSystemPrompt_('chat_gatekeeper');
+  assert(prompt.includes('像群組裡的熟人自然判斷是否該接話'));
+  assert(prompt.includes('太不吵') && prompt.includes('怎麼裝死') && prompt.includes('signals.ambientBanterAvailable'));
+  assert(!prompt.includes('優先保持安靜'));
+  for (const [text, type] of [[namedTease, 'direct_call'], [namedTease, 'easter_egg'],
+    ['太不吵欸', 'direct_call'], ['怎麼裝死', 'easter_egg']]) {
+    reset();
+    const chat = readOnlySheet([earlier]);
+    withStubs({ getSpreadsheet_: () => ({ getSheetByName: () => chat }) }, () => {
+      fetchImpl = url => isGateFetch(url) ? geminiCompletion(wakeDecision(type)) : geminiCompletion('欸我剛在等你們把吐槽點送上門。');
+      dispatchWake(wakeEvent(text));
+      assert.equal(calls.length, 2, text);
+      assert.equal(replies.length, 1, text);
+      const signals = readWakeSignals(calls[0]);
+      assert.equal(signals.named, text === namedTease);
+      assert.equal(signals.teasing, text !== namedTease);
+      assert.equal(signals.easterEggAvailable, true);
+      assert.equal(signals.ambientBanterAvailable, false);
+      assert.equal(properties.has('CHAT_EASTER_EGG_STATE'), type === 'easter_egg');
+    });
+  }
+});
+
+check('v211 ignored ambient probes spend only the two-minute interval, including concurrent stale candidates', () => {
+  const text = '我晚餐想吃麵';
+  const key = context.getLineChatStateKey_('group:group1');
+  const snapshot = context.readLineChatState_(key);
+  const first = wakeEvent(text);
+  const staleSignals = context.getLineChatWakeSignals_(first, key, snapshot, text, { status: 'none' }, false);
+  fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
+  dispatchWake(first);
+  assert.equal(calls.length, 1);
+  assert.equal(readWakeSignals(calls[0]).ambientBanterAvailable, true);
+  assert.equal(readWakeSignals(calls[0]).easterEggAvailable, false);
+  assert.equal(replies.length, 0);
+  assert.equal(context.readLineChatState_(key).ambientProbeAfterMs, now + 120000);
+  assert.equal(context.readLineChatState_(key).autoAfterMs, undefined);
+  assert(!properties.has('CHAT_EASTER_EGG_STATE'));
+
+  const execution = context.createLineWebhookExecutionContext_(now);
+  execution.conversationContext = { lineChatKey: key, lineChatState: snapshot };
+  const lease = context.reserveLineAutoReply_(key, snapshot, execution.deadlineAtMs, now, false);
+  assert(lease, 'simulate a second webhook acquiring the lease with an earlier snapshot');
+  try { assert.equal(context.classifyLineChatWake_(text, staleSignals, [], execution), null); }
+  finally { context.finishLineAutoReply_(key, lease); }
+  assert.equal(calls.length, 1);
+
+  now += 119999;
+  dispatchWake(wakeEvent('只是補充一下晚餐吃什麼'));
+  assert.equal(calls.length, 1);
+  now++;
+  fetchImpl = () => geminiCompletion(wakeDecision('direct_call'));
+  dispatchWake(wakeEvent('我晚餐想吃麵'));
+  assert.equal(calls.length, 2);
+  assert.equal(replies.length, 0, 'ambient eligibility alone does not authorize direct chat');
+  assert.equal(context.readLineChatState_(key).ambientProbeAfterMs, now + 120000);
+  assert(!properties.has('CHAT_EASTER_EGG_STATE'));
+});
+
+check('v211 an ambient interjection shares the thirty-minute cooldown and sends one bounded sentence on the general key', () => {
+  const text = '我剛出門上班才發現今天放假';
+  const key = context.getLineChatStateKey_('group:group1');
+  const lead = '你上班比鬧鐘還認真' + '🦝'.repeat(70);
+  fetchImpl = url => isGateFetch(url)
+    ? geminiCompletion(wakeDecision('easter_egg', { needsSearch: true, noteAction: 'save_weekly_note' }))
+    : geminiCompletion(lead + '。這句不該送出。');
+  dispatchWake(wakeEvent(text));
+  assert.equal(calls.length, 2);
+  assert.equal(readWakeSignals(calls[0]).ambientBanterAvailable, true);
+  assert.deepEqual(keyReads, ['GEMINI_API_KEY', 'GEMINI_API_KEY']);
+  assert(!JSON.parse(calls[1].options.payload).tools);
+  assert.equal(replies.length, 1);
+  assert(replies[0].text.length <= 100 && replies[0].text.isWellFormed());
+  assert(lead.startsWith(replies[0].text));
+  assert(!replies[0].text.includes('這句不該送出'));
+  assert(![...properties.keys()].some(name => name.startsWith('WEEKLY_NOTES_')));
+  const until = JSON.parse(properties.get('CHAT_EASTER_EGG_STATE'))[key];
+  assert.equal(until, now + 30 * 60 * 1000);
+  assert.equal(context.readLineChatState_(key).ambientProbeAfterMs, now + 120000);
+
+  now += 120000;
+  dispatchWake(wakeEvent(text));
+  dispatchWake(wakeEvent('棉花糖都融掉了'));
+  assert.equal(calls.length, 2, 'ambient and keyword paths share the cooldown');
+  now = until;
+  fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
+  dispatchWake(wakeEvent(text));
+  assert.equal(calls.length, 3);
+  assert.equal(replies.length, 1);
+});
+
+check('v211 disabling ambient banter leaves keyword interjections eligible', () => {
+  const off = vm.createContext({ console: context.console, Date: context.Date, PropertiesService: context.PropertiesService,
+    Utilities: context.Utilities, LockService: context.LockService, UrlFetchApp: context.UrlFetchApp });
+  vm.runInContext(source.replace('const ENABLE_CHAT_AMBIENT_BANTER = true;', 'const ENABLE_CHAT_AMBIENT_BANTER = false;'), off);
+  off.deliverPendingReply_ = () => null; off.logMessageToSheet = () => {};
+  fetchImpl = () => geminiCompletion(wakeDecision('ignore'));
+  off.handleLineEvent(wakeEvent('我剛出門上班才發現今天放假'), now);
+  assert.equal(calls.length, 0);
+  off.handleLineEvent(wakeEvent('垃圾桶有棉花糖嗎'), now);
+  assert.equal(calls.length, 1);
+  const signals = readWakeSignals(calls[0]);
+  assert.equal(signals.easterEggAvailable, true);
+  assert.equal(signals.ambientBanterAvailable, false);
+});
+
+check('v211 ambient probing yields to pending replies and leaves ordinary URLs in silent intake', () => {
+  const queued = [];
+  const key = context.getLineChatStateKey_('group:group1');
+  withStubs({ handleSilentNewsUrlMessage_: (_event, room, text) => { queued.push([room, text]); return { ok: true }; } }, () => {
+    const link = '我剛剛看到這篇整理得很精彩 https://example.org/story';
+    dispatchWake(wakeEvent(link));
+    assert.deepEqual(queued, [['group:group1', link]]);
+    assert.equal(calls.length, 0);
+    assert.equal(replies.length, 0);
+    pending = { text: '先前的背景結果' };
+    dispatchWake(wakeEvent('我剛出門上班才發現今天放假'));
+    assert.equal(replies.length, 1);
+    assert(replies[0].text.includes('先前的背景結果'));
+    dispatchWake(wakeEvent('#版本'));
+    assert.equal(replies.length, 2);
+    assert.equal(calls.length, 0);
+    assert.equal(context.readLineChatState_(key).ambientProbeAfterMs, undefined);
+  });
 });
 
 process.stdout.write(`Verified ${files.length} GAS sources, ${functions.length} unique functions; ${checks} checks passed (${deepSeekChecks} dormant DeepSeek fixtures). No live GAS/LINE/DeepSeek/Gemini/OpenAI calls.\n`);

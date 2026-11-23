@@ -106,7 +106,9 @@ const AMBIENT_CHAT_MAX_CHARS = 3000;
 const CHAT_FOLLOW_UP_WINDOW_MS = 90 * 1000;
 const CHAT_AUTO_REPLY_INTERVAL_MS = 20 * 1000;
 const ENABLE_CHAT_EASTER_EGG = true;
-const CHAT_EASTER_EGG_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const CHAT_EASTER_EGG_COOLDOWN_MS = 30 * 60 * 1000;
+const ENABLE_CHAT_AMBIENT_BANTER = true;
+const CHAT_AMBIENT_PROBE_INTERVAL_MS = 2 * 60 * 1000;
 
 
 // ======================================================
