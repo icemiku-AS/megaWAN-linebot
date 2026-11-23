@@ -59,6 +59,7 @@ const NEWS_INBOX_SHEET_NAME = 'NewsInbox';
 
 // 已完成但尚未交付給使用者的回覆 Sheet
 const PENDING_REPLIES_SHEET_NAME = 'PendingReplies';
+const MEMBER_MEMORY_SHEET_NAME = 'MemberMemory';
 
 // ======================================================
 // LINE Bot 指令設定
@@ -75,6 +76,8 @@ const TRIGGER_PREFIXES = [
   '#小浣',
   '#help',
   '#reset',
+  '#我的記憶',
+  '#忘記我',
   '#版本紀錄',
   '#版本',
   '#清空紀錄',
@@ -104,7 +107,11 @@ const AMBIENT_CHAT_MAX_SCAN_ROWS = 500;
 const AMBIENT_CHAT_MAX_MESSAGES = 15;
 const AMBIENT_CHAT_MAX_CHARS = 3000;
 const CHAT_FOLLOW_UP_WINDOW_MS = 90 * 1000;
+const CHAT_FOLLOW_UP_INTERVAL_MS = 6 * 1000;
+const CHAT_MAX_FOLLOW_UP_CHAIN = 2;
 const CHAT_AUTO_REPLY_INTERVAL_MS = 20 * 1000;
+const CHAT_WAKE_BASE_SCORE_THRESHOLD = 7;
+const CHAT_WAKE_FOLLOW_UP_SCORE_THRESHOLD = 5;
 const ENABLE_CHAT_EASTER_EGG = true;
 const CHAT_EASTER_EGG_COOLDOWN_MS = 30 * 60 * 1000;
 const ENABLE_CHAT_AMBIENT_BANTER = true;

@@ -129,6 +129,7 @@ function env({ configured = true, legacy = false, clock = end + 900000 } = {}) {
   });
   const cache = new Map();
   vm.runInContext(source, c);
+  c.maybeGenerateBotDailyState_ = () => {};
   c.getSpreadsheet_ = () => ({ getSheetByName: name => sheets.get(name) || null,
     insertSheet: name => { const sheet = new Sheet([]); sheet.getName = () => name; sheets.set(name, sheet); return sheet; } });
   const realRunAiJsonTask = c.runAiJsonTask;
@@ -501,11 +502,12 @@ check('legacy queue installer removes retired triggers and rebuilds only one new
       [['processNewsUrlQueue', 1]]);
   }
 });
-check('setup only initializes five active tabs and preserves existing historical tabs', () => {
+check('setup initializes MemberMemory and preserves the other active and historical tabs', () => {
   const e = env(); e.sheets.clear();
-  const active = ['ConversationLog', 'WeeklySummary', 'NewsUrlQueue', 'NewsInbox', 'PendingReplies'];
+  const active = ['ConversationLog', 'WeeklySummary', 'NewsUrlQueue', 'NewsInbox', 'PendingReplies', 'MemberMemory'];
   assert.equal(e.c.setupLogSheet(), ['Sheet setup completed:', ...active].join(', '));
   assert.deepEqual([...e.sheets.keys()], active);
+  assert.deepEqual(e.sheets.get('MemberMemory').data, [['ConversationId', 'UserId', 'Nickname', 'Notes', 'UpdatedAt']]);
 
   const retired = ['TopicHighlights', 'WebTaskQueue', 'WebSummary'];
   for (const name of retired) e.sheets.set(name, new Sheet(['ConversationId', 'Text'], [['group:a', '歷史資料']]));
@@ -2383,7 +2385,7 @@ check('v210 gated note uses trusted context and save status; missing, write fail
     const { currentMessage } = JSON.parse(payload.contents.at(-1).parts.at(-1).text);
     const shouldReply = e.c.isWeeklyNoteRequest_(currentMessage);
     return JSON.stringify({
-      shouldReply, triggerType: shouldReply ? 'work_collab' : 'ignore',
+      shouldReply, triggerType: shouldReply ? 'work_collab' : 'ignore', replyScore: shouldReply ? 8 : 0,
       noteAction: shouldReply ? 'save_weekly_note' : 'none', needsSearch: false
     });
   });
@@ -2413,7 +2415,7 @@ check('v210 confirmed ConversationLog cleanup revokes late gated reply and memor
   e.restoreAi();
   phase4Reply(e, (url) => {
     if (url.includes('gemini-3.5-flash-lite')) return JSON.stringify({
-      shouldReply: true, triggerType: 'direct_call', noteAction: 'none', needsSearch: false
+      shouldReply: true, triggerType: 'direct_call', replyScore: 8, noteAction: 'none', needsSearch: false
     });
     e.setNow(e.now() + 1000);
     assert(v210Text(e, '#清空紀錄 確認').includes('整理完成'));
@@ -2424,6 +2426,189 @@ check('v210 confirmed ConversationLog cleanup revokes late gated reply and memor
   assert(!JSON.stringify(e.sheets.get('ConversationLog').records()).includes('遲到的自動回覆'));
   assert.equal(e.fetches.filter(call => call.url.includes('/message/reply')).length, 1);
   assert(!e.held());
+});
+
+function v223MemberText(e, text, { user = 'alice', room = 'a', type = 'group', ...messageFields } = {}) {
+  const input = v210TextEvent(e, text, room, messageFields);
+  input.source = { ...input.source, userId: user, type };
+  e.c.handleLineEvent(input, e.now());
+  const delivery = e.fetches.find(call => call.url.includes('/message/reply') && JSON.parse(call.options.payload).replyToken === input.replyToken);
+  return delivery ? JSON.parse(delivery.options.payload).messages.map(item => item.text).join('\n') : '';
+}
+
+check('v223 MemberMemory creates lazily and all pure self-service commands use zero model calls', () => {
+  const e = env({ configured: false });
+  e.setFlush(() => assert(e.held(), 'member writes flush before releasing ScriptLock'));
+  assert(v223MemberText(e, '#我的記憶').includes('還沒有'));
+  assert(v223MemberText(e, '#忘記我').includes('沒有'));
+  assert(!e.sheets.has('MemberMemory'), 'read and empty forget do not create the tab');
+  assert(v223MemberText(e, '叫我不能自動存').length === 0);
+  assert(!e.sheets.has('MemberMemory'));
+  assert(v223MemberText(e, '小浣叫我毛球').includes('毛球'));
+  assert(v223MemberText(e, '  @MEGA 改名版 記住我不吃香菜', {
+    mention: { mentionees: [{ isSelf: true, index: 2, length: '@MEGA 改名版'.length }] }
+  }).includes('我不吃香菜'));
+  assert(v223MemberText(e, '記住我的稱呼是球球\n#小浣').includes('球球'));
+  assert(v223MemberText(e, '小浣你記得我什麼？').includes('我不吃香菜'));
+  const sheet = e.sheets.get('MemberMemory');
+  assert.equal(sheet.records().length, 1);
+  assert.equal(sheet.records()[0].Nickname, '球球');
+  assert.equal(sheet.records()[0].Notes, '我不吃香菜');
+  assert.equal(sheet.records()[0].UpdatedAt.getTime(), e.now());
+  assert(v223MemberText(e, '小浣忘了我吧').includes('清掉了'));
+  assert.equal(sheet.records().length, 0);
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 0);
+  assert(!JSON.stringify(e.sheets.get('ConversationLog').records()).includes('我不吃香菜'));
+});
+
+check('v223 updates and forget are scoped to the sending member and room, including distinct private memory', () => {
+  const e = env({ configured: false });
+  const memory = [
+    ['group:a', 'alice', '房 A 的綽號甲', '我偏好有時間線'],
+    ['group:a', 'bob', '房 A 的綽號乙', '我偏好看法'],
+    ['group:b', 'alice', '房 B 的綽號', '我偏好資料表格'],
+    ['user:alice', 'alice', '私訊綽號', '我私下只要結論']
+  ];
+  for (const [scope, user, nick, note] of memory) {
+    const opts = scope.startsWith('user:') ? { type: 'user', user } : { user, room: scope.slice(-1) };
+    assert(v223MemberText(e, scope.startsWith('user:') ? '叫我 ' + nick : '#小浣 叫我 ' + nick, opts).includes(nick));
+    assert(v223MemberText(e, '#小浣 記住' + note, opts).includes(note));
+    const view = v223MemberText(e, '#我的記憶', opts);
+    assert(view.includes(nick) && view.includes(note));
+    assert(!memory.some(entry => entry[2] !== nick && view.includes(entry[2])));
+  }
+  assert(v223MemberText(e, '#忘記我', { user: 'bob' }).includes('清掉了'));
+  assert(v223MemberText(e, '#我的記憶').includes('房 A 的綽號甲'));
+  assert(v223MemberText(e, '#忘記我', { user: 'alice', room: 'b' }).includes('清掉了'));
+  assert(v223MemberText(e, '#我的記憶', { type: 'user' }).includes('私訊綽號'));
+  assert.deepEqual(e.sheets.get('MemberMemory').records().map(row => [row.ConversationId, row.UserId]),
+    [['group:a', 'alice'], ['user:alice', 'alice']]);
+  const unnamed = v210TextEvent(e, '#小浣 叫我不應寫入');
+  delete unnamed.source.userId;
+  e.c.handleLineEvent(unnamed, e.now());
+  assert(e.fetches.at(-1).options.payload.includes('沒有可辨識'));
+  assert(e.sheets.get('MemberMemory').records().every(row => row.Nickname !== '不應寫入'));
+});
+
+check('v223 header-based reads clamp manual values; reset invalidates only this cache and preserves stored memory', () => {
+  const e = env({ configured: false });
+  const longNickname = '🦝'.repeat(26) + '溢出';
+  const longNote = '🐟'.repeat(81) + '溢出';
+  const unsafe = 'U' + '11'.repeat(16);
+  const headers = ['Custom', 'Nickname', 'Notes', 'ConversationId', 'UpdatedAt', 'UserId'];
+  const sheet = new Sheet(headers, [
+    ['留著', '舊稱呼', '舊筆記', 'group:a', new Date(e.now()), 'alice'],
+    ['房乙', '房乙自己的稱呼', '房乙自己的筆記', 'group:b', new Date(e.now()), 'alice']
+  ]);
+  e.sheets.set('MemberMemory', sheet);
+  const aKey = e.c.getMemberMemoryCacheKey_('group:a'), bKey = e.c.getMemberMemoryCacheKey_('group:b');
+  assert(v223MemberText(e, '#我的記憶').includes('舊稱呼'));
+  assert(v223MemberText(e, '#我的記憶', { room: 'b' }).includes('房乙自己的稱呼'));
+  sheet.data[1][1] = longNickname;
+  sheet.data[1][2] = ['第一條', '第二條', '第三條', '第四條', '第五條', longNote, '第七條\u202e' + unsafe].join('\n');
+  assert(v223MemberText(e, '#我的記憶').includes('舊稱呼'));
+  assert(v223MemberText(e, '#reset').includes('短期記憶'));
+  assert(!e.cache.has(aKey) && e.cache.has(bKey));
+  const projected = e.c.getMemberMemories_('group:a')[0];
+  assert.equal(Array.from(projected.nickname).length, 24);
+  assert.equal(projected.notes.length, 5);
+  assert.equal(Array.from(projected.notes[3]).length, 80);
+  assert(projected.notes[3].isWellFormed());
+  assert.equal(projected.notes[4], '第七條');
+  assert.equal(sheet.data[1][1], longNickname, 'read-time projection does not rewrite manual data');
+  assert(v223MemberText(e, '#小浣 叫我 砂糖').includes('砂糖'));
+  assert.equal(sheet.records()[0].Custom, '留著');
+  assert(!e.cache.has(aKey), 'rename evicts the room cache');
+  for (let i = 0; i < 6; i++) assert(v223MemberText(e, '#小浣 記住我選擇編號 ' + i).includes('我選擇編號'));
+  const notes = sheet.records()[0].Notes.split('\n');
+  assert.equal(notes.length, 5);
+  assert.equal(notes[0], '我選擇編號 1');
+  assert(v223MemberText(e, '#清空紀錄 確認').includes('整理完成'));
+  assert.equal(sheet.records().length, 2);
+  assert(v223MemberText(e, '#我的記憶').includes('砂糖'));
+});
+
+check('v223 mixed member settings answer only the separate question and stay separate from weekly notes', () => {
+  const e = env({ configured: false });
+  const question = '那我晚餐吃什麼？';
+  e.restoreAi();
+  phase4Reply(e, (_url, options) => {
+    const payload = JSON.parse(options.payload);
+    assert.equal(payload.contents.at(-1).parts.at(-1).text, question);
+    return '可以先吃小籠包';
+  });
+  const output = v223MemberText(e, '#小浣 記住我不吃香菜，' + question);
+  assert(output.includes('個人筆記') && output.endsWith('可以先吃小籠包'));
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 1);
+  assert.deepEqual(Array.from(e.c.getConversationHistory('group:a'), entry => entry.content), [question, '可以先吃小籠包']);
+  assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 0);
+  assert(v223MemberText(e, '小浣，記住我週報偏好先看科技').includes('個人筆記'));
+  assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 0);
+  assert(v223MemberText(e, '#小浣 幫我註記進本週新聞：市府宣布取消展覽').includes('本週手動註記'));
+  assert.equal(e.c.getRecentWeeklyNotes_('group:a').length, 1);
+  assert.equal(e.sheets.get('MemberMemory').records()[0].Notes.split('\n').length, 2);
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 1);
+});
+
+check('v223 current speaker, ambient, quote and chat search share nicknames without raw LINE user IDs', () => {
+  const e = env({ configured: false });
+  const alice = 'U' + 'aa'.repeat(16), bob = 'U' + 'bb'.repeat(16), outside = 'U' + 'cc'.repeat(16);
+  e.sheets.set('MemberMemory', new Sheet(['ConversationId', 'UserId', 'Nickname', 'Notes', 'UpdatedAt'], [
+    ['group:a', alice, '毛球', '我偏好先看科技', new Date(e.now())],
+    ['group:a', bob, '薯條', '我偏好看時間線', new Date(e.now())],
+    ['group:a', outside, '沒出現的成員', '不得自動注入', new Date(e.now())],
+    ['user:' + alice, alice, '私訊稱呼', '私訊不可外流', new Date(e.now())]
+  ]));
+  const sheet = e.c.ensureLogSheet_();
+  const quoteId = '9380001';
+  for (const [messageId, userId, text] of [[quoteId, bob, '這是那則科技公告'], ['9380002', bob, '補一段科技公告的前文']]) {
+    e.c.appendRowByHeaders_(sheet, { ConversationId: 'group:a', UserId: userId, Role: 'user', Mode: 'input',
+      Timestamp: new Date(e.now() - 2000), Text: text, MessageId: messageId });
+  }
+  e.restoreAi();
+  phase4Reply(e, (_url, options) => {
+    const payload = JSON.parse(options.payload);
+    const parts = payload.contents.flatMap(turn => turn.parts).map(part => part.text).filter(Boolean);
+    const data = key => JSON.parse(parts.find(text => text.startsWith(key + '\n')).slice(key.length + 1));
+    const [current, collaborator] = data('MEMBER_MEMORY_CONTEXT');
+    assert.equal(current.speaker, data('LINE_TURN_STATUS').currentSpeaker);
+    assert.equal(current.nickname, '毛球');
+    assert.deepEqual(current.notes, ['我偏好先看科技']);
+    assert.equal(collaborator.nickname, '薯條');
+    const quoted = data('TEXT_QUOTE_CONTEXT')[0], ambient = data('AMBIENT_GROUP_CONTEXT')[0];
+    assert.equal(quoted.speaker, collaborator.speaker);
+    assert.equal(quoted.nickname, '薯條');
+    assert.equal(ambient.speaker, collaborator.speaker);
+    assert.equal(ambient.nickname, '薯條');
+    const evidence = data('REQUIRED_INTERNAL_EVIDENCE')[0].result.data.records;
+    assert(evidence.some(row => row.speaker === collaborator.speaker && row.nickname === '薯條'));
+    for (const value of [alice, bob, outside, '沒出現的成員', '私訊不可外流']) assert(!options.payload.includes(value));
+    assert(!JSON.stringify(payload.systemInstruction).includes('我偏好先看科技'));
+    return '這裡之前聊過科技公告';
+  });
+  assert(v223MemberText(e, '#小浣 我們聊過科技嗎？', { user: alice, quotedMessageId: quoteId }).includes('聊過科技'));
+});
+
+check('v223 a delivered quote can set memory while cooling down, saves literal text, and yields to pending', () => {
+  const e = env({ configured: false });
+  const quoteId = '9381001';
+  const key = e.c.getLineChatStateKey_('group:a');
+  e.props.set(key, JSON.stringify({
+    autoAfterMs: e.now() + 20000,
+    replies: [{ at: e.now() - 1000, ids: [quoteId] }]
+  }));
+  assert(v223MemberText(e, '叫我 =1＋1', { quotedMessageId: quoteId }).includes('=1＋1'));
+  const sheet = e.sheets.get('MemberMemory');
+  assert.equal(sheet.records()[0].Nickname, "'=1＋1", 'Sheets must receive a literal escape rather than a formula');
+  e.c.deliverPendingReply_ = (_scope, token, render, receipt) => {
+    const text = render({ text: '等交付的新聞結果' });
+    e.c.replyToLine(token, text, false, '', receipt);
+    return { text };
+  };
+  const pending = v223MemberText(e, '#忘記我');
+  assert(pending.includes('等交付的新聞結果') && pending.includes('個人記憶指令尚未處理'));
+  assert.equal(sheet.records().length, 1);
+  assert.equal(e.fetches.filter(call => call.url.endsWith(':generateContent')).length, 0);
 });
 
 process.stdout.write('OK ' + checks + ' news workflow checks; no live GAS/LINE/Sheets/API calls.\n');

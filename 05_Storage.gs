@@ -637,7 +637,7 @@ function readAmbientConversationRows_(conversationId) {
 
 function isAmbientConversationText_(role, mode, text) {
   if (!text) return false;
-  if (role === 'assistant') return !/^(?:help|version(?:_history)?|reset|cleanup_.*|weekly_news|archive_weekly_news|news_status_report|pending_reply_delivery|.*_error)$/.test(mode);
+  if (role === 'assistant') return !/^(?:help|version(?:_history)?|reset|cleanup_.*|weekly_news|archive_weekly_news|news_status_report|pending_reply_delivery|member_memory|.*_error)$/.test(mode);
   if (role !== 'user' || mode === 'image_input' || mode === 'image_semantic') return false;
   const command = text.replace(/^#小浣\s*/, '');
   return (mode === 'assistant_command' || !/_command$/.test(mode)) &&
