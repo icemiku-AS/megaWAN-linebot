@@ -42,6 +42,26 @@ function runAiJsonTask(task, prompt, options) {
   return runAiMessagesTask(task, buildAiDirectMessages_(task, prompt, options), options);
 }
 
+function runAiNewsUrlComment_(caption, web, executionContext) {
+  const boundedText = function(value, limit) {
+    const text = redactAiMediaText_(value).replace(/\s+/g, ' ').trim();
+    const clipped = text.slice(0, getLineMessageSafeSliceIndex_(text, limit));
+    return /[\p{L}\p{N}]/u.test(clipped) ? clipped : '';
+  };
+  const userCaption = boundedText(caption, 600);
+  const title = web && web.ok ? boundedText(web.title, 200) : '';
+  const excerpt = web && web.ok ? boundedText(web.mainText, 600 - title.length) : '';
+  if (!userCaption && !title && !excerpt) return '';
+  const options = buildAiCallOptionsForExecutionContext_(executionContext, {
+    forceWebSearch: false, disableClientResearch: true, maxModelCalls: 1
+  });
+  if (!options) return '';
+  const result = runAiTextTask('general_chat', 'NEWS_URL_COMMENT_CONTEXT\n' + JSON.stringify({
+    userCaption: userCaption, untrustedExternal: { title: title, excerpt: excerpt }
+  }), options);
+  return result.ok ? result.text : '';
+}
+
 /**
  * 執行帶 conversation memory 的 task。
  * 副作用：成功後才更新 CacheService 短期記憶；WeeklySummary 只讀、不改寫。

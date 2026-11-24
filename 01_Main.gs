@@ -8,7 +8,7 @@
 // 3. 新聞、圖片與清理交由各功能檔處理；模型工作透過 AiService，不在此組 provider payload。
 //
 // 維護注意：
-// 1. Pending Reply 優先交付；群組無 trigger 的一般訊息保持安靜，普通網址走靜默收件。
+// 1. Pending Reply 優先交付；群組普通網址先靜默收件，再視情況點評。
 // 2. 私訊與明確指令保留各自回覆路徑；圖片／網址研究須維持已定義的收件例外。
 // 3. 公開入口名稱、二段清理確認及同一 webhook 共用 deadline 都是維護邊界。
 // ======================================================
@@ -280,9 +280,9 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
 
   if (isGroupLike && !canRunFixedCommands && !directCall) {
     if (shouldUseWebReading(userText) && !isResearchUrlRequest && !asksForNote && !memberRequest && !quoteFastLane) {
-      logLineChatWakeStatus_('skipped_url_intake', null, pendingChain);
+      let intake;
       try {
-        handleSilentNewsUrlMessage_(event, conversationId, userText);
+        intake = handleSilentNewsUrlMessage_(event, conversationId, userText);
       } catch (error) {
         console.error('DIRECT_GROUP_URL_FAILED');
         createPendingReplyForNewsUrlIntake_(
@@ -292,6 +292,9 @@ function handleLineEvent(event, webhookStartedAtMs, fromWebhook) {
           'news_url_intake_error'
         );
       }
+      const commented = intake && intake.ok && intake.queued && !pendingReceipt.busy &&
+        handleLineNewsUrlComment_(event, conversationId, userText, intake, aiExecutionContext);
+      logLineChatWakeStatus_(commented ? 'news_url_comment' : 'skipped_url_intake', null, commented ? 0 : pendingChain);
       return;
     }
 
@@ -458,6 +461,50 @@ function loadLineAmbientContext_(conversationId, executionContext) {
   return context.ambientContext;
 }
 
+function handleLineNewsUrlComment_(event, conversationId, text, intake, executionContext) {
+  if (!ENABLE_NEWS_URL_COMMENT || intake.urls.length !== 1 || intake.skippedUnsupportedUrls.length ||
+      extractUrls(text).length !== 1 || !isSafePublicUrl(intake.urls[0])) return false;
+
+  const context = executionContext.conversationContext;
+  const key = context.lineChatKey;
+  const deadline = Math.min(executionContext.deadlineAtMs, Date.now() + NEWS_COMMENT_TOTAL_BUDGET_MS);
+  const aiDeadline = deadline - LINE_REPLY_TIMEOUT_SECONDS * 1000;
+  const readerDeadline = Math.min(aiDeadline - executionContext.aiMinimumRequestSeconds * 1000,
+    Date.now() + NEWS_COMMENT_READER_TIMEOUT_CAP_SECONDS * 1000);
+  if (readerDeadline - Date.now() < 1000) return false;
+  const lease = reserveLineAutoReply_(key, context.lineChatState, deadline, context.beforeTimestampMs, 'news_url_comment').id;
+  if (!lease) return false;
+
+  try {
+    const caption = stripUrlsForWeeklyEditorial_(text.replace(/(https?)[:：][/／]{2}/gi, '$1://'));
+    const web = fetchAndExtractWebPageByReaderLayer_(intake.urls[0], {
+      deadlineAtMs: readerDeadline, readerTimeoutCapSeconds: NEWS_COMMENT_READER_TIMEOUT_CAP_SECONDS,
+      noAi: true, allowTitleOnly: true
+    });
+    // 逾時結果不進主模型，其他讀取失敗仍可使用貼文者提供的附言。
+    if (Date.now() >= readerDeadline || web && !web.ok && (
+      /(?:budget_exhausted|fetch_exception|timeout)$/.test(web.errorType || '') || [408, 504].includes(web.httpStatus)
+    )) return false;
+    const answer = getLineShortBanterText_(runAiNewsUrlComment_(caption, web, {
+      deadlineAtMs: aiDeadline, aiTimeoutCapSeconds: executionContext.aiTimeoutCapSeconds,
+      aiMinimumRequestSeconds: executionContext.aiMinimumRequestSeconds
+    }));
+    if (!answer || Date.now() >= aiDeadline) return false;
+    // Reader 或模型執行期間，背景任務可能剛完成一筆待回覆。
+    const pendingSheet = getSpreadsheet_().getSheetByName(PENDING_REPLIES_SHEET_NAME);
+    if (pendingSheet && findPendingReply_(pendingSheet, conversationId)) return false;
+    if (!authorizeLineAutoReply_(key, lease, aiDeadline, 'news_url_comment') || Date.now() >= aiDeadline) return false;
+    return sendLineReplyWithLog_(event, conversationId, context, {
+      text: answer, mode: 'news_url_comment', followUp: true, leaseId: lease, triggerType: 'news_url_comment'
+    });
+  } catch (ignore) {
+    // 收件已完成，點評失敗不產生新的待回覆。
+    return false;
+  } finally {
+    finishLineAutoReply_(key, lease);
+  }
+}
+
 function handleGatedLineChat_(event, conversationId, text, executionContext, fastOutcome) {
   const context = executionContext.conversationContext;
   const key = context.lineChatKey;
@@ -484,7 +531,7 @@ function handleGatedLineChat_(event, conversationId, text, executionContext, fas
   try {
     const evaluation = fastOutcome ? { outcome: fastOutcome, decision: { triggerType: 'direct_call', fastLane: true,
       noteAction: context.weeklyNoteRequested ? 'save_weekly_note' : 'none' } }
-      : classifyLineChatWake_(text, signals, loadLineAmbientContext_(conversationId, executionContext), executionContext, lease);
+      : classifyLineChatWake_(text, signals, loadLineAmbientContext_(conversationId, executionContext), executionContext);
     scored = evaluation.decision || evaluation.scored;
     const decision = evaluation.decision;
     if (!decision) {
@@ -555,10 +602,8 @@ function buildLineChatReply_(event, conversationId, text, executionContext, deci
   if (!result.ok) return failed(result);
   let answer = result.text;
   if (easterEgg) {
-    // 彩蛋只送一個短句；模型離題輸出網址或標記時直接略過。
-    answer = answer.split(/[\n。！？!?]/, 1)[0].trim();
-    if (!answer || /[*#\x60]|https?:|www\./i.test(answer)) return null;
-    answer = answer.slice(0, getLineMessageSafeSliceIndex_(answer, 100));
+    answer = getLineShortBanterText_(answer);
+    if (!answer) return null;
   }
   // 儲存回執由程式定稿，混合請求同時保留模型回答的研究內容。
   if (noteReply) answer = noteReply.text + '\n\n' + answer;
