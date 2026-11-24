@@ -62,8 +62,8 @@ function readChatEasterEggState_() {
   return state;
 }
 
-function isChatEasterEggAvailable_(key, now) {
-  if (!ENABLE_CHAT_EASTER_EGG || !key) return false;
+function isChatInterjectionAvailable_(key, now) {
+  if (!key) return false;
   try { return !(readChatEasterEggState_()[key] > now); }
   catch (ignore) { return false; }
 }
@@ -114,13 +114,13 @@ function getLineChatWakeSignals_(event, key, state, text, quote, weeklyNoteReque
   // 省略姓名的短虧句也先看前文，由守門員確認在跟小浣說話。
   const teasing = /^(?:或|也|欸)?(?:太不吵|怎麼(?:還|又)?(?:在)?裝死)[了啦啊欸喔哦呀嘛吧耶]*$/.test(compact);
   const easterEggTerm = teasing || /垃圾|棉花糖|乾脆麵|小熊貓|貍貓|狸貓/.test(text);
-  const probeEligible = ENABLE_CHAT_AMBIENT_BANTER && !named && !work && !hot && !quotesBot && !easterEggTerm &&
-    Array.from(compact).length >= 6 && !shouldUseWebReading(text);
-  const mayInterject = !hot && !work && !quotesBot && (easterEggTerm || probeEligible) && isChatEasterEggAvailable_(key, now);
+  const ambientEligible = ENABLE_CHAT_AMBIENT_BANTER && !named && !easterEggTerm &&
+    Array.from(compact).length >= 4 && !shouldUseWebReading(text);
+  const canInterject = ENABLE_CHAT_EASTER_EGG && !hot && !work && !quotesBot && (easterEggTerm || ambientEligible);
+  const available = canInterject && isChatInterjectionAvailable_(key, now);
   return Object.assign(signals, { named: named, teasing: teasing, work: work, weeklyNote: weeklyNote,
-    easterEggAvailable: easterEggTerm && mayInterject, ambientBanterAvailable: probeEligible && mayInterject && !(state.ambientProbeAfterMs > now),
-    interjectionThrottled: ENABLE_CHAT_EASTER_EGG && !hot && !work && !quotesBot && (easterEggTerm || probeEligible) &&
-      (!mayInterject || probeEligible && state.ambientProbeAfterMs > now) });
+    easterEggAvailable: easterEggTerm && available, ambientBanterAvailable: ambientEligible && available,
+    interjectionThrottled: canInterject && !available });
 }
 
 function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, lane) {
@@ -133,6 +133,7 @@ function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, lane) {
       if (!state || (state.resetId || '') !== (snapshot.resetId || '') || now + minimumMs > deadline ||
           lane !== 'explicit' && eventAtMs <= (state.resetAtMs || 0)) return { outcome: 'skipped_budget_or_error' };
       if (state.lease && state.lease.until > now) return { outcome: 'skipped_lease_busy' };
+      if (lane === 'news_url_comment' && !isChatInterjectionAvailable_(key, now)) return { outcome: 'skipped_cooldown' };
       if (lane === 'follow_up') {
         const hot = getLineHotChat_(state, eventAtMs, now);
         if (!hot || !snapshot.hotChat || hot.at !== snapshot.hotChat.at) return { outcome: 'skipped_no_signal' };
@@ -176,28 +177,13 @@ function closeLineHotChat_(context, hot, leaseId) {
   } catch (ignore) { /* 退場狀態可等熱聊窗到期。 */ }
 }
 
-function claimLineAmbientProbe_(context, leaseId) {
-  try {
-    return withDataMutationLock_(function() {
-      const key = context.lineChatKey;
-      const state = readLineChatState_(key);
-      const now = Date.now();
-      // 取得同房資格後重讀節流狀態，避免依兩個 webhook 的舊快照重複探測。
-      if (!state || !state.lease || state.lease.id !== leaseId || state.lease.until <= now || state.ambientProbeAfterMs > now ||
-          (state.resetId || '') !== (context.lineChatState.resetId || '') || !isChatEasterEggAvailable_(key, now)) return {};
-      state.ambientProbeAfterMs = now + CHAT_AMBIENT_PROBE_INTERVAL_MS;
-      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
-      return { claimed: true };
-    }, 250).claimed === true;
-  } catch (ignore) { return false; }
-}
-
-function classifyLineChatWake_(text, signals, ambient, executionContext, leaseId) {
+function classifyLineChatWake_(text, signals, ambient, executionContext) {
   const deadline = executionContext.deadlineAtMs;
   const classificationDeadline = Math.min(deadline - 10000, Date.now() + 8000);
   const seconds = Math.floor((classificationDeadline - Date.now()) / 1000);
   if (seconds < 2) return { outcome: 'skipped_budget_or_error' };
-  if (signals.ambientBanterAvailable && !claimLineAmbientProbe_(executionContext.conversationContext, leaseId)) {
+  // 另一個 webhook 可能在讀取訊號與取得 lease 之間已送出插話。
+  if (signals.ambientBanterAvailable && !isChatInterjectionAvailable_(executionContext.conversationContext.lineChatKey, Date.now())) {
     return { outcome: 'skipped_cooldown' };
   }
   const speaker = createConversationSpeakerMap_();
@@ -205,8 +191,11 @@ function classifyLineChatWake_(text, signals, ambient, executionContext, leaseId
   const previousReply = signals.followUp && ambient.find(function(item) {
     return item.role === 'assistant' && item.confirmed && item.timestampMs === signals.hot.at;
   });
-  const recentItems = ambient.slice(-4);
-  if (previousReply && !recentItems.includes(previousReply)) recentItems.unshift(previousReply);
+  const recentItems = ambient.slice(-8);
+  if (previousReply && !recentItems.includes(previousReply)) {
+    recentItems.shift();
+    recentItems.unshift(previousReply);
+  }
   const recent = recentItems.map(function(item) {
     return { speaker: item.role === 'assistant' ? '小浣' : speaker(item.userId), text: item.text.slice(0, getLineMessageSafeSliceIndex_(item.text, 240)) };
   });
@@ -245,8 +234,8 @@ function authorizeLineAutoReply_(key, leaseId, deadline, triggerType) {
           state.autoAfterMs > now && state.lease.lane === 'auto') return {};
       if (triggerType === 'follow_up' && (!state.hotChat || state.hotChat.chain >= CHAT_MAX_FOLLOW_UP_CHAIN)) return {};
       const props = PropertiesService.getScriptProperties();
-      if (triggerType === 'easter_egg') {
-        if (!ENABLE_CHAT_EASTER_EGG) return {};
+      if (triggerType === 'easter_egg' && !ENABLE_CHAT_EASTER_EGG) return {};
+      if (triggerType === 'easter_egg' || triggerType === 'news_url_comment') {
         const cooldowns = readChatEasterEggState_();
         if (cooldowns[key] > now) return {};
         Object.keys(cooldowns).forEach(function(name) { if (!(cooldowns[name] > now)) delete cooldowns[name]; });
@@ -299,13 +288,31 @@ function rememberLineReply_(key, snapshot, event, receipt, startsFollowUp, lease
       state.replies = replies.filter(function(reply) { return reply.at > Date.now() - AMBIENT_CHAT_WINDOW_MS; })
         .sort(function(a, b) { return b.at - a.at; }).slice(0, MAX_RECENT_LINE_REPLIES);
       props.setProperty(key, JSON.stringify(state));
-      if (triggerType === 'easter_egg') {
+      if (triggerType === 'easter_egg' || triggerType === 'news_url_comment') {
         const cooldowns = readChatEasterEggState_();
         cooldowns[key] = receipt.sentAtMs + CHAT_EASTER_EGG_COOLDOWN_MS;
         props.setProperty(CHAT_EASTER_EGG_STATE_PROPERTY, JSON.stringify(cooldowns));
       }
     }, 250);
   } catch (ignore) { /* 已確認送出時，輔助狀態失敗不重送。 */ }
+}
+
+function getLineShortBanterText_(value) {
+  const line = String(value || '').trim().split(/[\r\n\u2028\u2029]/, 1)[0].trim();
+  const plain = line.normalize('NFKC');
+  if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u2028-\u202e\u2066-\u2069*#_\x60<>\[\]|]|~~/.test(plain) ||
+      /^\s*(?:[-=+]{3,}|[-+]\s|\d+[.)]\s)/m.test(plain) ||
+      /https?\s*:|www\.|:\/\/|(?:[a-z0-9-]+\.)+(?:com|org|net|gov|edu|io|tw|ly|co|dev|ai|gg|me)\b/i.test(plain)) return '';
+  const sentenceEnd = /[。！？!?]+|\.(?:\s|$)/;
+  const firstEnd = sentenceEnd.exec(line);
+  let sentence = firstEnd ? line.slice(0, firstEnd.index).trimEnd() : line;
+  // 句末標點落在前 10 字時，短起手可連同下一段笑點一起送出。
+  if (firstEnd && sentence && firstEnd[0][0] !== '.' && Array.from(sentence).length < 10) {
+    const next = line.slice(firstEnd.index + firstEnd[0].length).split(sentenceEnd, 1)[0];
+    if (!isLineChatClosingNoise_(next)) sentence = (sentence + firstEnd[0][0] + next).trimEnd();
+  }
+  const clipped = sentence.slice(0, getLineMessageSafeSliceIndex_(sentence, 100));
+  return /[\p{L}\p{N}]/u.test(clipped) ? clipped : '';
 }
 
 function logLineChatWakeStatus_(outcome, scored, chain) {

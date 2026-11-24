@@ -72,8 +72,11 @@ function fetchAndExtractWebPageByReaderLayer_(url, executionContext) {
     return jinaResult;
   }
 
-  // 模型 read_url 的 no-AI 模式必須在任何 legacy extraction 前停止，禁止巢狀 AI。
-  if (executionContext && executionContext.noAi) return jinaResult;
+  // 唯讀路徑禁止 legacy AI。點評可在 Jina 正文不足時只補抓靜態標題。
+  if (executionContext && executionContext.noAi) {
+    return executionContext.allowTitleOnly && jinaResult.errorType === 'reader_empty_content'
+      ? fetchStaticWebTitle_(safeUrl, executionContext, jinaResult) : jinaResult;
+  }
 
   // absolute deadline 已耗盡時不可再嘗試 legacy；背景 Queue 會在沒有同步 context 時重新讀取。
   if (jinaResult.errorType === 'reader_sync_budget_exhausted') {
@@ -219,6 +222,19 @@ function fetchAndExtractWebPageLegacy_(url, executionContext) {
   // 目前 21_WebReader.gs 的 fetchAndExtractWebPage(url) 代表 raw HTML + AI extraction 流程。
   // 若未來把 fetchAndExtractWebPage(url) 改成也走 Reader Layer，這裡必須同步重構，避免遞迴。
   return fetchAndExtractWebPage(url, executionContext);
+}
+
+function fetchStaticWebTitle_(url, executionContext, fallback) {
+  const raw = fetchRawWebPage(url, executionContext);
+  const route = 'static_html_title';
+  if (!raw.ok) return buildReaderLayerErrorResult_(url, route, raw.errorType, '未能讀取靜態頁首。', raw);
+  // shortcut: 只掃描 HTML 開頭 65,536 字元，需要支援更長的頁首時再調整。
+  const match = /<title\b[^>]*>([^<]*)<\/title\s*>/i.exec(raw.rawHtml.slice(0, 65536));
+  const title = match ? decodeHtmlEntities_(match[1]).replace(/\s+/g, ' ').trim() : '';
+  if (!title || isGenericReaderErrorPage_(title, '')) return fallback;
+  return buildReaderLayerSuccessResult_({
+    url: url, statusCode: raw.statusCode, contentType: raw.contentType, title: title, readerRoute: route
+  });
 }
 
 // ======================================================
@@ -527,7 +543,10 @@ function fetchReadablePageWithJina_(url, executionContext, pttArticle) {
 
     const normalized = normalizeJinaReaderText_(url, bodyText);
 
-    if (!isReadableTextUsable_(normalized.mainText, MIN_READER_MAIN_TEXT_LENGTH, normalized.title)) {
+    const contentUsable = isReadableTextUsable_(normalized.mainText, MIN_READER_MAIN_TEXT_LENGTH, normalized.title);
+    const hasUsableTitle = !contentUsable && executionContext && executionContext.allowTitleOnly && normalized.title &&
+      /^Title:[^\S\r\n]*\S/m.test(bodyText) && !isGenericReaderErrorPage_(normalized.title, normalized.mainText);
+    if (!contentUsable && !hasUsableTitle) {
       return buildReaderLayerErrorResult_(
         url,
         WEB_READER_ROUTE_JINA,
@@ -544,7 +563,7 @@ function fetchReadablePageWithJina_(url, executionContext, pttArticle) {
       siteName: normalized.siteName,
       author: normalized.author,
       publishedAt: normalized.publishedAt,
-      mainText: normalized.mainText,
+      mainText: contentUsable ? normalized.mainText : '',
       extractionConfidence: normalized.extractionConfidence,
       warnings: normalized.warnings,
       readerRoute: WEB_READER_ROUTE_JINA
