@@ -2,14 +2,15 @@
 
 ## 版本與程式依據
 
-MEGA浣 / 小浣 **v2.2.3 Heartflow, Member Memory & Daily Life Edition**（2026-11-23）。工作分支為 `feature/v223-heartflow-member-memory`，開發基準為 `main` 的 `1c3205e`（v2.1.1）。以同版 `.gs` 為程式契約，實際提交、推送與合併狀態以 Git refs 為準。GAS production deployment 與 LINE 驗收由維護者手動完成。
+MEGA浣 / 小浣 **v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition**（2026-11-24）。工作分支為 `feature/v224-trailblazer-banter-news-comment`，開發基準為 `main` 的 `6630087`（v2.2.3）。以同版 `.gs` 為程式依據，實際提交、推送與合併狀態以 Git refs 為準。GAS production deployment 與 LINE 驗收由維護者手動完成。
 
 ## 本版邊界
 
-- 明確點名與引用小浣可直通，熱聊續接跨群友，主動插話按心流分數和冷卻判定。個人記憶依聊天室與本人保存，每日狀態只在聊天回覆送達後有餘裕時生成。
-- Google Apps Script 共 26 個活躍 `.gs` 檔。新增 `09_BotDailyState.gs` 與 `38_MemberMemory.gs`。Gemini 是唯一啟用的供應商，`15_DeepSeekProvider.gs` 保留供相容與診斷使用。 [完整檔案表](README.md#現行架構)
+- 純閒聊移除兩分鐘探測間隔，放寬主動插話與熱聊續接門檻，擴充同聊天室前文。小浣日常用開拓者式的無厘頭口吻接梗。
+- 群組貼新聞先入隊，再視條件同步回一句點評。同步點評、背景收件與明示的網址研究各自沿用既有的資料邊界。
+- Google Apps Script 共 26 個活躍 `.gs` 檔。從 v2.2.3 升級更新 8 個既有 `.gs` 檔，新增檔案、Sheet migration 與新手動 Script Property 均為 0。Gemini 是唯一啟用的供應商，`15_DeepSeekProvider.gs` 保留供相容與診斷使用。 [完整檔案表](README.md#現行架構)
 - 本週手動註記與選填開頭點評照常顯示。`#本週新聞` 保留預設、精簡、詳細、高潛力、分類與診斷。`#封存本週新聞`、`#新聞補充`、`#狀態回報` 與 `PendingReplies` 沿用既有流程。
-- 從 v2.1.1 升級，既有 `ConversationLog`、`WeeklySummary`、`NewsUrlQueue`、`NewsInbox`、`PendingReplies` 五張表需執行 0 個 Sheet migration。新增 `MemberMemory` 可預建或於首次寫入建立。需手動填寫的新 Script Property 為 0 個。沿用既有排程。`WeeklySummary` 舊 `topic` 列仍可相容讀取，`#清空封存 確認` 會清除目前聊天室的全部封存。
+- 既有資料表與排程照常使用。`WeeklySummary` 舊 `topic` 列仍可相容讀取，`#清空封存 確認` 會清除目前聊天室的全部封存。
 - v2.0.0 已移除舊快讀、話題與懶人包指令，以及 `25_WebTaskQueue.gs`、`40_TopicHighlights.gs`、`45_TopicFeatures.gs`。舊 `installWebTaskQueueTrigger()` 是重建新聞分鐘排程的相容入口。
 
 ## Gemini 任務路由
@@ -57,13 +58,13 @@ MEGA浣 / 小浣 **v2.2.3 Heartflow, Member Memory & Daily Life Edition**（2026
 
 ## 近期對話、自然喚醒與人設
 
-- 群組、多人聊天室及私訊從同一 `ConversationLog` 的尾端最多掃描 500 列，帶入當前訊息之前、最近 2 小時內最新最多 15 則合格文字，動態前文總預算 3,000 字元。一般群聊與小浣回覆可入選，純系統指令排除，圖片衍生摘要由既有圖片回憶路徑取用。精確 LINE 文字引用優先，近期前文與六輪短期記憶共用成員代稱，以可信訊息 ID 去重。
+- 群組、多人聊天室及私訊從同一 `ConversationLog` 的尾端最多掃描 500 列，帶入當前訊息之前、最近 4 小時內最多 30 則合格文字，前文總預算 6,000 字元。一般群聊與小浣回覆可入選，純系統指令排除，圖片衍生摘要由既有圖片回憶路徑取用。守門員最多參考 8 則，熱聊時保留已確認送達的前一回。精確 LINE 文字引用優先，近期前文與六輪短期記憶共用成員代稱，以可信訊息 ID 去重。`#reset` 切斷自動前文。
 - **明確找小浣**。固定指令、私訊、原生 `@小浣`、任意位置的 `#小浣`、明確點名交辦，以及引用已確認送達的小浣回覆，都跳過守門員與一般 20 秒間隔。群組只有「好」「笑死」等收尾短噪的引用保持安靜。
-- **熱聊續接**。小浣成功送達正常對話或主動插話後開啟 90 秒窗口，群友可交替續接。間隔至少 6 秒，心流分數至少 5 分，最多連續兩輪。熱聊中「太不吵」「怎麼又裝死」一類省略姓名的虧句也按續聊計數。話題轉走、改叫其他機器人、分數不足或達兩輪時退場。
-- **主動探頭**。守門員依話題連貫性、時機、氣氛與互動意願給出 0～10 分。參與彩蛋或純閒聊插話至少 7 分，共用 30 分鐘冷卻，每次最多一句、100 字，且禁搜尋與寫註記。純閒聊排除網址、指令和短噪後至少 6 字才有機會探測，每房每 2 分鐘最多一次。守門員略過時只推進探測間隔。`ENABLE_CHAT_EASTER_EGG` 控制全部主動插話，`ENABLE_CHAT_AMBIENT_BANTER` 可獨立關閉純閒聊探測，兩者預設開啟。
+- **熱聊續接**。小浣送達正常對話、主動插話或新聞點評後開啟 90 秒窗口，群友可交替續接。間隔至少 6 秒，守門員評分至少 4 分，最多連續兩輪。熱聊中「太不吵」「怎麼又裝死」一類省略姓名的虧句也按續聊計數。話題轉走、改叫其他機器人、分數不足或達兩輪時退場。
+- **主動探頭**。純閒聊排除網址、指令和短噪，去掉標點與空白後滿 4 字且符合插話條件時進 `chat_gatekeeper`。本版移除兩分鐘探測間隔。彩蛋與純閒聊主動插話至少 5 分，和新聞點評共用同房 2 分鐘冷卻。兩類插話使用一般 Key，不開 Search、不寫手動註記。`ENABLE_CHAT_EASTER_EGG` 控制彩蛋與純閒聊主動插話，`ENABLE_CHAT_AMBIENT_BANTER` 可單獨關閉純閒聊探頭。舊版已寫入的冷卻紀錄按原定時間到期。
 - 其餘群組候選由 `chat_gatekeeper` 判斷是否直接叫小浣或有工作協作需求。這兩種分類無額外分數門檻，在熱聊窗外仍遵守一般自動回覆的 20 秒間隔。客觀的技術敘述、守門員逾時、配額阻擋或錯誤時保持安靜。
-- 正式 webhook 以 `webhookEventId` 先登記再處理。`PendingReplies` 優先使用 reply token，鎖忙時自動接話讓位。同聊天室一次只持有一個回覆處理資格，重設與確認清理可以作廢舊回合。`LINE_CHAT_STATE_*` 保存熱聊、探測節流和處理狀態。`CHAT_WAKE_STATUS` 只記結果、觸發類型、分數與續聊輪數。
-- 聊天與圖片的系統提示保留靜態人設、證據與任務規則。近期前文、個人記憶、回執狀態與最近開頭在使用者訊息區組裝。日常接話簡短，查證與看圖按證據回答。純機器 JSON 任務保持資料格式，週編輯台只有 `openingComment` 使用小浣口吻。
+- 正式 webhook 以 `webhookEventId` 先登記再處理。`PendingReplies` 優先使用 reply token，鎖忙時自動接話讓位。同聊天室一次只持有一個回覆處理資格，重設與確認清理可以作廢舊回合。`LINE_CHAT_STATE_*` 保存熱聊與處理狀態。`CHAT_WAKE_STATUS` 只記結果、觸發類型、分數與續聊輪數。
+- 一般聊天的靜態 `system` prompt 用《崩壞：星穹鐵道》開拓者式的無厘頭口吻接梗，避開複述與小編式收尾。日常插話與新聞點評以一句約 15～45 字為目標，程式只取第一行非空純文字、上限 100 字元，保留「真的假的？」等短起手後的笑點。近期前文、個人記憶、回執狀態與最近開頭在使用者訊息區組裝。查證與看圖依證據回答，JSON 任務沿用各自的格式，週編輯台只有 `openingComment` 使用小浣口吻。
 
 ### 個人記憶與每日狀態
 
@@ -75,6 +76,8 @@ MEGA浣 / 小浣 **v2.2.3 Heartflow, Member Memory & Daily Life Edition**（2026
 ## 新聞 Queue、週編輯台與固定封存
 
 - 群組直接貼新聞網址靜默進 `NewsUrlQueue`。私訊單一網址可同步收到簡介，預算不足時轉背景 Queue。明確要求讀取、摘要、分析或比對網址會分流到研究。Reader 與 AI 在鎖外，提交時在短鎖內重新核對 `TaskId`、聊天室、狀態與 `StartedAt`。`#清空新聞 確認` 會清除同聊天室的入庫新聞、Queue 與本週手動註記，並取消舊 Queue 任務的遲到結果。
+- `ENABLE_NEWS_URL_COMMENT` 預設開啟，可獨立關閉。成功入隊的單一公開網址，在沒有待回覆衝突、同房 lease 可用且冷卻結束時，優先採用發文附言，再由唯讀 Reader 補標題或前段摘要。外部素材最多 600 字元，按不可信資料處理。`general_chat` 使用一般 `GEMINI_API_KEY`，Search 與內部工具皆關閉。
+- 點評同步預算最多 30 秒，仍受整批 webhook 的 40 秒期限約束。Reader 單次設定上限 15 秒，預留 Gemini 8 秒及 LINE 10 秒後，預設整段唯讀讀取最多可用 12 秒。點評送達後啟動 2 分鐘冷卻及 90 秒熱聊，`CHAT_WAKE_STATUS` 記 `news_url_comment`。逾時、缺少可用素材或已在冷卻時照常收件，點評保持安靜。
 - Queue 依 `retryNotBeforeMs` 延後 `NextRunAt`。零模型 HTTP 的配額預阻擋不計入三次重試額度，純配額等待以原始入隊時間起算七天。實際送出模型請求後收到 429 照既有失敗規則計次。提交狀態不明時先核對 Queue、素材與待回覆，避免直接重設 pending 造成重複寫入。`PendingReplies` 只在 LINE 確認送達後刪除。
 - 使用者明確請小浣把事件註記進本週新聞或週報，即可持久保存，網址選填。優先採用明示引用的原文，對「剛才那件事」也可用同一發言者五分鐘內的上一則有效文字。程式依來源訊息與事件摘要去重，純註記直接確認結果，額外提問才進主回答模型。註記存放在各聊天室的 `WEEKLY_NOTES_*`，滾動保留最近七天，每房最多 30 筆且序列化上限 8,700 bytes。
 - `#本週新聞` 依滾動最近七天查詢。預設、精簡與詳細以獨立區塊列出本週手動註記，並標示容量淘汰或篇幅省略的筆數。沒有網址新聞時，有有效註記或合格對話也可整理。分類或高潛力查無符合新聞時回覆無匹配。清理界線在送出註記回執與週報前會重新核對。
@@ -85,7 +88,7 @@ MEGA浣 / 小浣 **v2.2.3 Heartflow, Member Memory & Daily Life Edition**（2026
 
 ## 網址讀取與資料邊界
 
-一般公開頁面先用 Jina Reader，再依既有條件嘗試 Gemini 的 HTML 抽取。X/Twitter 單篇 status 走 FxTwitter。Classic PTT 文章走 HTTPS 與 over18 cookie，驗證文章結構，符合條件時最多一次 Jina。`read_url` 使用唯讀 Reader，禁止再呼叫 AI。`url_context` 尚未接入。
+新聞背景收件的一般公開頁面先用 Jina Reader，再依既有條件嘗試 Gemini 的 HTML 抽取。X/Twitter 單篇 status 走 FxTwitter。Classic PTT 文章走 HTTPS 與 over18 cookie，符合條件時最多一次 Jina。`read_url` 與群組新聞點評使用唯讀 Reader。點評的 Jina 結果只有標題時可直接使用，正文不足且沒有可用標題時可補讀靜態 `<title>`。`url_context` 尚未接入。
 
 `search_news_inbox`、`search_conversation_log`、`get_weekly_memory` 與 `read_url` 都是只讀，聊天室範圍由程式提供。文字引用只查同聊天室保留的使用者原文，缺原文時會提示補貼。圖片語意摘要是小浣當時的辨識，與使用者文字分開。原圖與影音資料不持久保存。
 
@@ -94,14 +97,13 @@ MEGA浣 / 小浣 **v2.2.3 Heartflow, Member Memory & Daily Life Edition**（2026
 ### 上傳 GAS 後的手動啟用順序
 
 1. 備份現有試算表、GAS 原始碼、Script Properties 和觸發器配置，保留封存游標。已開啟固定封存的聊天室在切換期間先暫設 `autoEnabled=false`，並確認執行中的工作完成。
-2. 從 v2.1.1 升級至 v2.2.3，同步以下 14 個 `.gs` 檔。首次建置或需對齊較舊來源時，同步全部 26 個同版 `.gs`。
+2. 從 v2.2.3 升級至 v2.2.4，同步以下 8 個既有 `.gs` 檔。首次建置或需對齊較舊來源時，同步全部 26 個同版 `.gs`。
 
-   - 更新 `00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`05_Storage.gs`、`06_Memory.gs`、`08_ChatWake.gs`、`10_AiService.gs`、`11_AiProfiles.gs`、`12_Prompts.gs`、`13_AiSchemas.gs`、`14_AiTools.gs`。
-   - 新增 `09_BotDailyState.gs`、`38_MemberMemory.gs`。
+   - 更新 `00_Config.gs`、`01_Main.gs`、`02_LineCommands.gs`、`03_ResponseTexts.gs`、`08_ChatWake.gs`、`10_AiService.gs`、`12_Prompts.gs`、`20_ReaderLayer.gs`。
 
-3. 既有五張表需執行 0 個 Sheet migration，手動填寫 0 個新 Script Property。可執行 `setupLogSheet()` 預建 `MemberMemory`，也可由首次寫入自動建立。沿用既有憑證、`NEWS_ARCHIVE_CONFIG` 和 `NEWS_ARCHIVE_STATE_*`，`BOT_DAILY_STATE` 由程式按需保存。新環境用 `setupLogSheet()` 建立資料表。首次配置固定封存時，先在 `autoEnabled=false` 下填寫 `NEWS_ARCHIVE_CONFIG`，執行 `previewNewsArchiveSetup()` 比對舊期間，再用 `setupNewsArchiveStorage()` 建立封存欄位與初始狀態。
+3. 本次升級為 0 個新增檔案、0 個 Sheet migration、0 個新手動 Script Property，沿用既有憑證與排程。新環境用 `setupLogSheet()` 建立資料表。首次配置固定封存時，先在 `autoEnabled=false` 下填寫 `NEWS_ARCHIVE_CONFIG`，執行 `previewNewsArchiveSetup()` 比對舊期間，再用 `setupNewsArchiveStorage()` 建立封存欄位與初始狀態。
 4. **先更新 Web App deployment**。建立同版 GAS version，更新既有部署並保留 URL，核對 webhook 使用 `doPost`。確認每分鐘一個 `processNewsUrlQueue` 觸發器，缺少或重複時用 `installNewsUrlQueueTrigger()` 修正。既有 v2.0.0 專案應已移除舊 `processWebTaskQueue` 觸發器。
-5. **再驗證新版手動入口**。從 LINE `#版本` 確認 `v2.2.3 Heartflow, Member Memory & Daily Life Edition` 與 `2026-11-23`。按下方驗收項目檢查直通、續聊、個人記憶、每日狀態、註記、週報、收件及手動封存。
+5. **再驗證新版手動入口**。從 LINE `#版本` 確認 `v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition` 與 `2026-11-24`。按下方驗收項目檢查直通、續聊、新聞點評、個人記憶、每日狀態、註記、週報、收件及手動封存。
 6. **最後啟用自動封存**。已驗收且需要自動封存的聊天室恢復 `autoEnabled=true`，核對每日台灣中午只有一個 `processScheduledNewsArchives`。初次啟用或需修正排程時執行 `installNewsArchiveTrigger()`，驗證手動與排程交錯只寫一次。
 
 首次設定固定週期可參考以下格式。把聊天室 ID 和起點換成實際值，起點須為帶時區的週三 12:00，並先核對舊封存是否重疊。
@@ -113,13 +115,13 @@ MEGA浣 / 小浣 **v2.2.3 Heartflow, Member Memory & Daily Life Edition**（2026
 ### LINE / GAS 上線驗收
 
 - 在測試聊天室測試明確點名、原生 `@小浣`、第二行 `#小浣`、私訊及固定指令直通。小浣回答後 20 秒內，用「沒有，只是想問你上一句」引用它的回覆，再核對只有「好」的引用保持安靜。重放五句連發與 webhook 重送，核對同房只取得一個回覆資格。
-- 請兩位群友在小浣回覆後交替續聊，核對 90 秒窗口、6 秒間隔與兩輪上限。用「太不吵」「怎麼又裝死」核對熱聊虧句的 `CHAT_WAKE_STATUS`，再用客觀的換模型敘述或其他機器人指令驗證退場。核對純閒聊的 2 分鐘探測間隔、30 分鐘共用冷卻、一般 Key 和獨立開關。
+- 請兩位群友在小浣回覆後交替續聊，核對 90 秒窗口、6 秒間隔與兩輪上限。用「太不吵」「怎麼又裝死」核對熱聊虧句的 `CHAT_WAKE_STATUS`，再用客觀的換模型敘述或其他機器人指令驗證退場。確認純閒聊略過後下一則滿 4 字的候選能送守門員，並核對 5 分／4 分門檻與 2 分鐘共用冷卻。
 - 用「以後叫我小美」「幫我記住我不吃香菜」驗證稱呼與筆記，引用兩小時以前的群友發言並核對稱呼脈絡。用 `#我的記憶` 和 `#忘記我` 交叉檢查兩位成員、兩個群及私訊的隔離。手動更正試算表後用 `#reset` 確認重讀，並驗證 `#清空紀錄 確認` 保留個人記憶。
 - 用當天首次有餘裕的正常聊天核對 `BOT_DAILY_STATE` 只在主回覆送達後生成，下一輪聊日常時可取用，同一天重複聊天沿用同一份狀態。
 - 用「幫我查我們的新聞有沒有這則」核對只讀內部 NewsInbox。用「幫我查 LINE 的聊天室功能」或明示聯網圖片研究核對 `GEMINI_SEARCH_API_KEY` 與獨立來源。確認守門員只讀一般 Key，並在測試部署核對 429、`AI_CALL_METADATA`、延後時間、重試數與 PT 午夜後的起點。
 - 驗證私訊與引用圖片、群組直接收圖的靜默摘要。測試 `#reset` 與 `#清空紀錄 確認` 後的近期前文、續問與遲到回合。明示引用仍可取用清理範圍外的已保留原文。
 - **production smoke 必要檢查**。用真實 LINE webhook 的長 MessageId，沿原始 LINE ID → ConversationLog 寫入 → `Range.getValues()` 回讀，檢查 `typeof value === "string"` 與 `value === 原始 message.id`。已確認文字引用的 `QuotedMessageId` 同樣核對 `typeof value === "string"` 與 `value === 原始 quotedMessageId`。核對跨聊天室查不到原文。
 - 先在測試聊天室描述無網址的事件，再以同作者請小浣註記進本週新聞。驗證純註記回執、明示引用、重複註記、附帶提問、零篇新聞週報與選填開頭點評。確認高潛力或分類查無匹配。用 `#清空新聞 確認` 檢查註記、NewsInbox 和 Queue 的清除範圍。
-- 驗證群組普通網址靜默收件、明確的網址摘要分流、私訊同步收件、待回覆優先和送達後才刪除。用長週報核對話題及來源，並確認封存到期與防重。清理只在指定測試聊天室驗收，核對其他聊天室及歷史分頁完整。
+- 群組連貼單篇公開網址時，核對每篇都先入隊，冷卻中只收件。點評送達後用另一位群友接話，確認 90 秒熱聊及 `news_url_comment` 紀錄。切換 `ENABLE_NEWS_URL_COMMENT` 驗證純收件，另驗證明確要求摘要、私訊同步收件、待回覆優先和送達後才刪除。用長週報核對話題與來源，並確認封存到期及防重。清理只在指定測試聊天室驗收，核對其他聊天室及歷史分頁完整。
 
-本機 `node tests/smoke.cjs` 通過 299 項，含 89 項 DeepSeek 相容測試。`node tests/news_workflows.cjs` 通過 156 項，合計 455 項。測試以 26 個 GAS 原始檔執行本機模擬。未能本機執行 GAS，未執行 live LINE／Sheets／Gemini 或部署。上線驗收由維護者在實際專案完成。
+本機 `node tests/smoke.cjs` 通過 301 項，含 89 項 DeepSeek 相容測試。`node tests/news_workflows.cjs` 通過 162 項，合計 463 項。測試以 26 個 GAS 原始檔執行本機模擬。未能本機執行 GAS，未執行 live LINE／Sheets／Gemini 或部署。上線驗收由維護者在實際專案完成。

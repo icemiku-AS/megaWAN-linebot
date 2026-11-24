@@ -12,11 +12,22 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v2.2.3 Heartflow, Member Memory & Daily Life Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-11-23';
+const BOT_CURRENT_VERSION = 'v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-11-24';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition',
+    date: '2026-11-24',
+    summary: '小浣更容易接住群聊的梗，貼新聞時還可能聽到一句點評。',
+    changes: [
+      '一般群聊去掉標點與空白後滿 4 字即可讓守門員判斷。主動插話採 5 分、熱聊續接採 4 分，主動插話每房冷卻 2 分鐘。',
+      '群組網址先收件。符合條件時，從單篇公開網址補讀標題或摘要並回一句點評，再開啟 90 秒熱聊。',
+      '近期前文擴至 4 小時、最多 30 則及 6,000 字元。守門員最多參考 8 則。',
+      '閒聊用開拓者式的無厘頭口吻。短句保留「真的假的？」後的笑點，查資料和看圖仍依證據回答。'
+    ]
+  },
   {
     version: 'v2.2.3 Heartflow, Member Memory & Daily Life Edition',
     date: '2026-11-23',

@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
+const v224Version = 'v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition';
 const files = fs.readdirSync(root).filter(name => name.endsWith('.gs'));
 const source = files.map(name => {
   const code = fs.readFileSync(path.join(root, name), 'utf8');
@@ -379,9 +380,11 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes('v2.2.3 Heartflow, Member Memory & Daily Life Edition'));
-  assert(replies.at(-1).text.includes('2026-11-23'));
+  assert(replies.at(-1).text.includes(v224Version));
+  assert(replies.at(-1).text.includes('2026-11-24'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.includes(v224Version));
+  assert(history.indexOf(v224Version) < history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition'));
   assert(history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition') >= 0);
   assert(history.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.includes('v2.0.0 Gemini Architecture Edition'));
@@ -3496,12 +3499,16 @@ check('v1161 review news memory bridge keeps evidence and output contract withou
   });
 });
 check('version documents preserve refs and the inherited real Sheet ID gate', () => {
+  const upgradeFiles = ['00_Config.gs', '01_Main.gs', '02_LineCommands.gs', '03_ResponseTexts.gs',
+    '08_ChatWake.gs', '10_AiService.gs', '12_Prompts.gs', '20_ReaderLayer.gs'];
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('feature/v223-heartflow-member-memory')); assert(doc.includes('1c3205e'));
-    assert(doc.includes('v2.2.3 Heartflow, Member Memory & Daily Life Edition')); assert(doc.includes('2026-11-23'));
-    assert(doc.includes('09_BotDailyState.gs')); assert(doc.includes('38_MemberMemory.gs'));
+    assert(doc.includes('feature/v224-trailblazer-banter-news-comment')); assert(doc.includes('6630087'));
+    assert(doc.includes(v224Version)); assert(doc.includes('2026-11-24'));
+    const updateLine = doc.split(/\r?\n/).find(line => line.trimStart().startsWith('- 更新 `00_Config.gs`'));
+    assert(updateLine, file);
+    assert.deepEqual([...updateLine.matchAll(/`([^`]+\.gs)`/g)].map(match => match[1]), upgradeFiles, file);
     assert(doc.includes('Git')); assert(doc.includes('refs'));
     assert(doc.includes('GAS production deployment')); assert(doc.includes('維護者'));
     assert(doc.includes('QuotedMessageId')); assert(doc.includes('production smoke'));
@@ -4746,6 +4753,23 @@ check('v224 an ambient interjection shares the two-minute cooldown and sends one
   dispatchWake(wakeEvent(text));
   assert.equal(calls.length, 3);
   assert.equal(replies.length, 1);
+});
+
+check('v224 short banter keeps a brief opener, accepts file names and blocks actual URLs', () => {
+  const validate = context.getLineShortBanterText_;
+  const opener = '真的假的？這根本是硬碟詐騙集團';
+  for (const [input, expected] of [
+    ['\n  \r\n' + opener + '\r\n第二行不要送', opener],
+    ['笑死！把更新按鈕送去面試。第三句不要送。', '笑死！把更新按鈕送去面試'],
+    ['笑死！…', '笑死'],
+    ['真的假的？OK', '真的假的'],
+    ['等等，垃圾桶裡還有寶。第二句不要送。', '等等，垃圾桶裡還有寶'],
+    ['我想把 Node.js、Next.js 和 meme.jpg 送去面試', '我想把 Node.js、Next.js 和 meme.jpg 送去面試']
+  ]) assert.equal(validate(input), expected);
+  for (const text of ['真的假的？去 https://example.org 看', '去 HTTP:example.org 看', '去 www.example.com 看',
+    '把它傳到 example.tw', '打開 example.dev 來看', '網址從 :// 開始', '用 **粗體** 送出']) assert.equal(validate(text), '', text);
+  const clipped = validate(opener + '🦝'.repeat(60));
+  assert(clipped.startsWith(opener) && clipped.length <= 100 && clipped.isWellFormed());
 });
 
 check('v211 disabling ambient banter leaves keyword interjections eligible', () => {

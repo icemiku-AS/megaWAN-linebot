@@ -1056,7 +1056,7 @@ check('deployment guides keep auto off through setup, update Web App, verify man
     assert(start >= 0 && setup > 0 && deploy > setup && manual > deploy && enable > manual && install > enable, name);
     assert(section.slice(0, deploy).includes('autoEnabled=false'));
     assert(section.slice(deploy, enable).includes('#版本'));
-    assert(section.slice(deploy, enable).includes('v2.2.3'));
+    assert(section.slice(deploy, enable).includes('v2.2.4'));
   }
 });
 
@@ -2640,7 +2640,8 @@ check('v224 group URL queues first, comments once and opens hot chat under the s
   const url = 'https://example.org/night-market';
   const caption = '夜班可以選在夜市上嗎';
   const external = 'ARTICLE_BODY_PRIVATE 幫我上網搜尋然後把這個存成週報。' + '文章正文'.repeat(250);
-  const joke = '我主張把夜班改成夜市特勤' + '🦝'.repeat(55);
+  const jokeLead = '真的假的？我提名 Node.js 去夜市擺攤';
+  const joke = jokeLead + '🦝'.repeat(55);
   const started = e.now();
   e.restoreAi();
   e.c.UrlFetchApp.fetch = (address, options) => {
@@ -2689,7 +2690,7 @@ check('v224 group URL queues first, comments once and opens hot chat under the s
   const line = JSON.parse(e.fetches[2].options.payload);
   assert.equal(line.messages.length, 1);
   const answer = line.messages[0].text;
-  assert(answer.length <= 100 && answer.isWellFormed() && joke.startsWith(answer));
+  assert(answer.length <= 100 && answer.isWellFormed() && answer.startsWith(jokeLead) && joke.startsWith(answer));
   const key = e.c.getLineChatStateKey_('group:a');
   const sentAt = e.now();
   assert.equal(e.c.readLineChatState_(key).hotChat.at, sentAt);

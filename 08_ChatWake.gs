@@ -298,12 +298,19 @@ function rememberLineReply_(key, snapshot, event, receipt, startsFollowUp, lease
 }
 
 function getLineShortBanterText_(value) {
-  const text = String(value || '').trim();
-  const plain = text.normalize('NFKC');
+  const line = String(value || '').trim().split(/[\r\n\u2028\u2029]/, 1)[0].trim();
+  const plain = line.normalize('NFKC');
   if (/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\u2028-\u202e\u2066-\u2069*#_\x60<>\[\]|]|~~/.test(plain) ||
       /^\s*(?:[-=+]{3,}|[-+]\s|\d+[.)]\s)/m.test(plain) ||
-      /https?\s*:|www\.|[a-z][a-z0-9+.-]*:\/\/|(?:[a-z0-9-]+\.)+[a-z]{2,}\b/i.test(plain)) return '';
-  const sentence = text.split(/[\r\n。！？!?]|\.(?:\s|$)/, 1)[0].trim();
+      /https?\s*:|www\.|:\/\/|(?:[a-z0-9-]+\.)+(?:com|org|net|gov|edu|io|tw|ly|co|dev|ai|gg|me)\b/i.test(plain)) return '';
+  const sentenceEnd = /[。！？!?]+|\.(?:\s|$)/;
+  const firstEnd = sentenceEnd.exec(line);
+  let sentence = firstEnd ? line.slice(0, firstEnd.index).trimEnd() : line;
+  // 句末標點落在前 10 字時，短起手可連同下一段笑點一起送出。
+  if (firstEnd && sentence && firstEnd[0][0] !== '.' && Array.from(sentence).length < 10) {
+    const next = line.slice(firstEnd.index + firstEnd[0].length).split(sentenceEnd, 1)[0];
+    if (!isLineChatClosingNoise_(next)) sentence = (sentence + firstEnd[0][0] + next).trimEnd();
+  }
   const clipped = sentence.slice(0, getLineMessageSafeSliceIndex_(sentence, 100));
   return /[\p{L}\p{N}]/u.test(clipped) ? clipped : '';
 }
