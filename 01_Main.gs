@@ -522,17 +522,27 @@ function handleGatedLineChat_(event, conversationId, text, executionContext, fas
     }
   }
   const lane = fastOutcome ? 'fast' : signals.followUp ? 'follow_up' : 'auto';
-  const reserved = reserveLineAutoReply_(key, context.lineChatState, executionContext.deadlineAtMs, context.beforeTimestampMs, lane);
+  // 只有純群聊可交棒。原事件和後續事件都沿用各自的 reply token 與 webhook 截止時間。
+  const userId = context.currentUserId;
+  const handoffUserId = !fastOutcome && !signals.named && !signals.teasing && !signals.work &&
+    !event.message.quotedMessageId && Number(event.timestamp) > 0 && typeof userId === 'string' && userId.length <= 128 ? userId : '';
+  const reserved = reserveLineAutoReply_(key, context.lineChatState, executionContext.deadlineAtMs,
+    context.beforeTimestampMs, lane, handoffUserId);
   const lease = reserved.id;
   if (!lease) return logLineChatWakeStatus_(reserved.outcome, null, chain);
   let outcome = 'skipped_budget_or_error';
   let scored;
   let updatedChain = chain;
   try {
+    if (reserved.handedOff) context.ambientContext = undefined;
     const evaluation = fastOutcome ? { outcome: fastOutcome, decision: { triggerType: 'direct_call', fastLane: true,
       noteAction: context.weeklyNoteRequested ? 'save_weekly_note' : 'none' } }
       : classifyLineChatWake_(text, signals, loadLineAmbientContext_(conversationId, executionContext), executionContext);
     scored = evaluation.decision || evaluation.scored;
+    if (handoffUserId && !ownsLineAutoReply_(readLineChatState_(key), lease)) {
+      outcome = 'skipped_stale_reply';
+      return;
+    }
     const decision = evaluation.decision;
     if (!decision) {
       outcome = evaluation.outcome;
@@ -543,10 +553,11 @@ function handleGatedLineChat_(event, conversationId, text, executionContext, fas
     if (reply) reply.triggerType = decision.triggerType;
     if (reply && authorizeLineAutoReply_(key, lease, executionContext.deadlineAtMs, decision.triggerType) &&
         sendLineReplyWithLog_(event, conversationId, context, reply)) {
-      outcome = evaluation.outcome;
+      outcome = reserved.handedOff ? 'gatekeeper_reply_after_handoff' : evaluation.outcome;
       if (reply.followUp) updatedChain = decision.triggerType === 'follow_up' ? chain + 1 : 0;
       return reply.mode === 'chat' && !reply.easterEgg;
     }
+    if (handoffUserId && !ownsLineAutoReply_(readLineChatState_(key), lease)) outcome = 'skipped_stale_reply';
   } catch (ignore) { /* 自動接話錯誤時維持安靜。 */ }
   finally {
     finishLineAutoReply_(key, lease);
