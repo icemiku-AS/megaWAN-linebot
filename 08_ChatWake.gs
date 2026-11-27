@@ -2,6 +2,7 @@
 
 const CHAT_WEBHOOK_EVENT_TTL_MS = 20 * 60 * 1000;
 const MAX_RECENT_LINE_REPLIES = 8;
+const MAX_RECENT_LINE_HANDOFF_STOPS = 8;
 const CHAT_EASTER_EGG_STATE_PROPERTY = 'CHAT_EASTER_EGG_STATE';
 
 function getLineChatStateKey_(conversationId) {
@@ -123,7 +124,11 @@ function getLineChatWakeSignals_(event, key, state, text, quote, weeklyNoteReque
     interjectionThrottled: canInterject && !available });
 }
 
-function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, lane) {
+function ownsLineAutoReply_(state, leaseId) {
+  return !!(state && state.lease && state.lease.id === leaseId && !state.lease.cancelled);
+}
+
+function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, lane, handoffUserId) {
   const minimumMs = lane === 'explicit' ? 1 : 12000;
   if (!snapshot || !key || deadline - Date.now() < minimumMs) return { outcome: 'skipped_budget_or_error' };
   try {
@@ -132,7 +137,16 @@ function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, lane) {
       const now = Date.now();
       if (!state || (state.resetId || '') !== (snapshot.resetId || '') || now + minimumMs > deadline ||
           lane !== 'explicit' && eventAtMs <= (state.resetAtMs || 0)) return { outcome: 'skipped_budget_or_error' };
-      if (state.lease && state.lease.until > now) return { outcome: 'skipped_lease_busy' };
+      const handoffStops = Array.isArray(state.handoffStops)
+        ? state.handoffStops.filter(function(stop) { return stop && stop.until > now; }) : [];
+      if (handoffUserId && handoffStops.some(function(stop) { return stop.userId === handoffUserId; })) {
+        return { outcome: 'skipped_reply_handoff_limit' };
+      }
+      const activeLease = state.lease && !state.lease.cancelled && state.lease.until > now ? state.lease : null;
+      const canHandoff = activeLease && handoffUserId && activeLease.userId === handoffUserId &&
+        activeLease.lane === lane && !activeLease.sending &&
+        eventAtMs > activeLease.eventAtMs && eventAtMs - activeLease.eventAtMs <= CHAT_REPLY_HANDOFF_WINDOW_MS;
+      if (activeLease && !canHandoff) return { outcome: 'skipped_lease_busy' };
       if (lane === 'news_url_comment' && !isChatInterjectionAvailable_(key, now)) return { outcome: 'skipped_cooldown' };
       if (lane === 'follow_up') {
         const hot = getLineHotChat_(state, eventAtMs, now);
@@ -140,10 +154,22 @@ function reserveLineAutoReply_(key, snapshot, deadline, eventAtMs, lane) {
         if (hot.chain >= CHAT_MAX_FOLLOW_UP_CHAIN) return { outcome: 'skipped_chain_limit' };
         if (eventAtMs < hot.at + CHAT_FOLLOW_UP_INTERVAL_MS) return { outcome: 'skipped_cooldown' };
       } else if (lane === 'auto' && state.autoAfterMs > now) return { outcome: 'skipped_cooldown' };
+      const props = PropertiesService.getScriptProperties();
+      if (canHandoff && activeLease.handedOff) {
+        // 立即釋放同房資格，只讓這位群友的自然接話暫停一個固定窗口。
+        handoffStops.push({ userId: handoffUserId, until: now + CHAT_REPLY_HANDOFF_WINDOW_MS });
+        state.handoffStops = handoffStops.slice(-MAX_RECENT_LINE_HANDOFF_STOPS);
+        delete state.lease;
+        props.setProperty(key, JSON.stringify(state));
+        return { outcome: 'skipped_reply_handoff_limit' };
+      }
       const id = Utilities.getUuid();
+      if (handoffStops.length) state.handoffStops = handoffStops;
+      else delete state.handoffStops;
       state.lease = { id: id, until: deadline + LINE_REPLY_TIMEOUT_SECONDS * 1000, lane: lane };
-      PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
-      return { id: id };
+      if (handoffUserId) Object.assign(state.lease, { userId: handoffUserId, eventAtMs: eventAtMs, handedOff: !!canHandoff });
+      props.setProperty(key, JSON.stringify(state));
+      return { id: id, handedOff: !!canHandoff };
     }, 250);
     return reserved.status === 'busy' ? { outcome: 'skipped_lease_busy' } : reserved;
   } catch (ignore) { return { outcome: 'skipped_budget_or_error' }; }
@@ -169,8 +195,8 @@ function closeLineHotChat_(context, hot, leaseId) {
       const key = context.lineChatKey;
       const state = readLineChatState_(key);
       if (!state || !state.hotChat || state.hotChat.at !== hot.at || state.hotChat.chain !== hot.chain ||
-          (state.resetId || '') !== (context.lineChatState.resetId || '') ||
-          state.lease && state.lease.until > Date.now() && state.lease.id !== leaseId) return;
+          (state.resetId || '') !== (context.lineChatState.resetId || '')) return;
+      if (leaseId ? !ownsLineAutoReply_(state, leaseId) : state.lease && !state.lease.cancelled && state.lease.until > Date.now()) return;
       delete state.hotChat;
       PropertiesService.getScriptProperties().setProperty(key, JSON.stringify(state));
     }, 250);
@@ -230,7 +256,7 @@ function authorizeLineAutoReply_(key, leaseId, deadline, triggerType) {
     return withDataMutationLock_(function() {
       const now = Date.now();
       const state = readLineChatState_(key);
-      if (!state || !state.lease || state.lease.id !== leaseId || now >= deadline ||
+      if (!ownsLineAutoReply_(state, leaseId) || state.lease.sending || now >= deadline ||
           state.autoAfterMs > now && state.lease.lane === 'auto') return {};
       if (triggerType === 'follow_up' && (!state.hotChat || state.hotChat.chain >= CHAT_MAX_FOLLOW_UP_CHAIN)) return {};
       const props = PropertiesService.getScriptProperties();
@@ -245,6 +271,8 @@ function authorizeLineAutoReply_(key, leaseId, deadline, triggerType) {
         if (serialized.length > 8700) return {};
         props.setProperty(CHAT_EASTER_EGG_STATE_PROPERTY, serialized);
       }
+      // 與接手共用短鎖。LINE 開始送出後，由這輪保有回覆資格直到交付流程結束。
+      if (state.lease.userId) state.lease.sending = true;
       state.autoAfterMs = Math.max(state.autoAfterMs || 0, now + CHAT_AUTO_REPLY_INTERVAL_MS);
       props.setProperty(key, JSON.stringify(state));
       return { allowed: true };

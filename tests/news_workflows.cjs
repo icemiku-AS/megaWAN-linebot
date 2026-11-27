@@ -1056,7 +1056,7 @@ check('deployment guides keep auto off through setup, update Web App, verify man
     assert(start >= 0 && setup > 0 && deploy > setup && manual > deploy && enable > manual && install > enable, name);
     assert(section.slice(0, deploy).includes('autoEnabled=false'));
     assert(section.slice(deploy, enable).includes('#版本'));
-    assert(section.slice(deploy, enable).includes('v2.2.4'));
+    assert(section.slice(deploy, enable).includes('v2.2.5'));
   }
 });
 

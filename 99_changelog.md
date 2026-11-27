@@ -1,3 +1,8 @@
+2026-11-27
+v2.2.5 Group Chat Reply Handoff Edition
+- 群組自然接話未開始送出時，同一人 15 秒內送來符合資格的補話可接手一次。新事件重新判斷並使用自己的 reply token，舊草稿作廢。接手後再補話會立即讓出回覆資格，原作者的自然接話暫停固定 15 秒。
+- 本機 305 項 smoke 與 162 項新聞流程回歸共 467 項。從 v2.2.4 同步 4 個既有 `.gs`，沿用既有 Sheet、Script Properties 和排程。
+
 2026-11-24
 v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition
 - 移除純閒聊兩分鐘探測間隔，符合條件的 4 字訊息可送守門員。插話採 5 分、熱聊續接採 4 分，主動插話共用 2 分鐘冷卻。聊天前文擴至 4 小時、30 則、6,000 字元，守門員最多參考 8 則。

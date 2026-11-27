@@ -12,11 +12,20 @@
 // 3. 展示文案調整不得改變 Sheet 原始資料、指令語意或錯誤處理契約。
 // ======================================================
 
-const BOT_CURRENT_VERSION = 'v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition';
-const BOT_CURRENT_VERSION_DATE = '2026-11-24';
+const BOT_CURRENT_VERSION = 'v2.2.5 Group Chat Reply Handoff Edition';
+const BOT_CURRENT_VERSION_DATE = '2026-11-27';
 const BOT_VERSION_HISTORY_LIMIT = 6;
 
 const BOT_VERSION_HISTORY = [
+  {
+    version: 'v2.2.5 Group Chat Reply Handoff Edition',
+    date: '2026-11-27',
+    summary: '群友在小浣準備接話時補了一句，小浣會重新看這段對話再決定要不要回。',
+    changes: [
+      '群組自然接話尚未送出時，同一人 15 秒內符合接話條件的補話可接手一次。',
+      '新訊息沿用自己的回覆資格重新判斷，舊草稿作廢。接手後再補話時，聊天室可以處理其他回覆，原作者的自然接話暫停 15 秒。'
+    ]
+  },
   {
     version: 'v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition',
     date: '2026-11-24',

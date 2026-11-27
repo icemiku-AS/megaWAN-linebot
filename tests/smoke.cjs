@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const crypto = require('node:crypto');
 const root = path.resolve(__dirname, '..');
+const v225Version = 'v2.2.5 Group Chat Reply Handoff Edition';
 const v224Version = 'v2.2.4 Trailblazer Banter, News Commentary & Deeper Context Edition';
 const files = fs.readdirSync(root).filter(name => name.endsWith('.gs'));
 const source = files.map(name => {
@@ -380,20 +381,21 @@ check('private quoted image accepts natural text and never guesses without quote
   const callCount = calls.length;
   context.handleLineEvent(event('text', 'user', { text: '#小浣 版本', quotedMessageId: '12345' }), now);
   assert.equal(calls.length, callCount, 'fixed command keeps priority over natural quote probing');
-  assert(replies.at(-1).text.includes(v224Version));
-  assert(replies.at(-1).text.includes('2026-11-24'));
+  assert(replies.at(-1).text.includes(v225Version));
+  assert(replies.at(-1).text.includes('2026-11-27'));
   const history = context.getBotVersionHistoryText_();
+  assert(history.includes(v225Version));
   assert(history.includes(v224Version));
+  assert(history.indexOf(v225Version) < history.indexOf(v224Version));
   assert(history.indexOf(v224Version) < history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition'));
   assert(history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition') >= 0);
   assert(history.includes('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.includes('v2.0.0 Gemini Architecture Edition'));
-  assert(history.includes('v1.17.0 Weekly News Archive Edition'));
+  assert(!history.includes('v1.17.0 Weekly News Archive Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') >= 0);
   assert(history.indexOf('v2.2.3 Heartflow, Member Memory & Daily Life Edition') < history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.1 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition'));
   assert(history.indexOf('v2.1.0 Context, Persona & Natural Wake-up Edition') < history.indexOf('v2.0.0 Gemini Architecture Edition'));
-  assert(history.indexOf('v2.0.0 Gemini Architecture Edition') < history.indexOf('v1.17.0 Weekly News Archive Edition'));
 });
 check('non-image quote falls back to ordinary private chat', () => {
   fetchImpl = url => url.includes('api-data.line.me') ? response(404, 'not retrievable') : geminiCompletion('一般文字回答');
@@ -3499,13 +3501,12 @@ check('v1161 review news memory bridge keeps evidence and output contract withou
   });
 });
 check('version documents preserve refs and the inherited real Sheet ID gate', () => {
-  const upgradeFiles = ['00_Config.gs', '01_Main.gs', '02_LineCommands.gs', '03_ResponseTexts.gs',
-    '08_ChatWake.gs', '10_AiService.gs', '12_Prompts.gs', '20_ReaderLayer.gs'];
+  const upgradeFiles = ['00_Config.gs', '01_Main.gs', '03_ResponseTexts.gs', '08_ChatWake.gs'];
   for (const file of ['README.md', 'CURRENT_VERSION.md']) {
     const doc = fs.readFileSync(path.join(root, file), 'utf8');
     assert(!/尚未(?:提交|推送|合併)|未合併至 main/.test(doc), file);
-    assert(doc.includes('feature/v224-trailblazer-banter-news-comment')); assert(doc.includes('6630087'));
-    assert(doc.includes(v224Version)); assert(doc.includes('2026-11-24'));
+    assert(doc.includes('hotfix/v225-chat-reply-handoff')); assert(doc.includes('5d82d20'));
+    assert(doc.includes(v225Version)); assert(doc.includes('2026-11-27'));
     const updateLine = doc.split(/\r?\n/).find(line => line.trimStart().startsWith('- 更新 `00_Config.gs`'));
     assert(updateLine, file);
     assert.deepEqual([...updateLine.matchAll(/`([^`]+\.gs)`/g)].map(match => match[1]), upgradeFiles, file);
@@ -4810,6 +4811,148 @@ check('v224 ambient chat yields to pending replies and ordinary URLs enter intak
 function wakeStatuses() {
   return logs.filter(line => line.startsWith('CHAT_WAKE_STATUS ')).map(line => JSON.parse(line.slice(17)));
 }
+
+check('v225 a same-speaker follow-up takes over using its webhook, context and token', () => {
+  const key = context.getLineChatStateKey_('group:group1');
+  const logSheet = mockLogSheet();
+  const gateBodies = [], generationDeadlines = [];
+  const first = wakeEvent('今天是重活', { dedup: true });
+  const start = now;
+  let next;
+  const post = input => context.doPost({ postData: { contents: JSON.stringify({ events: [input] }) } });
+  properties.set(key, JSON.stringify({ hotChat: { at: now - 7000, chain: 1 } }));
+  withStubs({ ensureLogSheet_: () => logSheet, getSpreadsheet_: () => ({ getSheetByName: name => name === 'ConversationLog' ? logSheet : null }) }, () => {
+    fetchImpl = (url, options) => {
+      if (isGateFetch(url)) {
+        gateBodies.push(JSON.parse(JSON.parse(options.payload).contents.at(-1).parts.at(-1).text));
+        return geminiCompletion(wakeDecision('follow_up'));
+      }
+      generationDeadlines.push(context.readLineChatState_(key).lease.until - 10000);
+      if (generationDeadlines.length === 1) {
+        now += 10000;
+        next = wakeEvent('畫超多圖', { dedup: true });
+        post(next);
+        return geminiCompletion('舊草稿');
+      }
+      return geminiCompletion('原來額度都拿去出圖了');
+    };
+    post(first);
+    post(next);
+  });
+  assert.equal(calls.length, 4, 'redelivery does not run another model call');
+  assert.deepEqual(generationDeadlines, [start + 40000, start + 50000]);
+  assert.equal(gateBodies[1].currentMessage, '畫超多圖');
+  assert(gateBodies[1].recent.some(item => item.text === '今天是重活' && item.speaker === gateBodies[1].currentSpeaker));
+  const payload = JSON.parse(calls[3].options.payload);
+  assert.equal(payload.contents.at(-1).parts.at(-1).text, '畫超多圖');
+  assert(requestData(payload, 'AMBIENT_GROUP_CONTEXT').some(item => item.text === '今天是重活'));
+  assert.deepEqual(replies.map(reply => reply.token), [next.replyToken]);
+  assert.deepEqual(logSheet.data.filter(row => row[6] === 'assistant').map(row => row[9]), ['原來額度都拿去出圖了']);
+  assert.deepEqual(Array.from(context.getConversationHistory('group:group1'), item => item.content), ['畫超多圖', '原來額度都拿去出圖了']);
+  assert.deepEqual(wakeStatuses().map(status => status.outcome), ['gatekeeper_reply_after_handoff', 'skipped_stale_reply']);
+  assert.equal(context.readLineChatState_(key).hotChat.chain, 2);
+  assert.equal(context.readLineChatState_(key).lease, undefined);
+});
+
+check('v225 a third fragment releases the room and pauses only the original speaker for fifteen seconds', () => {
+  const key = context.getLineChatStateKey_('group:group1');
+  let cancelledAt, version, releasedLease;
+  fetchImpl = url => {
+    const call = calls.length;
+    if (call === 1) {
+      now += 5000;
+      dispatchWake(wakeEvent('畫了很多圖'));
+    } else if (call === 2) {
+      now += 5000;
+      cancelledAt = now;
+      dispatchWake(wakeEvent('每張還要重跑'));
+      releasedLease = context.readLineChatState_(key).lease;
+      version = wakeEvent('#版本');
+      dispatchWake(version);
+      dispatchWake(wakeEvent('我也畫了不少圖', { user: 'user2' }));
+      now += 1000;
+      dispatchWake(wakeEvent('還有配色要改'));
+    }
+    if (call > 2) return geminiCompletion(wakeDecision('ignore'));
+    return isGateFetch(url) ? geminiCompletion(wakeDecision('easter_egg')) : geminiCompletion('應該退場的草稿');
+  };
+  dispatchWake(wakeEvent('今天有重活'));
+  assert.equal(releasedLease, undefined);
+  assert.equal(calls.length, 3, 'only the other speaker can start another gate call');
+  assert.deepEqual(replies.map(reply => reply.token), [version.replyToken]);
+  assert(replies[0].text.includes(v225Version));
+  assert.deepEqual(wakeStatuses().map(status => status.outcome), [
+    'skipped_reply_handoff_limit', 'gatekeeper_ignore', 'skipped_reply_handoff_limit', 'skipped_stale_reply', 'skipped_stale_reply'
+  ]);
+  assert.equal(context.readLineChatState_(key).lease, undefined);
+  assert.equal(context.readLineChatState_(key).autoAfterMs, undefined);
+  assert.equal(properties.get('CHAT_EASTER_EGG_STATE'), undefined);
+  now = cancelledAt + 14999;
+  dispatchWake(wakeEvent('還有背景要畫'));
+  assert.equal(calls.length, 3, 'finishing the cancelled model call does not end the pause');
+  assert.equal(wakeStatuses().at(-1).outcome, 'skipped_reply_handoff_limit');
+  now++;
+  dispatchWake(wakeEvent('我終於畫完了'));
+  assert.equal(calls.length, 4, 'additional messages do not extend the pause');
+  assert.equal(context.readLineChatState_(key).handoffStops, undefined);
+});
+
+check('v225 stale cleanup leaves the replacement in control of the hot chat', () => {
+  for (const replacementIgnores of [true, false]) {
+    reset();
+    const key = context.getLineChatStateKey_('group:group1');
+    const hot = { at: now - 7000, chain: 0 };
+    properties.set(key, JSON.stringify({ hotChat: hot }));
+    let oldLease, replacementLease, leaseAfterCleanup;
+    fetchImpl = () => {
+      if (calls.length === 1) {
+        oldLease = context.readLineChatState_(key).lease.id;
+        now += 1000;
+        dispatchWake(wakeEvent('畫了很多圖'));
+        return geminiCompletion(wakeDecision('ignore'));
+      }
+      replacementLease = context.readLineChatState_(key).lease.id;
+      context.finishLineAutoReply_(key, oldLease);
+      leaseAfterCleanup = context.readLineChatState_(key).lease?.id;
+      return replacementIgnores ? geminiCompletion(wakeDecision('ignore')) : response(503, 'unavailable');
+    };
+    dispatchWake(wakeEvent('今天有重活'));
+    assert.equal(calls.length, 2);
+    assert.notEqual(oldLease, replacementLease);
+    assert.equal(leaseAfterCleanup, replacementLease);
+    assert.equal(replies.length, 0);
+    assert.deepEqual(wakeStatuses().map(status => status.outcome), [
+      replacementIgnores ? 'gatekeeper_ignore' : 'skipped_budget_or_error', 'skipped_stale_reply'
+    ]);
+    assert.equal(context.readLineChatState_(key).hotChat?.at, replacementIgnores ? undefined : hot.at);
+  }
+});
+
+check('v225 other speakers, late fragments and an in-progress send cannot take over', () => {
+  for (const reason of ['other-speaker', 'too-late', 'older-event', 'during-send', 'work-request']) {
+    reset();
+    const first = wakeEvent('今天有重活');
+    function sendAnother() {
+      now += reason === 'too-late' ? 15001 : 5000;
+      const next = wakeEvent(reason === 'work-request' ? '幫我整理資料' : '畫了很多圖', { user: reason === 'other-speaker' ? 'user2' : 'user1' });
+      if (reason === 'older-event') next.timestamp = first.timestamp - 1;
+      dispatchWake(next);
+    }
+    fetchImpl = url => {
+      if (isGateFetch(url)) return geminiCompletion(wakeDecision('easter_egg'));
+      if (calls.length === 2 && reason !== 'during-send') sendAnother();
+      return geminiCompletion('保留原回覆');
+    };
+    const reply = context.replyToLine;
+    withStubs({ replyToLine: (...args) => {
+      if (reason === 'during-send' && !replies.length) sendAnother();
+      return reply(...args);
+    } }, () => dispatchWake(first));
+    assert.equal(calls.length, 2, reason);
+    assert.deepEqual(replies.map(item => item.token), [first.replyToken], reason);
+    assert(!wakeStatuses().some(status => status.outcome === 'skipped_stale_reply'), reason);
+  }
+});
 
 check('v224 four-point hot chat crosses speakers at six seconds and stops after two delivered continuations', () => {
   const key = context.getLineChatStateKey_('group:group1');
